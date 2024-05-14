@@ -617,17 +617,6 @@ if __name__ == "__main__":
     #print(np.unique(ManningNRaster))
     
     ep = 1000
-    # A1 = np.zeros(ep, dtype=float)
-    # P1 = np.zeros(ep, dtype=float)
-    # R1 = np.zeros(ep, dtype=float)
-    # np1 = np.zeros(ep, dtype=float)
-    # T1 = np.zeros(ep, dtype=float)
-    # A2 = np.zeros(ep, dtype=float)
-    # P2 = np.zeros(ep, dtype=float)
-    # R2 = np.zeros(ep, dtype=float)
-    # np2 = np.zeros(ep, dtype=float)
-    # T2 = np.zeros(ep, dtype=float)
-    
     TotalT = np.zeros(ep, dtype=float)
     TotalA = np.zeros(ep, dtype=float)
     TotalP = np.zeros(ep, dtype=float)
@@ -802,114 +791,118 @@ if __name__ == "__main__":
         num_elevs = len(ElevList_mm)
         if num_elevs<=0:
             continue
-        #This was trying to set a max elevation difference between the ordinates
-        # AddList = []
-        # Add_Level = 250
-        # for e in range(1,num_elevs):
-        #     if (ElevList_mm[e]-ElevList_mm[e-1])>Add_Level:
-        #         AddList.append(ElevList_mm[e]+Add_Level)
-        # if len(AddList)>0:
-        #     ElevList_mm = np.append(ElevList_mm,AddList)
-        #     ElevList_mm = np.sort(ElevList_mm)
-        #     num_elevs = len(ElevList_mm)
         if num_elevs>=ep:
             print('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
-            
+            continue
         
-        #Find Elevation where Max Flow is hit
-        E_ordinate_for_Qmax = 0
-        for e in range(1,num_elevs):
-            wse = ElevList_mm[e] / 1000.0
-            (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
-            (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
-            Asum = A1 + A2
-            Psum = P1 + P2
-            Tsum = T1 + T2
-            Qsum = 0.0
-            if Asum>0.0 and Psum>0.0 and Tsum>0.0:
-                composite_n = math.pow(((np1+np2)/Psum),(2/3))
-                Qsum = (1/composite_n) * Asum * math.pow((Asum/Psum),(2/3)) * math.pow(slope_use,0.5)
-            if Qsum>Q_max:
-                E_ordinate_for_Qmax = e
-                break
-        #Now lets get a set number of increments betweent the low elevation and the elevation where Qmax hits
-        #print('Peak at ' + str(Qsum) + '  ' + str(ElevList_mm[E_ordinate_for_Qmax]/1000.0))
-        num_increments = 15
-        d_inc_y = ((ElevList_mm[E_ordinate_for_Qmax] - ElevList_mm[0])/1000.0) / num_increments
-        #print(str(ElevList_mm[E_ordinate_for_Qmax]) +  '  vs   ' + str(ElevList_mm[0]))
-        #print(num_increments)
-        num_elevs = num_increments+1
-        for e in range(num_increments+1):
-            wse = ElevList_mm[0]/1000 + d_inc_y * e
-            (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
-            (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
-            
-            TotalT[e] = T1 + T2
-            TotalA[e] = A1 + A2
-            TotalP[e] = P1 + P2
-            if TotalT[e]<=0.0 or TotalA[e]<=0.0 or TotalP[e]<=0.0:
-                TotalT[e] = 0.0
-                TotalA[e] = 0.0
-                TotalP[e] = 0.0
-                TotalQ[e] = 0.0
-                TotalV[e] = 0.0
-                TotalWSE[e] = 0.0
-            else:
-                composite_n = math.pow(((np1+np2)/TotalP[e]),(2/3))
-                if composite_n<0.0001:
-                    composite_n = 0.035
-                TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,0.5)
-                TotalV[e] = TotalQ[e] / TotalA[e]
-                TotalWSE[e] = wse
-            #print(str(TotalQ[e]) + '  ' + str(TotalWSE[e]))
         
-        '''
-        for e in range(1,num_elevs):
-            wse = ElevList_mm[e] / 1000.0
-            (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
-            #print(str(A1[e]) + '  ' +  str(P1[e]) + '  ' +  str(R1[e]) + '  ' +  str(n1[e]) + '  ' +  str(T1[e]))
-            (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
-            #print(str(A2[e]) + '  ' +  str(P2[e]) + '  ' +  str(R2[e]) + '  ' +  str(n2[e]) + '  ' +  str(T2[e]))
-            
-            TotalT[e] = T1 + T2
-            TotalA[e] = A1 + A2
-            TotalP[e] = P1 + P2
-            if TotalT[e]<=0.0 or TotalA[e]<=0.0 or TotalP[e]<=0.0:
-                TotalT[e] = 0.0
-                TotalA[e] = 0.0
-                TotalP[e] = 0.0
-                TotalQ[e] = 0.0
-                TotalV[e] = 0.0
-                TotalWSE[e] = 0.0
-            else:
-                composite_n = math.pow(((np1+np2)/TotalP[e]),(2/3))
-                if composite_n<0.0001:
-                    composite_n = 0.035
-                TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,0.5)
-                TotalV[e] = TotalQ[e] / TotalA[e]
-                TotalWSE[e] = wse
-            
-            if TotalQ[e]>Q_max:
-                num_elevs = e+1   #Do the +1 because of the printing below
-                break
-            
-            #print(str(i) + '  ' + str(e) + '  ' + str(TotalQ[e]))
-        '''
+        #VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  This is preferred for VDTDatabase method.
+        #VolumeFillApproach 2 just looks at the different elevation points wtihin ElevList_mm.  It also adds some in if the gaps between depths is too large.
         
-        for e in range(num_elevs-1,0,-1):
-            if e==num_elevs-1:
-                #if TotalQ[e]<Q_max or TotalQ[e]>Q_max*3:
-                #    break
-                if sum(TotalQ[0:int(num_elevs/2.0)])<=1e-16 or r<0 or c<0 or E[r,c]<=1e-16:  #Need at least half the increments filled in order to report results.
+        TotalT = TotalT * 0
+        TotalA = TotalA * 0
+        TotalP = TotalP * 0
+        TotalV = TotalV * 0
+        TotalQ = TotalQ * 0
+        TotalWSE = TotalWSE * 0
+        
+        VolumeFillApproach = 2
+        if VolumeFillApproach==1:
+            #Find Elevation where Max Flow is hit
+            E_ordinate_for_Qmax = 0
+            for e in range(1,num_elevs):
+                wse = ElevList_mm[e] / 1000.0
+                (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
+                (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
+                Asum = A1 + A2
+                Psum = P1 + P2
+                Tsum = T1 + T2
+                Qsum = 0.0
+                if Asum>0.0 and Psum>0.0 and Tsum>0.0:
+                    composite_n = math.pow(((np1+np2)/Psum),(2/3))
+                    Qsum = (1/composite_n) * Asum * math.pow((Asum/Psum),(2/3)) * math.pow(slope_use,0.5)
+                if Qsum>Q_max:
+                    E_ordinate_for_Qmax = e
                     break
+            #Now lets get a set number of increments betweent the low elevation and the elevation where Qmax hits
+            num_increments = 15
+            d_inc_y = ((ElevList_mm[E_ordinate_for_Qmax] - ElevList_mm[0])/1000.0) / num_increments
+            num_elevs = num_increments+1
+            for e in range(num_increments+1):
+                wse = ElevList_mm[0]/1000 + d_inc_y * e
+                (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
+                (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
+                
+                TotalT[e] = T1 + T2
+                TotalA[e] = A1 + A2
+                TotalP[e] = P1 + P2
+                if TotalT[e]<=0.0 or TotalA[e]<=0.0 or TotalP[e]<=0.0:
+                    TotalT[e] = 0.0
+                    TotalA[e] = 0.0
+                    TotalP[e] = 0.0
                 else:
-                    #outfile.write('\n' + str(COMID_Cell) + ',' + str(int(r-boundary_num)) + ',' + str(int(c-boundary_num)) + ',' + str(E[r,c]) + ',' + str(Q_bf))
-                    outfile.write('\n' + str(COMID_Cell) + ',' + str(int(r-boundary_num)) + ',' + str(int(c-boundary_num)) + ",{:.3f}".format(E[r,c]) + ",{:.3f}".format(Q_bf) )
-
-            #outfile.write(',' + str(TotalQ[e]) + ',' + str(TotalV[e]) + ',' + str(TotalT[e]) + ',' + str(TotalWSE[e]))
-            outfile.write(",{:.3f}".format(TotalQ[e]) + ",{:.3f}".format(TotalV[e]) + ",{:.3f}".format(TotalT[e]) + ",{:.3f}".format(TotalWSE[e]) )
+                    composite_n = math.pow(((np1+np2)/TotalP[e]),(2/3))
+                    if composite_n<0.0001:
+                        composite_n = 0.035
+                    TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,0.5)
+                    TotalV[e] = TotalQ[e] / TotalA[e]
+                    TotalWSE[e] = wse
+            for e in range(num_elevs-1,0,-1):
+                if e==num_elevs-1:
+                    if sum(TotalQ[0:int(num_elevs/2.0)])<=1e-16 or r<0 or c<0 or E[r,c]<=1e-16:  #Need at least half the increments filled in order to report results.
+                        break
+                    else:
+                        outfile.write('\n' + str(COMID_Cell) + ',' + str(int(r-boundary_num)) + ',' + str(int(c-boundary_num)) + ",{:.3f}".format(E[r,c]) + ",{:.3f}".format(Q_bf) )
+                outfile.write(",{:.3f}".format(TotalQ[e]) + ",{:.3f}".format(TotalV[e]) + ",{:.3f}".format(TotalT[e]) + ",{:.3f}".format(TotalWSE[e]) )
+        
+        elif VolumeFillApproach==2:
+            #This was trying to set a max elevation difference between the ordinates
+            AddList = []
+            Add_Level = 250
+            for e in range(1,num_elevs):
+                if (ElevList_mm[e]-ElevList_mm[e-1])>Add_Level:
+                    AddList.append(ElevList_mm[e]+Add_Level)
+            if len(AddList)>0:
+                ElevList_mm = np.append(ElevList_mm,AddList)
+                ElevList_mm = np.sort(ElevList_mm)
+                num_elevs = len(ElevList_mm)
+            if num_elevs>=ep:
+                print('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+            for e in range(1,num_elevs):
+                wse = ElevList_mm[e] / 1000.0
+                (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
+                (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
+                
+                TotalT[e] = T1 + T2
+                TotalA[e] = A1 + A2
+                TotalP[e] = P1 + P2
+                if TotalT[e]<=0.0 or TotalA[e]<=0.0 or TotalP[e]<=0.0:
+                    TotalT[e] = 0.0
+                    TotalA[e] = 0.0
+                    TotalP[e] = 0.0
+                else:
+                    composite_n = math.pow(((np1+np2)/TotalP[e]),(2/3))
+                    if composite_n<0.0001:
+                        composite_n = 0.035
+                    TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,0.5)
+                    TotalV[e] = TotalQ[e] / TotalA[e]
+                    TotalWSE[e] = wse
+                
+                if TotalQ[e]>Q_max:
+                    num_elevs = e+1   #Do the +1 because of the printing below
+                    break
+            
+            for e in range(num_elevs-1,0,-1):
+                if e==num_elevs-1:
+                    if TotalQ[e]<Q_max or TotalQ[e]>Q_max*3:
+                        break
+                    else:
+                        outfile.write('\n' + str(COMID_Cell) + ',' + str(int(r-boundary_num)) + ',' + str(int(c-boundary_num)) + ",{:.3f}".format(E[r,c]) + ",{:.3f}".format(Q_bf) )
+                outfile.write(",{:.3f}".format(TotalQ[e]) + ",{:.3f}".format(TotalV[e]) + ",{:.3f}".format(TotalT[e]) + ",{:.3f}".format(TotalWSE[e]) )
+    
     outfile.close()
     print('Finished writing ' + str(Print_VDT_Database))
+    
     #Write the Output Rasters
     if len(AROutBATHY)>1:
         Write_Output_Raster(AROutBATHY, OutBathy[boundary_num:nrows+boundary_num,boundary_num:ncols+boundary_num], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
