@@ -297,32 +297,29 @@ def ReadFlowFile(Flow_File_Name, Flow_File_ID, Flow_File_BF, Flow_File_QMax):
         QMax[i-1]=float(ls[qm])
     return COMID,QBaseFlow,QMax
 
-def Get_Stream_Slope_Information(RR,CC,E,S,num_strm_cells,dx,dy):
+def Get_Stream_Slope_Information(r, c ,E,S,dx,dy):
     '''
         1.) Find all stream cells within the Gen_Slope_Dist that have the same stream id value
         2.) Look at the slope of each of the stream cells.
         3.) Average the slopes to get the overall slope we use in the model.
     '''
-    strm_slope = np.zeros(num_strm_cells)
-    for i in range(num_strm_cells):
-        r = RR[i]
-        c = CC[i]
-        e_cell_of_interest = E[r,c]
-        cellvalue = S[r,c]
-        S_Box = S[r-Gen_Slope_Dist:r+Gen_Slope_Dist,c-Gen_Slope_Dist:c+Gen_Slope_Dist]
-        E_Box = E[r-Gen_Slope_Dist:r+Gen_Slope_Dist,c-Gen_Slope_Dist:c+Gen_Slope_Dist]
-        (r_list,c_list) = np.where(S_Box==cellvalue)
-        if len(r_list)>0:
-            e_list = E_Box[r_list,c_list]
-            #The Gen_Slope_Dist is the row/col for the cell of interest within the subsample box
-            dz_list = np.sqrt(np.square((r_list - Gen_Slope_Dist)*dy) + np.square((c_list - Gen_Slope_Dist)*dx))  #Distance between the cell of interest and every cell with a similar stream id
-            for x in range(len(r_list)):
-                if dz_list[x]>0.0:
-                    strm_slope[i] = strm_slope[i] + abs(e_cell_of_interest-e_list[x]) / dz_list[x]
-            strm_slope[i] = strm_slope[i] / (len(r_list)-1)  #Add the minus one because the cell of interest was in the list
+    strm_slope = 0.0
+    e_cell_of_interest = E[r,c]
+    cellvalue = S[r,c]
+    S_Box = S[r-Gen_Slope_Dist:r+Gen_Slope_Dist,c-Gen_Slope_Dist:c+Gen_Slope_Dist]
+    E_Box = E[r-Gen_Slope_Dist:r+Gen_Slope_Dist,c-Gen_Slope_Dist:c+Gen_Slope_Dist]
+    (r_list,c_list) = np.where(S_Box==cellvalue)
+    if len(r_list)>0:
+        e_list = E_Box[r_list,c_list]
+        #The Gen_Slope_Dist is the row/col for the cell of interest within the subsample box
+        dz_list = np.sqrt(np.square((r_list - Gen_Slope_Dist)*dy) + np.square((c_list - Gen_Slope_Dist)*dx))  #Distance between the cell of interest and every cell with a similar stream id
+        for x in range(len(r_list)):
+            if dz_list[x]>0.0:
+                strm_slope = strm_slope + abs(e_cell_of_interest-e_list[x]) / dz_list[x]
+        strm_slope = strm_slope / (len(r_list)-1)  #Add the minus one because the cell of interest was in the list
     return strm_slope
 
-def Get_Stream_Direction_Information(RR,CC,S,num_strm_cells,dx,dy):
+def Get_Stream_Direction_Information(r,c,S,dx,dy):
     '''
         1.) Find all stream cells within the Gen_Dir_Dist that have the same stream id value
         2.) Assume there are 4 quadrants:
@@ -333,37 +330,34 @@ def Get_Stream_Direction_Information(RR,CC,S,num_strm_cells,dx,dy):
         5.) Calculate the Stream Direction based on the Unit Circle inverted around the x axis (this is done because rows increase downward)
         6.) The stream direction needs to be betweeen 0 and pi, so adjust directions between pi and 2pi to be between 0 and pi
     '''
-    strm_direction = np.zeros(num_strm_cells)
-    xs_direction = np.zeros(num_strm_cells)
-    for i in range(num_strm_cells):
-        r = RR[i]
-        c = CC[i]
-        cellvalue = S[r,c]
-        S_Box = S[r-Gen_Dir_Dist:r+Gen_Dir_Dist,c-Gen_Dir_Dist:c+Gen_Dir_Dist]
+    strm_direction = 0.0
+    xs_direction = 0.0
+    cellvalue = S[r,c]
+    S_Box = S[r-Gen_Dir_Dist:r+Gen_Dir_Dist,c-Gen_Dir_Dist:c+Gen_Dir_Dist]
+    
+    #The Gen_Dir_Dist is the row/col for the cell of interest within the subsample box
+    (r_list,c_list) = np.where(S_Box==cellvalue)
+    if len(r_list)>0:
+        r_list = r_list - Gen_Dir_Dist
+        c_list = c_list - Gen_Dir_Dist
+        dz_list = np.sqrt(np.square((r_list)*dy) + np.square((c_list)*dx))  #Distance between the cell of interest and every cell with a similar stream id
+        dz_list = dz_list / max(dz_list)
+        atanvals = np.arctan2(r_list,c_list)
+        for x in range(len(r_list)):
+            if dz_list[x]>0.0:
+                if atanvals[x]>math.pi:
+                    strm_direction = strm_direction + (atanvals[x]-math.pi)*dz_list[x]
+                elif atanvals[x]<0.0:
+                    strm_direction = strm_direction + (atanvals[x]+math.pi)*dz_list[x]
+                else:
+                    strm_direction = strm_direction + atanvals[x]*dz_list[x]
+        strm_direction = strm_direction / sum(dz_list)
         
-        #The Gen_Dir_Dist is the row/col for the cell of interest within the subsample box
-        (r_list,c_list) = np.where(S_Box==cellvalue)
-        if len(r_list)>0:
-            r_list = r_list - Gen_Dir_Dist
-            c_list = c_list - Gen_Dir_Dist
-            dz_list = np.sqrt(np.square((r_list)*dy) + np.square((c_list)*dx))  #Distance between the cell of interest and every cell with a similar stream id
-            dz_list = dz_list / max(dz_list)
-            atanvals = np.arctan2(r_list,c_list)
-            for x in range(len(r_list)):
-                if dz_list[x]>0.0:
-                    if atanvals[x]>math.pi:
-                        strm_direction[i] = strm_direction[i] + (atanvals[x]-math.pi)*dz_list[x]
-                    elif atanvals[x]<0.0:
-                        strm_direction[i] = strm_direction[i] + (atanvals[x]+math.pi)*dz_list[x]
-                    else:
-                        strm_direction[i] = strm_direction[i] + atanvals[x]*dz_list[x]
-            strm_direction[i] = strm_direction[i] / sum(dz_list)
-            
-            #Cross-Section Direction is just perpendicular to the Stream Direction
-            xs_direction[i] = strm_direction[i] - math.pi / 2.0
-            if xs_direction[i]<0.0:
-                xs_direction[i] = xs_direction[i] + math.pi
-        #print(str(strm_direction[i]*180/math.pi) + '  ' + str(xs_direction[i]*180/math.pi))
+        #Cross-Section Direction is just perpendicular to the Stream Direction
+        xs_direction = strm_direction - math.pi / 2.0
+        if xs_direction<0.0:
+            xs_direction = xs_direction + math.pi
+    #print(str(strm_direction*180/math.pi) + '  ' + str(xs_direction*180/math.pi))
     return strm_direction, xs_direction
 
 def Get_XS_Index_Values(xc_dr_index_main, xc_dc_index_main, xc_dr_index_second, xc_dc_index_second, xc_main_fract, xc_second_fract, xs_direction, r_start, c_start, centerpoint, dx, dy):
@@ -413,28 +407,28 @@ def Sample_Cross_Section_From_DEM(XS_Profile, r,c,E,centerpoint, xc_r_index_main
     xs_n = centerpoint
     
     #Get the limits of the Cross-section Index
-    a = np.where(xc_r_index_main<=r_bot)
+    a = np.where(xc_r_index_main==r_bot)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_r_index_second<=r_bot)
+    a = np.where(xc_r_index_second==r_bot)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_r_index_main>=r_top)
+    a = np.where(xc_r_index_main==r_top)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_r_index_second>=r_top)
+    a = np.where(xc_r_index_second==r_top)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_c_index_main<=c_bot)
+    a = np.where(xc_c_index_main==c_bot)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_c_index_second>=c_bot)
+    a = np.where(xc_c_index_second==c_bot)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_c_index_main<=c_top)
+    a = np.where(xc_c_index_main==c_top)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
-    a = np.where(xc_c_index_second>=c_top)
+    a = np.where(xc_c_index_second==c_top)
     if len(a[0])>0 and int(a[0][0])<xs_n:
         xs_n = int(a[0][0])
     
@@ -450,8 +444,6 @@ def FindBank(XS_Profile, xs_n, y_target):
 
 def FindDepthOfBathymetry(Q_bf, B, TW, slope, n):
     H = (TW - B) * 0.5
-    if slope<0.0002:
-        slope = 0.0002
     y_start = 0.0
     dy_list = [1.0,0.5,0.1,0.01]
     
@@ -463,17 +455,17 @@ def FindDepthOfBathymetry(Q_bf, B, TW, slope, n):
             A = y * (B + TW) / 2.0
             P = B + 2.0*math.sqrt(H*H + y*y)
             R = A / P
-            Qcalc = (1.0/n)*A*math.pow(R,(2/3)) * pow(slope,-0.5)
+            Qcalc = (1.0/n)*A*math.pow(R,(2/3)) * pow(slope,0.5)
         y_start = y - dy
     y = y - dy
     A = y * (B + TW) / 2.0
     P = B + 2.0*math.sqrt(H*H + y*y)
     R = A / P
-    Qcalc = (1.0/n)*A*math.pow(R,(2/3)) * pow(slope,-0.5)
+    Qcalc = (1.0/n)*A*math.pow(R,(2/3)) * pow(slope,0.5)
     #print(str(y) + '  ' + str(Qcalc) + '  ' + str(Q_bf))
     return y
 
-def Adjust_Profile_for_Bathymetry(XS_Profile, bank_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth):
+def Adjust_Profile_for_Bathymetry(XS_Profile, bank_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main):
     if bank_index>0:
         for x in range(bank_index+1):
             dist_cell_to_bank = (bank_index-x)*dist_Z
@@ -481,10 +473,13 @@ def Adjust_Profile_for_Bathymetry(XS_Profile, bank_index, total_bank_dist, trap_
                 XS_Profile[x] = XS_Profile[x]
             elif dist_cell_to_bank>=H_Dist and dist_cell_to_bank<=(trap_base + H_Dist):
                 XS_Profile[x] = y_bathy
+                OutBathy[xc_r1_index_main[x], xc_c1_index_main[x]] = XS_Profile[x]
             elif dist_cell_to_bank<=H_Dist:
                 XS_Profile[x] = y_bathy + y_depth*(1.0-(dist_cell_to_bank / H_Dist))
+                OutBathy[xc_r1_index_main[x], xc_c1_index_main[x]] = XS_Profile[x]
             elif dist_cell_to_bank>=(trap_base + H_Dist):
                 XS_Profile[x] = y_bathy + y_depth * (dist_cell_to_bank-(trap_base + H_Dist)) / H_Dist
+                OutBathy[xc_r1_index_main[x], xc_c1_index_main[x]] = XS_Profile[x]
     return
 
 def Hypotnuse(x,y):
@@ -505,6 +500,8 @@ def Calculate_A_P_R_n_T(XS_Profile, wse, dist_Z, N_Profile):
                 A = A + 0.5*dist_use * y_dep[x-1]
                 P = P + Hypotnuse(dist_use,y_dep[x-1])
                 R = A / P
+                if N_Profile[x-1]>0.3 or N_Profile[x-1]<0.005:
+                    N_Profile[x-1] = 0.035
                 np = np + P * math.pow(N_Profile[x-1],1.5)
                 T = T + dist_use
                 return A, P, R, np, T
@@ -512,6 +509,8 @@ def Calculate_A_P_R_n_T(XS_Profile, wse, dist_Z, N_Profile):
                 A = A + dist_Z * 0.5*( y_dep[x] + y_dep[x-1] )
                 P = P + Hypotnuse(dist_Z,(y_dep[x] - y_dep[x-1]))
                 R = A / P
+                if N_Profile[x]>0.3 or N_Profile[x]<0.005:
+                    N_Profile[x] = 0.035
                 np = np + P * math.pow(N_Profile[x],1.5)
                 T = T + dist_Z
     return A, P, R, np, T
@@ -525,6 +524,56 @@ def ReadManningTable(Manning_Name, LC):
         ls = lines[n].strip().split('\t')
         LC[LC==int(ls[0])] = float(ls[2])
     return LC
+
+
+def Adjust_Cross_Section_To_Lowest_Point(lpi, low_point_elev, XS_Profile1, XS_Profile2, xc_r1_index_main, xc_r2_index_main, xc_c1_index_main, xc_c2_index_main, xs1_n, xs2_n, centerpoint):
+    for x in range(Low_Spot_Range):
+        if XS_Profile1[x]<low_point_elev:
+            low_point_elev = XS_Profile1[x]
+            lpi = x
+        if XS_Profile2[x]<low_point_elev:
+            low_point_elev = XS_Profile2[x]
+            lpi = -1*x
+    #print('LowPoint= ' + str(lpi) + '  ' + str(low_point_elev))
+    if lpi>0:
+        XS_Profile2[lpi:centerpoint] = XS_Profile2[0:centerpoint-lpi]
+        XS_Profile2[0:lpi+1] = np.flip(XS_Profile1[0:lpi+1])
+        XS_Profile1[0:centerpoint-lpi] = XS_Profile1[lpi:centerpoint]
+        xs1_n = xs1_n - lpi
+        xs2_n = xs2_n + lpi
+        XS_Profile1[xs1_n]=99999.9
+        
+        xc_r2_index_main[lpi:centerpoint] = xc_r2_index_main[0:centerpoint-lpi]
+        xc_r2_index_main[0:lpi+1] = np.flip(xc_r1_index_main[0:lpi+1])
+        xc_r1_index_main[0:centerpoint-lpi] = xc_r1_index_main[lpi:centerpoint]
+        
+        xc_c2_index_main[lpi:centerpoint] = xc_c2_index_main[0:centerpoint-lpi]
+        xc_c2_index_main[0:lpi+1] = np.flip(xc_c1_index_main[0:lpi+1])
+        xc_c1_index_main[0:centerpoint-lpi] = xc_c1_index_main[lpi:centerpoint]
+        
+    elif lpi<0:
+        lpi = lpi *-1
+        XS_Profile1[lpi:centerpoint] = XS_Profile1[0:centerpoint-lpi]
+        XS_Profile1[0:lpi+1] = np.flip(XS_Profile2[0:lpi+1])
+        XS_Profile2[0:centerpoint-lpi] = XS_Profile2[lpi:centerpoint]
+        xs2_n = xs2_n - lpi
+        xs1_n = xs1_n + lpi
+        XS_Profile2[xs2_n]=99999.9
+        
+        xc_r1_index_main[lpi:centerpoint] = xc_r1_index_main[0:centerpoint-lpi]
+        xc_r1_index_main[0:lpi+1] = np.flip(xc_r2_index_main[0:lpi+1])
+        xc_r2_index_main[0:centerpoint-lpi] = xc_r2_index_main[lpi:centerpoint]
+        
+        xc_c1_index_main[lpi:centerpoint] = xc_c1_index_main[0:centerpoint-lpi]
+        xc_c1_index_main[0:lpi+1] = np.flip(xc_c2_index_main[0:lpi+1])
+        xc_c2_index_main[0:centerpoint-lpi] = xc_c2_index_main[lpi:centerpoint]
+    #print(XS_Profile1)
+    #print(XS_Profile2)
+    #print(XS_Profile1[xs1_n])
+    #print(XS_Profile2[xs2_n])
+    return lpi, low_point_elev
+
+
 
 if __name__ == "__main__":
     
@@ -559,6 +608,10 @@ if __name__ == "__main__":
     L = np.zeros((nrows+boundary_num*2,ncols+boundary_num*2))
     L[boundary_num:(nrows+boundary_num), boundary_num:(ncols+boundary_num)] = LC
     
+    #OutputRasters
+    OutBathy = np.zeros((nrows+boundary_num*2,ncols+boundary_num*2))
+    OutFlood = np.zeros((nrows+boundary_num*2,ncols+boundary_num*2))
+    
     #Read in the Manning Table
     ManningNRaster = ReadManningTable(Manning_Name, L)
     #print(np.unique(ManningNRaster))
@@ -580,6 +633,7 @@ if __name__ == "__main__":
     TotalP = np.zeros(ep, dtype=float)
     TotalV = np.zeros(ep, dtype=float)
     TotalQ = np.zeros(ep, dtype=float)
+    TotalWSE = np.zeros(ep, dtype=float)
     
     
     
@@ -594,12 +648,6 @@ if __name__ == "__main__":
     print('Cellsize X = ' + str(dx))
     print('Cellsize Y = ' + str(dy))
     
-    #Get the Slope of each Stream Cell.  Slope should be in m/m
-    strm_slope = Get_Stream_Slope_Information(RR,CC,E,S,num_strm_cells,dx,dy)
-    
-    #Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
-    (strm_direction, xs_direction) = Get_Stream_Direction_Information(RR,CC,S,num_strm_cells,dx,dy)
-    
     #Pull Cross-Sections
     centerpoint = int((X_Section_Dist/(sum([dx,dy])*0.5))/2.0)+1
     XS_Profile1 = np.zeros(centerpoint+1)
@@ -611,16 +659,46 @@ if __name__ == "__main__":
     xc_main_fract = np.zeros(centerpoint+1)
     xc_second_fract = np.zeros(centerpoint+1)
     
-    r_bot = centerpoint
-    r_top = nrows + centerpoint
-    c_bot = centerpoint
-    c_top = ncols + centerpoint
     
+    #Find all the Different Angle Increments to Test
+    Angles_To_Test = [0.0]
+    d_increments = 0
+    if Degree_Manip>0.0 and Degree_Interval>0.0:
+        d_increments = int(Degree_Manip / (2.0*Degree_Interval))
+        if d_increments>0:
+            for d in range(1,d_increments+1):
+                for s in range(-1,2,2):
+                    Angles_To_Test.append(s*d*Degree_Interval)
+    print('With Degree_Manip=' + str(Degree_Manip) + '  and  Degree_Interval=' + str(Degree_Interval) + '\n  Angles to evaluate= ' + str(Angles_To_Test))
+    
+    #r_bot = centerpoint
+    #r_top = nrows + centerpoint
+    #c_bot = centerpoint
+    #c_top = ncols + centerpoint
+    
+    r_bot = boundary_num
+    r_top = nrows + boundary_num
+    c_bot = boundary_num
+    c_top = ncols + boundary_num
+    
+    
+    outfile = open(Print_VDT_Database, 'w')
+    outfile.write('COMID,Row,Col,Elev,QBaseflow,Q,V,T,WSE')
+    
+    print('Looking at ' + str(num_strm_cells) + ' stream cells')
     for i in range(num_strm_cells):
+        #print(str(i) + ' of ' + str(num_strm_cells))
         r=RR[i]
         c=CC[i]
+        COMID_Cell = int(S[r,c])
         
-        slope_use = strm_slope[i]
+        #Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
+        (strm_direction, xs_direction) = Get_Stream_Direction_Information(r,c,S,dx,dy)
+        
+        #Get the Slope of each Stream Cell.  Slope should be in m/m
+        strm_slope = Get_Stream_Slope_Information(r,c,E,S,dx,dy)
+        
+        slope_use = strm_slope
         if slope_use<0.0002:
             slope_use = 0.0002
         
@@ -630,9 +708,10 @@ if __name__ == "__main__":
         Q_bf = QBaseFlow[flow_index] 
         Q_max = QMax[flow_index] 
     
+        #Get the Cross-Section Ordinates
+        dist_Z = Get_XS_Index_Values(xc_dr_index_main, xc_dc_index_main, xc_dr_index_second, xc_dc_index_second, xc_main_fract, xc_second_fract, xs_direction, r, c, centerpoint, dx, dy)
         
-        dist_Z = Get_XS_Index_Values(xc_dr_index_main, xc_dc_index_main, xc_dr_index_second, xc_dc_index_second, xc_main_fract, xc_second_fract, xs_direction[i], r, c, centerpoint, dx, dy)
-        
+        #Now Pull a Cross-Section
         xc_r1_index_main = r+xc_dr_index_main
         xc_r2_index_main = r+xc_dr_index_main*-1
         xc_c1_index_main = c+xc_dc_index_main
@@ -645,51 +724,60 @@ if __name__ == "__main__":
         lpi=0
         low_point_elev = XS_Profile1[0]
         if Low_Spot_Range>0:
-            for x in range(Low_Spot_Range):
-                if XS_Profile1[x]<low_point_elev:
-                    low_point_elev = XS_Profile1[x]
-                    lpi = x
-                if XS_Profile2[x]<low_point_elev:
-                    low_point_elev = XS_Profile2[x]
-                    lpi = -1*x
-            #print('LowPoint= ' + str(lpi) + '  ' + str(low_point_elev))
-            if lpi>0:
-                XS_Profile2[lpi:centerpoint] = XS_Profile2[0:centerpoint-lpi]
-                XS_Profile2[0:lpi+1] = np.flip(XS_Profile1[0:lpi+1])
-                XS_Profile1[0:centerpoint-lpi] = XS_Profile1[lpi:centerpoint]
-                xs1_n = xs1_n - lpi
-                xs2_n = xs2_n + lpi
-                XS_Profile1[xs1_n]=99999.9
-                
-                xc_r2_index_main[lpi:centerpoint] = xc_r2_index_main[0:centerpoint-lpi]
-                xc_r2_index_main[0:lpi+1] = np.flip(xc_r1_index_main[0:lpi+1])
-                xc_r1_index_main[0:centerpoint-lpi] = xc_r1_index_main[lpi:centerpoint]
-                
-                xc_c2_index_main[lpi:centerpoint] = xc_c2_index_main[0:centerpoint-lpi]
-                xc_c2_index_main[0:lpi+1] = np.flip(xc_c1_index_main[0:lpi+1])
-                xc_c1_index_main[0:centerpoint-lpi] = xc_c1_index_main[lpi:centerpoint]
-                
-            elif lpi<0:
-                lpi = lpi *-1
-                XS_Profile1[lpi:centerpoint] = XS_Profile1[0:centerpoint-lpi]
-                XS_Profile1[0:lpi+1] = np.flip(XS_Profile2[0:lpi+1])
-                XS_Profile2[0:centerpoint-lpi] = XS_Profile2[lpi:centerpoint]
-                xs2_n = xs2_n - lpi
-                xs1_n = xs1_n + lpi
-                XS_Profile2[xs2_n]=99999.9
-                
-                xc_r1_index_main[lpi:centerpoint] = xc_r1_index_main[0:centerpoint-lpi]
-                xc_r1_index_main[0:lpi+1] = np.flip(xc_r2_index_main[0:lpi+1])
-                xc_r2_index_main[0:centerpoint-lpi] = xc_r2_index_main[lpi:centerpoint]
-                
-                xc_c1_index_main[lpi:centerpoint] = xc_c1_index_main[0:centerpoint-lpi]
-                xc_c1_index_main[0:lpi+1] = np.flip(xc_c2_index_main[0:lpi+1])
-                xc_c2_index_main[0:centerpoint-lpi] = xc_c2_index_main[lpi:centerpoint]
-        #print(XS_Profile1)
-        #print(XS_Profile2)
-        #print(XS_Profile1[xs1_n])
-        #print(XS_Profile2[xs2_n])
+            (lpi, low_point_elev) = Adjust_Cross_Section_To_Lowest_Point(lpi, low_point_elev, XS_Profile1, XS_Profile2, xc_r1_index_main, xc_r2_index_main, xc_c1_index_main, xc_c2_index_main, xs1_n, xs2_n, centerpoint)
+        #The r and c for the stream cell is adjusted because it may have moved
+        r = xc_r1_index_main[0]
+        c = xc_c1_index_main[0]
         
+        
+        
+        #Adjust Cross-Section Angle to Ensure Shortest Top-Width at a Specified Depth
+        T_test = X_Section_Dist * 3.0
+        ShortestTW_Angle = xs_direction
+        Test_Depth = 0.5
+        if d_increments>0:
+            for angleadjustment in Angles_To_Test:
+                xs_angle_use = xs_direction + angleadjustment
+                if xs_angle_use>math.pi:
+                    xs_angle_use = xs_angle_use - math.pi
+                if xs_angle_use<0.0:
+                    xs_angle_use = xs_angle_use + math.pi
+                
+                #Get XS Ordinates... again
+                dist_Z = Get_XS_Index_Values(xc_dr_index_main, xc_dc_index_main, xc_dr_index_second, xc_dc_index_second, xc_main_fract, xc_second_fract, xs_angle_use, r, c, centerpoint, dx, dy)
+                
+                #Pull the Cross-SEction AGain
+                xc_r1_index_main = r+xc_dr_index_main
+                xc_r2_index_main = r+xc_dr_index_main*-1
+                xc_c1_index_main = c+xc_dc_index_main
+                xc_c2_index_main = c+xc_dc_index_main*-1
+                (xs1_n) = Sample_Cross_Section_From_DEM(XS_Profile1, r,c,E,centerpoint, xc_r1_index_main, xc_c1_index_main, r+xc_dr_index_second, c+xc_dc_index_second, xc_main_fract, xc_second_fract, r_bot, r_top, c_bot, c_top)
+                (xs2_n) = Sample_Cross_Section_From_DEM(XS_Profile2, r,c,E,centerpoint, xc_r2_index_main, xc_c2_index_main, r+xc_dr_index_second*-1, c+xc_dc_index_second*-1, xc_main_fract, xc_second_fract, r_bot, r_top, c_bot, c_top)
+                
+                wse = XS_Profile1[0] + Test_Depth
+                (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
+                (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
+                if (T1+T2) < T_test:
+                    T_test = T1+T2
+                    ShortestTW_Angle = xs_angle_use
+            #Now rerun everything with the shortest top-width angle
+            #print('Angle Adjustment=> ' + str(ShortestTW_Angle) + '  vs   ' + str(xs_direction))
+            xs_direction = ShortestTW_Angle
+            dist_Z = Get_XS_Index_Values(xc_dr_index_main, xc_dc_index_main, xc_dr_index_second, xc_dc_index_second, xc_main_fract, xc_second_fract, xs_direction, r, c, centerpoint, dx, dy)
+            xc_r1_index_main = r+xc_dr_index_main
+            xc_r2_index_main = r+xc_dr_index_main*-1
+            xc_c1_index_main = c+xc_dc_index_main
+            xc_c2_index_main = c+xc_dc_index_main*-1
+            (xs1_n) = Sample_Cross_Section_From_DEM(XS_Profile1, r,c,E,centerpoint, xc_r1_index_main, xc_c1_index_main, r+xc_dr_index_second, c+xc_dc_index_second, xc_main_fract, xc_second_fract, r_bot, r_top, c_bot, c_top)
+            (xs2_n) = Sample_Cross_Section_From_DEM(XS_Profile2, r,c,E,centerpoint, xc_r2_index_main, xc_c2_index_main, r+xc_dr_index_second*-1, c+xc_dc_index_second*-1, xc_main_fract, xc_second_fract, r_bot, r_top, c_bot, c_top)
+        
+        #This is just for testing purposes.
+        OutFlood[xc_r1_index_main[0], xc_c1_index_main[0]] = 3
+        OutFlood[xc_r1_index_main[xs1_n-1], xc_c1_index_main[xs1_n-1]] = 1
+        OutFlood[xc_r2_index_main[xs2_n-1], xc_c2_index_main[xs2_n-1]] = 2
+        
+        
+        #Burn Bathymetry Profile into Cross-SEction Profile
         bank_1_index = FindBank(XS_Profile1, xs1_n, low_point_elev+0.1)
         bank_2_index = FindBank(XS_Profile2, xs2_n, low_point_elev+0.1)
         total_bank_cells = bank_1_index + bank_2_index - 1
@@ -698,23 +786,84 @@ if __name__ == "__main__":
         total_bank_dist = total_bank_cells * dist_Z
         H_Dist = Bathy_Trap_H * total_bank_dist
         trap_base = total_bank_dist - 2.0 * H_Dist
-        y_depth = FindDepthOfBathymetry(Q_bf, trap_base, total_bank_dist, strm_slope[i], 0.03)
+        y_depth = FindDepthOfBathymetry(Q_bf, trap_base, total_bank_dist, slope_use, 0.03)
         y_bathy = XS_Profile1[0] - y_depth
         XS_Profile1[0] = y_bathy
         XS_Profile2[0] = y_bathy
         if total_bank_cells>1:
-            Adjust_Profile_for_Bathymetry(XS_Profile1, bank_1_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth)
-            Adjust_Profile_for_Bathymetry(XS_Profile2, bank_2_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth)
+            Adjust_Profile_for_Bathymetry(XS_Profile1, bank_1_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main)
+            Adjust_Profile_for_Bathymetry(XS_Profile2, bank_2_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main)
         
         
-        #Get a list of Elevations that we need to evaluate
+        #Get a list of Elevations within the Cross-Section Profile that we need to evaluate
         ElevList_mm = np.unique(np.concatenate((XS_Profile1[0:xs1_n]*1000,XS_Profile1[0:xs2_n]*1000)).astype(int))
         ElevList_mm = ElevList_mm[np.logical_and(ElevList_mm[:]>0,ElevList_mm[:]<99999900)]
+        ElevList_mm = np.sort(ElevList_mm)
         num_elevs = len(ElevList_mm)
+        if num_elevs<=0:
+            continue
+        #This was trying to set a max elevation difference between the ordinates
+        # AddList = []
+        # Add_Level = 250
+        # for e in range(1,num_elevs):
+        #     if (ElevList_mm[e]-ElevList_mm[e-1])>Add_Level:
+        #         AddList.append(ElevList_mm[e]+Add_Level)
+        # if len(AddList)>0:
+        #     ElevList_mm = np.append(ElevList_mm,AddList)
+        #     ElevList_mm = np.sort(ElevList_mm)
+        #     num_elevs = len(ElevList_mm)
         if num_elevs>=ep:
             print('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+            
         
+        #Find Elevation where Max Flow is hit
+        E_ordinate_for_Qmax = 0
+        for e in range(1,num_elevs):
+            wse = ElevList_mm[e] / 1000.0
+            (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
+            (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
+            Asum = A1 + A2
+            Psum = P1 + P2
+            Tsum = T1 + T2
+            Qsum = 0.0
+            if Asum>0.0 and Psum>0.0 and Tsum>0.0:
+                composite_n = math.pow(((np1+np2)/Psum),(2/3))
+                Qsum = (1/composite_n) * Asum * math.pow((Asum/Psum),(2/3)) * math.pow(slope_use,0.5)
+            if Qsum>Q_max:
+                E_ordinate_for_Qmax = e
+                break
+        #Now lets get a set number of increments betweent the low elevation and the elevation where Qmax hits
+        #print('Peak at ' + str(Qsum) + '  ' + str(ElevList_mm[E_ordinate_for_Qmax]/1000.0))
+        num_increments = 15
+        d_inc_y = ((ElevList_mm[E_ordinate_for_Qmax] - ElevList_mm[0])/1000.0) / num_increments
+        #print(str(ElevList_mm[E_ordinate_for_Qmax]) +  '  vs   ' + str(ElevList_mm[0]))
+        #print(num_increments)
+        num_elevs = num_increments+1
+        for e in range(num_increments+1):
+            wse = ElevList_mm[0]/1000 + d_inc_y * e
+            (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
+            (A2, P2, R2, np2, T2) = Calculate_A_P_R_n_T(XS_Profile2[0:xs2_n], wse, dist_Z, ManningNRaster[xc_r2_index_main[0:xs2_n],xc_c2_index_main[0:xs2_n]])
+            
+            TotalT[e] = T1 + T2
+            TotalA[e] = A1 + A2
+            TotalP[e] = P1 + P2
+            if TotalT[e]<=0.0 or TotalA[e]<=0.0 or TotalP[e]<=0.0:
+                TotalT[e] = 0.0
+                TotalA[e] = 0.0
+                TotalP[e] = 0.0
+                TotalQ[e] = 0.0
+                TotalV[e] = 0.0
+                TotalWSE[e] = 0.0
+            else:
+                composite_n = math.pow(((np1+np2)/TotalP[e]),(2/3))
+                if composite_n<0.0001:
+                    composite_n = 0.035
+                TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,0.5)
+                TotalV[e] = TotalQ[e] / TotalA[e]
+                TotalWSE[e] = wse
+            #print(str(TotalQ[e]) + '  ' + str(TotalWSE[e]))
         
+        '''
         for e in range(1,num_elevs):
             wse = ElevList_mm[e] / 1000.0
             (A1, P1, R1, np1, T1) = Calculate_A_P_R_n_T(XS_Profile1[0:xs1_n], wse, dist_Z, ManningNRaster[xc_r1_index_main[0:xs1_n],xc_c1_index_main[0:xs1_n]])
@@ -731,14 +880,39 @@ if __name__ == "__main__":
                 TotalP[e] = 0.0
                 TotalQ[e] = 0.0
                 TotalV[e] = 0.0
+                TotalWSE[e] = 0.0
             else:
                 composite_n = math.pow(((np1+np2)/TotalP[e]),(2/3))
                 if composite_n<0.0001:
                     composite_n = 0.035
-                TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,-0.5)
+                TotalQ[e] = (1/composite_n) * TotalA[e] * math.pow((TotalA[e]/TotalP[e]),(2/3)) * math.pow(slope_use,0.5)
                 TotalV[e] = TotalQ[e] / TotalA[e]
+                TotalWSE[e] = wse
+            
+            if TotalQ[e]>Q_max:
+                num_elevs = e+1   #Do the +1 because of the printing below
+                break
+            
             #print(str(i) + '  ' + str(e) + '  ' + str(TotalQ[e]))
-    
-    #Write Output Data
-    #Write_Output_Raster(STRM_File_Clean, B[1:nrows+1,1:ncols+1], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
+        '''
+        
+        for e in range(num_elevs-1,0,-1):
+            if e==num_elevs-1:
+                #if TotalQ[e]<Q_max or TotalQ[e]>Q_max*3:
+                #    break
+                if sum(TotalQ[0:int(num_elevs/2.0)])<=1e-16 or r<0 or c<0 or E[r,c]<=1e-16:  #Need at least half the increments filled in order to report results.
+                    break
+                else:
+                    #outfile.write('\n' + str(COMID_Cell) + ',' + str(int(r-boundary_num)) + ',' + str(int(c-boundary_num)) + ',' + str(E[r,c]) + ',' + str(Q_bf))
+                    outfile.write('\n' + str(COMID_Cell) + ',' + str(int(r-boundary_num)) + ',' + str(int(c-boundary_num)) + ",{:.3f}".format(E[r,c]) + ",{:.3f}".format(Q_bf) )
+
+            #outfile.write(',' + str(TotalQ[e]) + ',' + str(TotalV[e]) + ',' + str(TotalT[e]) + ',' + str(TotalWSE[e]))
+            outfile.write(",{:.3f}".format(TotalQ[e]) + ",{:.3f}".format(TotalV[e]) + ",{:.3f}".format(TotalT[e]) + ",{:.3f}".format(TotalWSE[e]) )
+    outfile.close()
+    print('Finished writing ' + str(Print_VDT_Database))
+    #Write the Output Rasters
+    if len(AROutBATHY)>1:
+        Write_Output_Raster(AROutBATHY, OutBathy[boundary_num:nrows+boundary_num,boundary_num:ncols+boundary_num], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
+    if len(AROutFLOOD)>1:
+        Write_Output_Raster(AROutFLOOD, OutFlood[boundary_num:nrows+boundary_num,boundary_num:ncols+boundary_num], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
     
