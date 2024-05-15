@@ -1,15 +1,12 @@
 
-#Program simply cleans-up rasterized stream networks.
+#Program simply creates depth, velocity, and top-width information for each stream cell in a domain.
 
 import sys
 import os
-
 import gdal
-
 import numpy as np
-
 import math
-
+from datetime import datetime
 
 
 
@@ -148,6 +145,8 @@ def Read_MainInputFile(MIF_Name):
     Bathy_Trap_H = float(Bathy_Trap_H)
     global AROutBATHY
     AROutBATHY = GetParamName(lines, numlist, 'AROutBATHY')
+    if AROutBATHY=='':
+        AROutBATHY = GetParamName(lines, numlist, 'BATHY_Out_File')
     global AROutDEPTH
     AROutDEPTH = GetParamName(lines, numlist, 'AROutDEPTH')
     global AROutFLOOD
@@ -493,7 +492,7 @@ def Calculate_A_P_R_n_T(XS_Profile, wse, dist_Z, N_Profile):
     T = 0.0
     np = 0.0
     y_dep = wse - XS_Profile
-    if y_dep[0]>1e-16:
+    if len(y_dep)>0 and y_dep[0]>1e-16:
         for x in range(1,len(y_dep)):
             if y_dep[x]<=0.0:
                 dist_use = dist_Z * y_dep[x-1] / (abs(y_dep[x-1]) + abs(y_dep[x]))
@@ -567,19 +566,29 @@ def Adjust_Cross_Section_To_Lowest_Point(lpi, low_point_elev, XS_Profile1, XS_Pr
         xc_c1_index_main[lpi:centerpoint] = xc_c1_index_main[0:centerpoint-lpi]
         xc_c1_index_main[0:lpi+1] = np.flip(xc_c2_index_main[0:lpi+1])
         xc_c2_index_main[0:centerpoint-lpi] = xc_c2_index_main[lpi:centerpoint]
-    #print(XS_Profile1)
-    #print(XS_Profile2)
-    #print(XS_Profile1[xs1_n])
-    #print(XS_Profile2[xs2_n])
     return lpi, low_point_elev
 
 
 
 if __name__ == "__main__":
     
+    starttime = datetime.now()
+    
+    print('Inputs to the Program is a Main Input File')
+    print('\nFor Example:')
+    print('  python Automated_Rating_Curve_Generator.py TestModel/AutoRoute_InputFiles/AUTOROUTE_INPUT_CO_06759500_Bathymetry.txt')
+    
+    #User-Defined Main Input File
+    if(len(sys.argv))>1:
+        MIF_Name = sys.argv[1]
+        print('Main Input File Given: ' + MIF_Name)
+    else:
+        #Read Main Input File
+        #MIF_Name = 'C:/PROGRAMS_Git/automated_rating_curve_generator/TestModel/AutoRoute_InputFiles/AUTOROUTE_INPUT_CO_06759500_Bathymetry.txt'
+        MIF_Name = 'C:/Projects/2024_AutoRoute_Setup/ModelTestSite_Bathymetry_ARCG/AutoRoute_InputFiles/AR_Input_File_Bathy.txt'
+        print('Moving forward with Default MIF Name: ' + MIF_Name)
     
     #Read Main Input File
-    MIF_Name = 'C:/PROGRAMS_Git/automated_rating_curve_generator/TestModel/AutoRoute_InputFiles/AUTOROUTE_INPUT_CO_06759500_Bathymetry.txt'
     Read_MainInputFile(MIF_Name)
     
     #Read the Flow Information
@@ -675,11 +684,19 @@ if __name__ == "__main__":
     outfile.write('COMID,Row,Col,Elev,QBaseflow,Q,V,T,WSE')
     
     print('Looking at ' + str(num_strm_cells) + ' stream cells')
+    percent_cells = [1,10,20,30,40,50,60,70,80,90,99,100,110]
+    percent_cells = np.array(percent_cells)
+    percent_cells = (percent_cells * num_strm_cells / 100).astype(int)
+    counter_i=0
+    
     for i in range(num_strm_cells):
         #print(str(i) + ' of ' + str(num_strm_cells))
         r=RR[i]
         c=CC[i]
         COMID_Cell = int(S[r,c])
+        if i==percent_cells[counter_i]:
+            print('  ' + str(int((percent_cells[counter_i]+1)*100/num_strm_cells)) + ' percent of cells completed')
+            counter_i = counter_i + 1
         
         #Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
         (strm_direction, xs_direction) = Get_Stream_Direction_Information(r,c,S,dx,dy)
@@ -775,13 +792,17 @@ if __name__ == "__main__":
         total_bank_dist = total_bank_cells * dist_Z
         H_Dist = Bathy_Trap_H * total_bank_dist
         trap_base = total_bank_dist - 2.0 * H_Dist
-        y_depth = FindDepthOfBathymetry(Q_bf, trap_base, total_bank_dist, slope_use, 0.03)
-        y_bathy = XS_Profile1[0] - y_depth
-        XS_Profile1[0] = y_bathy
-        XS_Profile2[0] = y_bathy
-        if total_bank_cells>1:
-            Adjust_Profile_for_Bathymetry(XS_Profile1, bank_1_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main)
-            Adjust_Profile_for_Bathymetry(XS_Profile2, bank_2_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main)
+        if Q_bf>0.0:
+            y_depth = FindDepthOfBathymetry(Q_bf, trap_base, total_bank_dist, slope_use, 0.03)
+            y_bathy = XS_Profile1[0] - y_depth
+            XS_Profile1[0] = y_bathy
+            XS_Profile2[0] = y_bathy
+            if total_bank_cells>1:
+                Adjust_Profile_for_Bathymetry(XS_Profile1, bank_1_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main)
+                Adjust_Profile_for_Bathymetry(XS_Profile2, bank_2_index, total_bank_dist, trap_base, dist_Z, H_Dist, y_bathy, y_depth, OutBathy, xc_r1_index_main, xc_c1_index_main)
+        else:
+            y_depth = 0.0
+            y_bathy = XS_Profile1[0] - y_depth
         
         
         #Get a list of Elevations within the Cross-Section Profile that we need to evaluate
@@ -806,7 +827,7 @@ if __name__ == "__main__":
         TotalQ = TotalQ * 0
         TotalWSE = TotalWSE * 0
         
-        VolumeFillApproach = 2
+        VolumeFillApproach = 1
         if VolumeFillApproach==1:
             #Find Elevation where Max Flow is hit
             E_ordinate_for_Qmax = 0
@@ -909,3 +930,9 @@ if __name__ == "__main__":
     if len(AROutFLOOD)>1:
         Write_Output_Raster(AROutFLOOD, OutFlood[boundary_num:nrows+boundary_num,boundary_num:ncols+boundary_num], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
     
+    sim_time = datetime.now() - starttime
+    sim_time_s = int(sim_time.seconds)
+    if sim_time_s<60:
+        print('Simulation Took ' + str(sim_time_s) + ' seconds')
+    else:
+        print('Simulation Took ' + str(int(sim_time_s/60)) + ' minutes and ' + str(sim_time_s-(int(sim_time_s/60)*60)) + ' seconds')
