@@ -1,5 +1,5 @@
 # automated_rating_curve_generator
-
+To activate the "ARC" environment open an Anaconda Command Prompt and type "conda env create -f environment_ARC.yml"
 
 
 ## Getting started
@@ -22,7 +22,7 @@ git push -uf origin main
 
 ## Integrate with your tools
 
-- [ ] [Set up project integrations](http://100.8570.8/autoroute/automated_rating_curve_generator/-/settings/integrations)
+- [ ] [Set up project integrations](http://100.85.70.8/autoroute/automated_rating_curve_generator/-/settings/integrations)
 
 ## Collaborate with your team
 

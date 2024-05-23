@@ -918,7 +918,6 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
                                                    ia_xc_column_index_second[0:i_center_point]] * da_xc_second_fract[0:i_center_point]
     except:
         print('Error on Cell ' + str(i_entry_cell))
-        asdfasdfasdf
 
     # Return the center point to the calling function
     return i_center_point
@@ -1233,7 +1232,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     return da_input_mannings
 
 
-def adjust_cross_section_to_lowest_point(i_low_point_index, d_low_point_elev, da_xs_profile_one, da_xs_profile_two, ia_xc_r1_index_main, ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, da_xs1_mannings, da_xs2_mannings,
+def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev, da_xs_profile_one, da_xs_profile_two, ia_xc_r1_index_main, ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, da_xs1_mannings, da_xs2_mannings,
                                          i_center_point, nrows, ncols, i_boundary_number):
     """
     Reorients the cross section through the lowest point of the stream
@@ -1242,7 +1241,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_low_point_elev, da
     ----------
     i_low_point_index: int
         Offset index along the cross section of the lowest point
-    d_low_point_elev: float
+    d_dem_low_point_elev: float
         Elevation of the lowest point
     da_xs_profile_one: ndarray
         Cross section elevations of the first cross section
@@ -1267,7 +1266,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_low_point_elev, da
     -------
     i_low_point_index: int
         Index of the low point in the cross section array
-    d_low_point_elev: float
+    d_dem_low_point_elev: float
         Elevation of the low point in the point
 
     """
@@ -1275,15 +1274,15 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_low_point_elev, da
     # Loop on the search range for the low point
     for i_entry in range(i_low_spot_range):
         # Look in the first profile
-        if da_xs_profile_one[i_entry] < d_low_point_elev:
+        if da_xs_profile_one[i_entry] > 0.0 and da_xs_profile_one[i_entry] < d_dem_low_point_elev:
             # New low point was found. Update the index.
-            d_low_point_elev = da_xs_profile_one[i_entry]
+            d_dem_low_point_elev = da_xs_profile_one[i_entry]
             i_low_point_index = i_entry
 
         # Look in the second profile
-        if da_xs_profile_two[i_entry] < d_low_point_elev:
+        if da_xs_profile_two[i_entry] > 0.0 and da_xs_profile_two[i_entry] < d_dem_low_point_elev:
             # New low point was found. Update the index.
-            d_low_point_elev = da_xs_profile_two[i_entry]
+            d_dem_low_point_elev = da_xs_profile_two[i_entry]
             i_low_point_index = -1 * i_entry
 
     # Process based on if the low point is in the first or second profile
@@ -1333,7 +1332,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_low_point_elev, da
     # ia_xc_c2_index_main = np.clip(ia_xc_c2_index_main,0,ncols+2*i_boundary_number-2)
 
     # Return to the calling function
-    return i_low_point_index, d_low_point_elev
+    return i_low_point_index, d_dem_low_point_elev
 
 
 if __name__ == "__main__":
@@ -1453,7 +1452,7 @@ if __name__ == "__main__":
     #Open the output Curve file and write the initial metadata
     if len(s_output_curve_file)>0:
         o_curve_file = open(s_output_curve_file, 'w')
-        o_curve_file.write('COMID,Row,Col,BaseElev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b')
+        o_curve_file.write('COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b')
 
     # Write the percentiles into the files
     print('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
@@ -1508,10 +1507,10 @@ if __name__ == "__main__":
 
         # Adjust to the lowest-point in the Cross-Section
         i_lowest_point_index_offset=0
-        d_low_point_elev = da_xs_profile1[0]
+        d_dem_low_point_elev = da_xs_profile1[0]
 
         if i_low_spot_range > 0:
-            i_lowest_point_index_offset, d_low_point_elev = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
+            i_lowest_point_index_offset, d_dem_low_point_elev = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
                                                                                                  ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, nrows, ncols,
                                                                                                  i_boundary_number)
 
@@ -1582,8 +1581,8 @@ if __name__ == "__main__":
         # OutFlood[xc_r2_index_main[xs2_n-1], xc_c2_index_main[xs2_n-1]] = 2
         
         # Burn bathymetry profile into cross-section profile
-        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_low_point_elev + 0.1)
-        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_low_point_elev + 0.1)
+        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
+        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
 
         # Set a minimum for the number of bank cells
@@ -1639,7 +1638,7 @@ if __name__ == "__main__":
         da_total_wse = da_total_wse * 0
 
         # Solve using the volume fill approach
-        i_volume_fill_approach = 2
+        i_volume_fill_approach = 1
         
         # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
         i_outprint_yes = 0
@@ -1800,8 +1799,8 @@ if __name__ == "__main__":
             (d_v_a, d_v_b, d_v_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_v[i_start_elevation_index:i_last_elevation_index+1])
             da_total_depth = da_total_wse - da_xs_profile1[0]
             (d_d_a, d_d_b, d_d_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_depth[i_start_elevation_index:i_last_elevation_index+1])
-            #COMID,Row,Col,BaseElev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b
-            o_curve_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(da_total_q[i_last_elevation_index]))
+            #COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b
+            o_curve_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_dem_low_point_elev) + ",{:.3f}".format(da_total_q[i_last_elevation_index]))
             o_curve_file.write(",{:.3f}".format(d_d_a) + ",{:.3f}".format(d_d_b) + ",{:.3f}".format(d_t_a) + ",{:.3f}".format(d_t_b) + ",{:.3f}".format(d_v_a) + ",{:.3f}".format(d_v_b) )
 
     # Close the output file
