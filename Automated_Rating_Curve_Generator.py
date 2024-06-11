@@ -1328,24 +1328,9 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
     # Return to the calling function
     return i_low_point_index, d_dem_low_point_elev
 
-
-if __name__ == "__main__":
     
-    starttime = datetime.now()
     
-    logging.info('Inputs to the Program is a Main Input File')
-    logging.info('\nFor Example:')
-    logging.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
-    
-    ### User-Defined Main Input File ###
-    if len(sys.argv) > 1:
-        MIF_Name = sys.argv[1]
-        logging.info('Main Input File Given: ' + MIF_Name)
-    else:
-        #Read Main Input File
-        MIF_Name = 'ARC_InputFiles/ARC_Input_File.txt'
-        logging.warning('Moving forward with Default MIF Name: ' + MIF_Name)
-    
+def main(MIF_Name: str):
     ### Read Main Input File ###
     read_main_input_file(MIF_Name)
     
@@ -1817,3 +1802,21 @@ if __name__ == "__main__":
         logging.info('Simulation Took ' + str(i_sim_time_s) + ' seconds')
     else:
         logging.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
+        
+if __name__ == "__main__":
+    starttime = datetime.now()
+    
+    logging.info('Inputs to the Program is a Main Input File')
+    logging.info('\nFor Example:')
+    logging.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
+    
+    ### User-Defined Main Input File ###
+    if len(sys.argv) > 1:
+        MIF_Name = sys.argv[1]
+        logging.info('Main Input File Given: ' + MIF_Name)
+    else:
+        #Read Main Input File
+        MIF_Name = 'ARC_InputFiles/ARC_Input_File.txt'
+        logging.warning('Moving forward with Default MIF Name: ' + MIF_Name)
+        
+    main(MIF_Name)
