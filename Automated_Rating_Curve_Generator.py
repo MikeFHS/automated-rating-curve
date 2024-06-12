@@ -11,6 +11,7 @@ import logging
 
 import tqdm
 import numpy as np
+import pandas as pd
 from datetime import datetime
 from scipy.optimize import curve_fit
 from osgeo import gdal
@@ -525,45 +526,17 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     -------
 
     """
+    # Check if file exists
+    if not os.path.exists(s_flow_file_name):
+        logging.error('Cannot Find Flow File ' + s_flow_file_name)
+        exit()
 
-    # Open and read the input file
-    o_input_file = open(s_flow_file_name, 'r')
-    sl_lines = o_input_file.readlines()
-    o_input_file.close()
+    df = pd.read_csv(s_flow_file_name)
 
-    # Count the number of lines in the file
-    i_number_of_lines = len(sl_lines)
-
-    # Initialize holding arrays
-    da_comid = np.zeros(i_number_of_lines - 1, dtype=int)
-    da_base_flow = np.zeros(i_number_of_lines - 1, dtype=float)
-    da_flow_maximum = np.zeros(i_number_of_lines - 1, dtype=float)
-
-    # Get the header information
-    sl_header = sl_lines[0].strip().split(',')
-
-    # Initialize the counters
-    i_flow_id_index = 0
-    i_baseflow_index = 0
-    i_flow_maximum_index = 0
-
-    # Parse the header
-    for entry in range(len(sl_header)):
-        if sl_header[entry] == s_flow_id:
-            i_flow_id_index = entry
-
-        if sl_header[entry] == s_flow_baseflow:
-            i_baseflow_index = entry
-
-        if sl_header[entry] == s_flow_qmax:
-            i_flow_maximum_index = entry
-
-    # Extract the data from the line
-    for entry in range(1, i_number_of_lines):
-        sl_header = sl_lines[entry].strip().split(',')
-        da_comid[entry-1] = int(sl_header[i_flow_id_index])
-        da_base_flow[entry-1] = float(sl_header[i_baseflow_index])
-        da_flow_maximum[entry-1] = float(sl_header[i_flow_maximum_index])
+    # Extract the required columns into numpy arrays
+    da_comid = df[s_flow_id].to_numpy(dtype=int)
+    da_base_flow = df[s_flow_baseflow].to_numpy(dtype=float)
+    da_flow_maximum = df[s_flow_qmax].to_numpy(dtype=float)
 
     # Return to the calling function
     return da_comid, da_base_flow, da_flow_maximum
