@@ -1522,11 +1522,6 @@ def main(MIF_Name: str):
             xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
                                                   i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_second_fract, i_row_bottom, i_row_top, i_column_bottom, i_column_top)
         
-        # This is just for testing purposes.
-        # OutFlood[xc_r1_index_main[0], xc_c1_index_main[0]] = 3
-        # OutFlood[xc_r1_index_main[xs1_n-1], xc_c1_index_main[xs1_n-1]] = 1
-        # OutFlood[xc_r2_index_main[xs2_n-1], xc_c2_index_main[xs2_n-1]] = 2
-        
         # Burn bathymetry profile into cross-section profile
         i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
         i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
@@ -1593,11 +1588,17 @@ def main(MIF_Name: str):
         # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
         i_start_elevation_index = -1
         i_last_elevation_index = 0
+        
+        # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
+        d_depth_increment_big = 0.5
+        d_depth_increment_med = 0.05
+        d_depth_increment_small = 0.01
 
         if i_volume_fill_approach==1:
             # Find elevation where maximum flow is hit
             i_ordinate_for_Qmax = 0
-
+            
+            '''
             for i_entry_elevation in range(1, i_number_of_elevations):
                 # Calculate the geometry
                 d_wse = da_elevation_list_mm[i_entry_elevation] / 1000.0
@@ -1619,15 +1620,106 @@ def main(MIF_Name: str):
                 if d_q_sum > d_q_maximum:
                     i_ordinate_for_Qmax = i_entry_elevation
                     break
-
-            # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
             i_number_of_increments = 15
             d_inc_y = ((da_elevation_list_mm[i_ordinate_for_Qmax] - da_elevation_list_mm[0]) / 1000.0) / i_number_of_increments
+            i_number_of_elevations = i_number_of_increments + 1
+            '''
+            
+            # Find the wse associated with the Maximum flow using 0.5m increments
+            d_maxflow_wse_initial = da_xs_profile1[0]
+            for i_depthincrement in range(1,101):
+                # Calculate the geometry
+                d_wse = da_xs_profile1[0] + i_depthincrement * d_depth_increment_big
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+                # Estimate mannings n and flow
+                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                
+                d_maxflow_wse_initial = d_wse
+                
+                # Perform check on the maximum flow
+                if d_q_sum > d_q_maximum:
+                    break
+            
+            # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
+            d_maxflow_wse_initial = d_maxflow_wse_initial - 0.5
+            if d_maxflow_wse_initial < da_xs_profile1[0]:
+                d_maxflow_wse_initial = da_xs_profile1[0]
+            d_maxflow_wse_med = d_maxflow_wse_initial
+            
+            for i_depthincrement in range(1,101):
+                # Calculate the geometry
+                d_wse = d_maxflow_wse_initial + i_depthincrement * d_depth_increment_med
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+                # Estimate mannings n and flow
+                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                
+                d_maxflow_wse_med = d_wse
+                
+                # Perform check on the maximum flow
+                if d_q_sum > d_q_maximum:
+                    break
+            
+            # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
+            d_maxflow_wse_med = d_maxflow_wse_med - 0.05
+            if d_maxflow_wse_med < da_xs_profile1[0]:
+                d_maxflow_wse_med = da_xs_profile1[0]
+            d_maxflow_wse_final = d_maxflow_wse_med
+            
+            for i_depthincrement in range(1,51):
+                # Calculate the geometry
+                d_wse = d_maxflow_wse_med + i_depthincrement * d_depth_increment_small
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+                # Estimate mannings n and flow
+                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                
+                d_maxflow_wse_final = d_wse
+                
+                # Perform check on the maximum flow
+                if d_q_sum > d_q_maximum:
+                    break
+            
+            #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
+            if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+                continue
+            
+            # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
+            i_number_of_increments = 15
+            d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
 
             for i_entry_elevation in range(i_number_of_increments + 1):
                 # Calculate the geometry
-                d_wse = da_elevation_list_mm[0] / 1000 + d_inc_y * i_entry_elevation
+                d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
                 A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
                 A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
 
