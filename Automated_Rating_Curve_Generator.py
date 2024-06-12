@@ -1,5 +1,6 @@
 
 """
+Written initially by Mike Follum with Follum Hydrologic Solutions, LLC.
 Program simply creates depth, velocity, and top-width information for each stream cell in a domain.
 
 """
