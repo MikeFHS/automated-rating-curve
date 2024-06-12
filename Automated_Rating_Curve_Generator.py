@@ -541,7 +541,7 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     i_number_of_lines = len(sl_lines)
 
     # Initialize holding arrays
-    da_comid = np.zeros(i_number_of_lines - 1, dtype=int)
+    da_comid = np.zeros(i_number_of_lines - 1, dtype=np.int64)  #Had to use a 64 bit integer because some of the COMID / LinkNo values were getting too large for 32 bit
     da_base_flow = np.zeros(i_number_of_lines - 1, dtype=float)
     da_flow_maximum = np.zeros(i_number_of_lines - 1, dtype=float)
 
@@ -1401,7 +1401,7 @@ if __name__ == "__main__":
 
     # Create output rasters
     dm_output_bathymetry = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
-    dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
+    dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2)).astype(int)
 
     # Get the list of stream locations
     ia_valued_row_indices, ia_valued_column_indices = dm_stream.nonzero()
@@ -1484,10 +1484,13 @@ if __name__ == "__main__":
             d_slope_use = 0.0002
         
         # Get the Flow Rates Associated with the Stream Cell
-        im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
-        im_flow_index = int(im_flow_index[0][0])
-        d_q_baseflow = QBaseFlow[im_flow_index]
-        d_q_maximum = QMax[im_flow_index]
+        try:
+            im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
+            im_flow_index = int(im_flow_index[0][0])
+            d_q_baseflow = QBaseFlow[im_flow_index]
+            d_q_maximum = QMax[im_flow_index]
+        except:
+            continue
     
         # Get the Cross-Section Ordinates
         d_distance_z = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, i_row_cell,
@@ -1623,6 +1626,11 @@ if __name__ == "__main__":
         
         VolumeFillApproach 2 just looks at the different elevation points wtihin ElevList_mm.  It also adds some in if the gaps between depths is too large.
         """
+        
+        
+        #This is the Stream Cell Location
+        dm_out_flood[int(i_row_cell),int(i_column_cell)] = 3
+        
 
         # Initialize default values
         da_total_t = da_total_t * 0
@@ -1760,6 +1768,11 @@ if __name__ == "__main__":
                 # Perform check on the maximum flow
                 if d_q_sum > d_q_maximum:
                     break
+                '''
+                #This is the Edge of the Flood.  Value is 1 because that is the flood method used.
+                dm_out_flood[ia_xc_r1_index_main[np1], ia_xc_c1_index_main[np1]] = 1
+                dm_out_flood[ia_xc_r2_index_main[np2], ia_xc_c2_index_main[np2]] = 1
+                '''
             
             #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
             if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
@@ -1870,6 +1883,13 @@ if __name__ == "__main__":
                 if da_total_q[i_entry_elevation] > d_q_maximum:
                     i_number_of_elevations = i_entry_elevation + 1   # Do the +1 because of the printing below
                     break
+                '''
+                #Just for checking, add the boundaries to the output flood raster for ARC.
+                if i_entry_elevation==i_number_of_elevations-1:
+                    #This is the Edge of the Flood.  Value is 2 because that is the flood method used.
+                    dm_out_flood[ia_xc_r1_index_main[np1], ia_xc_c1_index_main[np1]] = 2
+                    dm_out_flood[ia_xc_r2_index_main[np2], ia_xc_c2_index_main[np2]] = 2
+                '''
 
             # Process each of the elevations to the output file if feasbile values were produced
             for i_entry_elevation in range(i_number_of_elevations - 1, 0, -1):
