@@ -22,6 +22,19 @@ except:
     #from osgeo import ogr
     #from osgeo.gdalconst import GA_ReadOnly
 
+def array_to_string(array, decimal_places=6):
+    """Convert a NumPy array to a formatted string with consistent spacing and no new lines."""
+    format_str = f"{{:.{decimal_places}f}}"
+    
+    def format_array(arr):
+        return "[" + ",".join(format_str.format(x) for x in arr) + "]"
+    
+    if array.ndim == 1:
+        return format_array(array)
+    elif array.ndim == 2:
+        return "[" + ",".join(format_array(row) for row in array) + "]"
+    else:
+        raise ValueError("Only 1D and 2D arrays are supported")
 
 # Power function equation
 def power_func(x, a, b):
@@ -387,6 +400,10 @@ def read_main_input_file(s_mif_name: str):
     # Find the path to the output flood file
     global s_output_flood
     s_output_flood = get_parameter_name(sl_lines, i_number_of_lines, 'AROutFLOOD')
+
+    # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
+    global s_xs_output_file
+    s_xs_output_file = get_parameter_name(sl_lines, i_number_of_lines, 'XS_Out_File')
 
 
 def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float):
@@ -1373,7 +1390,11 @@ if __name__ == "__main__":
         print('Cols do not Match!')
     else:
         ncols = dncols
-    
+
+    ### If you're outputting a cross-section file start the list here
+    if s_xs_output_file != '':
+        o_xs_file = open(s_xs_output_file, 'w')
+
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
     i_boundary_number = max(1, i_general_slope_distance, i_general_direction_distance)
 
@@ -1916,6 +1937,15 @@ if __name__ == "__main__":
             o_curve_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_dem_low_point_elev) + ",{:.3f}".format(da_total_q[i_last_elevation_index]))
             o_curve_file.write(",{:.3f}".format(d_d_a) + ",{:.3f}".format(d_d_b) + ",{:.3f}".format(d_t_a) + ",{:.3f}".format(d_t_b) + ",{:.3f}".format(d_v_a) + ",{:.3f}".format(d_v_b) )
 
+        # Output the XS information, if you've chosen to do so
+        da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
+        dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
+        da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
+        dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+        if s_xs_output_file != '':
+            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
+
+    
     # Close the output file
     o_out_file.close()
     print('Finished writing ' + str(s_output_vdt_database))
