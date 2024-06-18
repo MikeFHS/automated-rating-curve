@@ -1253,7 +1253,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
 def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev, da_xs_profile_one, da_xs_profile_two, ia_xc_r1_index_main, ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, da_xs1_mannings, da_xs2_mannings,
                                          i_center_point, nrows, ncols, i_boundary_number):
     """
-    Reorients the cross section through the lowest point of the stream
+    Reorients the cross section through the lowest point of the stream. Cross-section needs to be re-sampled if the low spot in the cross-section changes location.
 
     Parameters
     ----------
@@ -1284,11 +1284,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
     -------
     i_low_point_index: int
         Index of the low point in the cross section array
-    d_dem_low_point_elev: float
-        Elevation of the low point in the point
-
     """
-
     # Loop on the search range for the low point
     for i_entry in range(i_low_spot_range):
         # Look in the first profile
@@ -1301,7 +1297,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
         if da_xs_profile_two[i_entry] > 0.0 and da_xs_profile_two[i_entry] < d_dem_low_point_elev:
             # New low point was found. Update the index.
             d_dem_low_point_elev = da_xs_profile_two[i_entry]
-            i_low_point_index = -1 * i_entry
+            i_low_point_index = i_entry * -1
 
     # Process based on if the low point is in the first or second profile
     if i_low_point_index > 0:
@@ -1318,11 +1314,11 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
         ia_xc_r2_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_r1_index_main[0:i_low_point_index + 1])
         ia_xc_r1_index_main[0:i_center_point - i_low_point_index] = ia_xc_r1_index_main[i_low_point_index:i_center_point]
 
-        # Update teh column indices
+        # Update the column indices
         ia_xc_c2_index_main[i_low_point_index:i_center_point] = ia_xc_c2_index_main[0:i_center_point - i_low_point_index]
         ia_xc_c2_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_c1_index_main[0:i_low_point_index + 1])
         ia_xc_c1_index_main[0:i_center_point - i_low_point_index] = ia_xc_c1_index_main[i_low_point_index:i_center_point]
-        
+
     elif i_low_point_index < 0:
         # Low point is in the second profile Update the cross section and mannings.
         i_low_point_index = i_low_point_index * -1
@@ -1342,7 +1338,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
         ia_xc_c1_index_main[i_low_point_index:i_center_point] = ia_xc_c1_index_main[0:i_center_point - i_low_point_index]
         ia_xc_c1_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_c2_index_main[0:i_low_point_index + 1])
         ia_xc_c2_index_main[0:i_center_point - i_low_point_index] = ia_xc_c2_index_main[i_low_point_index:i_center_point]
-
+    
     #Set the index values to be within the confines of the raster
     # ia_xc_r1_index_main = np.clip(ia_xc_r1_index_main,0,nrows+2*i_boundary_number-2)
     # ia_xc_r2_index_main = np.clip(ia_xc_r2_index_main,0,nrows+2*i_boundary_number-2)
@@ -1350,7 +1346,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
     # ia_xc_c2_index_main = np.clip(ia_xc_c2_index_main,0,ncols+2*i_boundary_number-2)
 
     # Return to the calling function
-    return i_low_point_index, d_dem_low_point_elev
+    return i_low_point_index
 
 
 if __name__ == "__main__":
@@ -1533,16 +1529,25 @@ if __name__ == "__main__":
         # Adjust to the lowest-point in the Cross-Section
         i_lowest_point_index_offset=0
         d_dem_low_point_elev = da_xs_profile1[0]
-
         if i_low_spot_range > 0:
-            i_lowest_point_index_offset, d_dem_low_point_elev = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
+            i_lowest_point_index_offset = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
                                                                                                  ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, nrows, ncols,
                                                                                                  i_boundary_number)
 
+   
         # The r and c for the stream cell is adjusted because it may have moved
         i_row_cell = ia_xc_r1_index_main[0]
         i_column_cell = ia_xc_c1_index_main[0]
-        
+
+        # re-sample the cross-section to make sure all of the low-spot data has the same values through interpolation
+        if abs(i_lowest_point_index_offset) > 0:
+            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
+                                                    i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, i_row_bottom, i_row_top, i_column_bottom, i_column_top)
+            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
+                                                    i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_second_fract, i_row_bottom, i_row_top, i_column_bottom, i_column_top)
+            # set the low-spot value to the new low spot in the cross-section 
+            d_dem_low_point_elev = da_xs_profile1[0]
+
         # Adjust cross-section angle to ensure shortest top-width at a specified depth
         d_t_test = d_x_section_distance * 3.0
         d_shortest_tw_angle = d_xs_direction
@@ -1845,6 +1850,7 @@ if __name__ == "__main__":
                         break
                     else:
                         o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(dm_elevation[i_row_cell,i_column_cell]) + ",{:.3f}".format(d_q_baseflow))
+                        # o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_q_baseflow))
 
                 o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
                 i_outprint_yes = 1
