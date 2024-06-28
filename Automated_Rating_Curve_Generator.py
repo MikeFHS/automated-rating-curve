@@ -1501,9 +1501,9 @@ if __name__ == "__main__":
         # Set a minimum threshold for the slope
         d_slope_use = d_stream_slope
 
-        # if slope is less than world-average defined here (https://www.sciencedirect.com/science/article/abs/pii/S0022169418304888), reset it
-        if d_slope_use < 0.0026:
-            d_slope_use = 0.0026
+        # if slope is less than the threshold, reset it
+        if d_slope_use < 0.0002:
+            d_slope_use = 0.0002
         
         # Get the Flow Rates Associated with the Stream Cell
         try:
