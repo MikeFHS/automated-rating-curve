@@ -966,6 +966,7 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
         # Check if the profile elevation matches the target elevation
         if da_xs_profile[entry] >= d_z_target:
             return entry - 1
+            
 
     # Return to the calling function
     return i_cross_section_number
@@ -1176,7 +1177,8 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
                 # Depth is not valid. Attempt an adjustment.
                 d_dist_use = d_distance_z * da_y_depth[x - 1] / (abs(da_y_depth[x - 1]) + abs(da_y_depth[x]))
                 d_area = d_area + 0.5*d_dist_use * da_y_depth[x-1]
-                d_perimeter = d_perimeter + calculate_hypotnuse(d_dist_use, da_y_depth[x - 1])
+                d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[x - 1])
+                d_perimeter = d_perimeter + d_perimeter_i
                 d_hydraulic_radius = d_area / d_perimeter
 
                 # Check the mannings n
@@ -1184,7 +1186,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
                     da_n_profile[x - 1] = 0.035
 
                 # Calculate the composite n
-                d_composite_n = d_composite_n + d_perimeter * math.pow(da_n_profile[x - 1], 1.5)
+                d_composite_n = d_composite_n + d_perimeter_i * math.pow(da_n_profile[x - 1], 1.5)
 
                 # Update the top width
                 d_top_width = d_top_width + d_dist_use
@@ -1195,7 +1197,8 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
             else:
                 # Depth is valid. Proceed with calculation.
                 d_area = d_area + d_distance_z * 0.5 * (da_y_depth[x] + da_y_depth[x - 1])
-                d_perimeter = d_perimeter + calculate_hypotnuse(d_distance_z, (da_y_depth[x] - da_y_depth[x - 1]))
+                d_perimeter_i = calculate_hypotnuse(d_distance_z, (da_y_depth[x] - da_y_depth[x - 1]))
+                d_perimeter = d_perimeter + d_perimeter_i
                 d_hydraulic_radius = d_area / d_perimeter
 
                 # Check the mannings n
@@ -1203,7 +1206,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
                     da_n_profile[x] = 0.035
 
                 # Update the composite n
-                d_composite_n = d_composite_n + d_perimeter * math.pow(da_n_profile[x], 1.5)
+                d_composite_n = d_composite_n + d_perimeter_i * math.pow(da_n_profile[x], 1.5)
 
                 # Update the top width
                 d_top_width = d_top_width + d_distance_z
@@ -1498,8 +1501,9 @@ if __name__ == "__main__":
         # Set a minimum threshold for the slope
         d_slope_use = d_stream_slope
 
-        if d_slope_use < 0.0002:
-            d_slope_use = 0.0002
+        # if slope is less than world-average defined here (https://www.sciencedirect.com/science/article/abs/pii/S0022169418304888), reset it
+        if d_slope_use < 0.0026:
+            d_slope_use = 0.0026
         
         # Get the Flow Rates Associated with the Stream Cell
         try:
@@ -1627,7 +1631,7 @@ if __name__ == "__main__":
 
             if i_total_bank_cells > 1:
                 adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols)
-                adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols)
+                adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols)
 
         else:
             d_y_depth = 0.0
