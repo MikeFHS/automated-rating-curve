@@ -1034,7 +1034,7 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
 
 
 def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, i_bank_index: int, d_total_bank_dist: float, d_trap_base: float, d_distance_z: float, d_distance_h: float, d_y_bathy: float,
-                                  d_y_depth: float, dm_output_bathymetry: np.ndarray, ia_xc_r1_index_main: np.ndarray, ia_xc_c1_index_main: np.ndarray, nrows: int, ncols: int):
+                                  d_y_depth: float, dm_output_bathymetry: np.ndarray, ia_xc_r_index_main: np.ndarray, ia_xc_c_index_main: np.ndarray, nrows: int, ncols: int):
     """
     Adjusts the profile for the estimated bathymetry
 
@@ -1058,9 +1058,9 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
         Depth.  Basically water surface elevation (WSE) minus d_y_bathy
     dm_output_bathymetry: ndarray
         Output bathymetry matrix
-    ia_xc_r1_index_main: ndarray
+    ia_xc_r_index_main: ndarray
         Row indices for the stream cross section
-    ia_xc_c1_index_main: ndarray
+    ia_xc_c_index_main: ndarray
         Column indices for the stream corss section
 
     Returns
@@ -1083,29 +1083,29 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
             # If the cell is in the flat part of the trapezoidal cross-section, set it to the bottom elevation of the trapezoid.
             elif d_dist_cell_to_bank >= d_distance_h and d_dist_cell_to_bank <= (d_trap_base + d_distance_h):
                 da_xs_profile[x] = d_y_bathy
-                dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c1_index_main[x]] = da_xs_profile[x]
-                #if ia_xc_r1_index_main[x]<0 or ia_xc_r1_index_main[x]>=nrows or ia_xc_c1_index_main[x]<0 or ia_xc_c1_index_main[x]>=nrows:
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                #if ia_xc_r_index_main[x]<0 or ia_xc_r_index_main[x]>=nrows or ia_xc_c_index_main[x]<0 or ia_xc_c_index_main[x]>=nrows:
                 #    break
                 #else:
-                #    dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c1_index_main[x]] = da_xs_profile[x]
+                #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # If the cell is in the slope part of the trapezoid you need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank <= d_distance_h:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c1_index_main[x]] = da_xs_profile[x]
-                #if ia_xc_r1_index_main[x]<0 or ia_xc_r1_index_main[x]>=nrows or ia_xc_c1_index_main[x]<0 or ia_xc_c1_index_main[x]>=nrows:
+                dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                #if ia_xc_r_index_main[x]<0 or ia_xc_r_index_main[x]>=nrows or ia_xc_c_index_main[x]<0 or ia_xc_c_index_main[x]>=nrows:
                 #    break
                 #else:
-                #    dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c1_index_main[x]] = da_xs_profile[x]
+                #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
-                dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c1_index_main[x]] = da_xs_profile[x]
-                #if ia_xc_r1_index_main[x]<0 or ia_xc_r1_index_main[x]>=nrows or ia_xc_c1_index_main[x]<0 or ia_xc_c1_index_main[x]>=nrows:
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                #if ia_xc_r_index_main[x]<0 or ia_xc_r_index_main[x]>=nrows or ia_xc_c_index_main[x]<0 or ia_xc_c_index_main[x]>=nrows:
                 #    break
                 #else:
-                #    dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c1_index_main[x]] = da_xs_profile[x]
+                #    dm_output_bathymetry[ia_xc_1_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
 
 def calculate_hypotnuse(d_side_one: float, d_side_two: float):
@@ -1622,7 +1622,7 @@ if __name__ == "__main__":
 
             if i_total_bank_cells > 1:
                 adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols)
-                adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols)
+                adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols)
 
         else:
             d_y_depth = 0.0
