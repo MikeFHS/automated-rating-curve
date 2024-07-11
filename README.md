@@ -19,6 +19,9 @@ Below are step-by-step instructions for setting up the ARC.
 ## Running ARC simulations
 Instructions for running ARC can be found [here](https://sites.google.com/follumhydro.com/automated-rating-curve-arc). 
 
+## Using ARC output with flood iundation mapping software
+Instructions for processing ARC output for the Flood Inundation Surface Topology (FIST) model can be found here. 
+
 ## Authors and acknowledgment
 Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Joseph Gutenson and Drew Loney.
 
