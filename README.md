@@ -1,7 +1,7 @@
-# automated_rating_curve_generator
+# Automated Rating Curve (ARC) Generator
+ARC is an Python-based code that encompasses much of the functionality of the hydraulic modeling software AutoRoute. ARC inputs a series of raster datasets and outputs rating curves that describe the relationship between streamflow and water surface elevation.
 
 ## Getting started
-
 1. Clone this repository.
    - In the upper right hand corner of this screen, left-click the green <> Code button and copy the text.
 2. Download Miniconda.
