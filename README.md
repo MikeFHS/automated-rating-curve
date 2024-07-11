@@ -21,7 +21,7 @@ Below are step-by-step instructions for setting up the ARC.
 
 ## Using ARC output with flood iundation mapping software
 -Instructions for using ARC to create inputs into the Flood Inundation Surface Topology (FIST) model can be found here. 
--Instructions for using ARC to create inputs into the Flood Inundation Surface Topology (FIST) model can be found here. 
+-Instructions for using ARC to create inputs into the FloodSpreader model can be found here. 
 
 ## Authors and acknowledgment
 Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Joseph Gutenson and Drew Loney.
