@@ -4,6 +4,9 @@ To activate the "ARC" environment open an Anaconda Command Prompt and type "cond
 
 ## Getting started
 
+1. Clone this repository.
+  - In the upper right hand corner of this screen, left-click the green <> Code button. 
+
 To make it easy for you to get started with GitLab, here's a list of recommended next steps.
 
 Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
