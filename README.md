@@ -3,10 +3,10 @@
 ## Getting started
 
 1. Clone this repository.
-  - In the upper right hand corner of this screen, left-click the green <> Code button and copy the text.
+   - In the upper right hand corner of this screen, left-click the green <> Code button and copy the text.
 2. Download Miniconda.
 3. Create you Conda environment.
-  - To activate the "ARC" environment open an Anaconda Command Prompt and type "conda env create -f environment_ARC.yml"
+   - To activate the "ARC" environment open an Anaconda Command Prompt and type "conda env create -f environment_ARC.yml"
  
 
 To make it easy for you to get started with GitLab, here's a list of recommended next steps.
