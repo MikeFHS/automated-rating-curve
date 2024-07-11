@@ -7,7 +7,7 @@ The resulting rating curves can be paired with a flood inundation mapping softwa
 This project is under active development.
 
 ## Getting started
-Below are step-by-step instructions for setting up the ARC.
+Below are step-by-step instructions for setting up the ARC tool.
 
 1. Clone this repository.
    - In the upper right hand corner of this screen, left-click the green <> Code button and copy the text.
@@ -17,7 +17,15 @@ Below are step-by-step instructions for setting up the ARC.
 4. Your ARC environment should be ready to roll!
 
 ## Running ARC simulations
-- Instructions for running ARC can be found [here](https://sites.google.com/follumhydro.com/automated-rating-curve-arc). 
+Here are some step-by-step instructions on running ARC.
+
+1. Inputs
+  - Example Input Datasets
+     1. [DEM from the 1/3 Arc Second National Elevation Dataset](https://apps.nationalmap.gov/downloader/)
+     2. [Land Cover from the National Land Cover Database 2011](https://www.mrlc.gov/data/nlcd-2011-land-cover-conus)
+     3. [Streamlines from GeoGLoWS](http://geoglows-v2.s3-website-us-west-2.amazonaws.com/#streams/)
+     4. [Return period flow rates from GeoGLoWS](http://geoglows-v2-retrospective.s3-website-us-west-2.amazonaws.com/#return-periods/)
+     5. [GeoGLoWS Streamflow Data in General](https://data.geoglows.org/available-data)
 
 ## Using ARC output with flood iundation mapping software
 - Instructions for using ARC to create inputs into the Flood Inundation Surface Topology (FIST) model can be found here. 
