@@ -23,6 +23,6 @@ Instructions for running ARC can be found [here](https://sites.google.com/follum
 Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Joseph Gutenson and Drew Loney.
 
 ## License
-This software has been released under a [GNU Public Licence](https://github.com/MikeFHS/automated-rating-curve/blob/main/license.txt). 
+This software has been released under a [GNU General Public Licence](https://github.com/MikeFHS/automated-rating-curve/blob/main/license.txt). 
 
 
