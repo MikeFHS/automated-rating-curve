@@ -16,6 +16,7 @@ Below are step-by-step instructions for setting up the ARC.
    - To activate the "ARC" environment open an Anaconda Command Prompt and type "conda env create -f environment_ARC.yml"
 4. Your ARC environment should be ready to roll!
 
+## Running ARC simulations
 Instructions for running ARC can be found [here](https://sites.google.com/follumhydro.com/automated-rating-curve-arc). 
 
 ## Authors and acknowledgment
