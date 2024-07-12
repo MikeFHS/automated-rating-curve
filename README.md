@@ -19,18 +19,6 @@ Below are step-by-step instructions for setting up the ARC tool.
 ## Running ARC simulations
 Step-by-step instructions for running ARC simulations can be found in the Wiki page at the top of this page.
 
-1. Inputs
-  - Example Input Datasets
-     1. [DEM from the 1/3 Arc Second National Elevation Dataset](https://apps.nationalmap.gov/downloader/)
-     2. [Land Cover from the National Land Cover Database 2011](https://www.mrlc.gov/data/nlcd-2011-land-cover-conus)
-     3. [Streamlines from GeoGLoWS](http://geoglows-v2.s3-website-us-west-2.amazonaws.com/#streams/)
-     4. [Return period flow rates from GeoGLoWS](http://geoglows-v2-retrospective.s3-website-us-west-2.amazonaws.com/#return-periods/)
-     5. [GeoGLoWS Streamflow Data in General](https://data.geoglows.org/available-data)
-
-## Using ARC output with flood iundation mapping software
-- Instructions for using ARC to create inputs into the Flood Inundation Surface Topology (FIST) model can be found here. 
-- Instructions for using ARC to create inputs into the FloodSpreader model can be found here. 
-
 ## Authors and acknowledgment
 Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Joseph Gutenson and Drew Loney.
 
