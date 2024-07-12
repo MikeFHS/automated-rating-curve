@@ -17,7 +17,7 @@ Below are step-by-step instructions for setting up the ARC tool.
 4. Your ARC environment should be ready to roll!
 
 ## Running ARC simulations
-Here are some step-by-step instructions on running ARC.
+Step-by-step instructions for running ARC simulations can be found in the Wiki page at the top of this page.
 
 1. Inputs
   - Example Input Datasets
