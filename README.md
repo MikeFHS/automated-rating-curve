@@ -20,7 +20,7 @@ Below are step-by-step instructions for setting up the ARC tool.
 Step-by-step instructions for running ARC simulations can be found in the Wiki page at the top of this page.
 
 ## Authors and acknowledgment
-Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Joseph Gutenson and Drew Loney.
+Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Ahmad Tavakoly, Alan Snow, Joseph Gutenson and Drew Loney.
 
 ## License
 This software has been released under a [GNU General Public Licence](https://github.com/MikeFHS/automated-rating-curve/blob/main/license.txt). 
