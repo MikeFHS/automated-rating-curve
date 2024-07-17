@@ -12,7 +12,7 @@ Below are step-by-step instructions for setting up the ARC tool.
 1. Clone this repository.
    - In the upper right hand corner of this screen, left-click the green <> Code button and copy the text.
 2. Download [Miniconda](https://docs.anaconda.com/miniconda/miniconda-install/).
-3. Open the "Anaconda Prompt" and create you Conda environment.
+3. Open the "Anaconda Prompt" on PC or your terminal in Mac or Linux, and create you Conda environment.
    - To activate the "ARC" environment open an Anaconda Command Prompt, navigate to where you've clone the ARC repository on your local machine, and type "conda env create -f environment_ARC.yml"
 4. Your ARC environment should be ready to roll!
 
