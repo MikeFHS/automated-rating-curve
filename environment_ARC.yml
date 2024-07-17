@@ -10,4 +10,5 @@ dependencies:
   - gdal
   - pip
   - netCDF4
+  - xarray
 
