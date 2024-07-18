@@ -15,6 +15,6 @@ if __name__ == "__main__":
     # Path to the flow file you generated in Step 1.
     flow_file_path = ""
 
-    process_geospatial_data.Process_AutoRoute_Geospatial_Data()
+    process_geospatial_data.Process_AutoRoute_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path)
 
     # Remember to run STEP 3 via the command line!
