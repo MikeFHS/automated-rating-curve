@@ -13,6 +13,21 @@ import pandas as pd
 from scipy.io import netcdf
 
 def GetMeanFlowValues(NetCDF_Directory):
+    """
+    Estimates the mean streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
+    estimating the yearly mean, and then estimating a mean of those yearly means
+
+    Parameters
+    ----------
+    NetCDF_Directory: str
+        The file path to a directory containing yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files
+    
+    Returns
+    -------
+    overall_mean_Qout: Pandas series
+        A Pandas series of mean streamflow values with the streams unique identifier used as the index
+
+    """
     # create a list of all files in the NetCDF directory
     file_list = os.listdir(NetCDF_Directory)
     all_mean_Qout_dfs = []
@@ -45,6 +60,21 @@ def GetMeanFlowValues(NetCDF_Directory):
     return (overall_mean_Qout)
 
 def GetMedianFlowValues(NetCDF_Directory):
+    """
+    Estimates the median streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
+    estimating the yearly median, and then estimating a median of those yearly medians
+
+    Parameters
+    ----------
+    NetCDF_Directory: str
+        The file path to a directory containing yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files
+    
+    Returns
+    -------
+    overall_median_Qout: Pandas series
+        A Pandas series of median streamflow values with the streams unique identifier used as the index
+
+    """
     # Create a list of all files in the NetCDF directory
     file_list = os.listdir(NetCDF_Directory)
     all_median_Qout_dfs = []
@@ -78,6 +108,21 @@ def GetMedianFlowValues(NetCDF_Directory):
     return overall_median_Qout
 
 def GetMaxFlowValues(NetCDF_Directory):
+    """
+    Estimates the maximum streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
+    estimating the yearly maximum, and then estimating a maximum of those yearly maximums
+
+    Parameters
+    ----------
+    NetCDF_Directory: str
+        The file path to a directory containing yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files
+    
+    Returns
+    -------
+    overall_median_Qout: Pandas series
+        A Pandas series of maximum streamflow values with the streams unique identifier used as the index
+
+    """
     # create a list of all files in the NetCDF directory
     file_list = os.listdir(NetCDF_Directory)
     all_max_Qout_dfs = []
@@ -109,25 +154,55 @@ def GetMaxFlowValues(NetCDF_Directory):
         
     return (overall_max_Qout)
 
-def GetReturnPeriodFlowValues(NetCDF_Directory):
-    # create a list of all files in the NetCDF directory
-    file_list = os.listdir(NetCDF_Directory)
-    all_max_Qout_dfs = []
-    for f in file_list:
-        if f.endswith(".nc"):
-            qout_file_path = os.path.join(NetCDF_Directory, f)
-            qout_ds = xr.open_dataset(qout_file_path)
+def GetReturnPeriodFlowValues(NetCDF_File_Path):
+    """
+    Estimates the maximum streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
+    estimating the yearly maximum, and then estimating a maximum of those yearly maximums
+
+    Parameters
+    ----------
+    NetCDF_File_Path: str
+        The file path and file name of a NetCDF of recurrence interval streamflow file from the GEOGLOWS ECMWF Streamflow Service
+    
+    Returns
+    -------
+    qout_df: Pandas dataframe
+        A Pandas dataframe of the recurrence interval values contained in the recurrence interval streamflow file from the GEOGLOWS ECMWF Streamflow Service
+
+    """
+    # Open the NetCDF with xarray
+    qout_ds = xr.open_dataset(NetCDF_File_Path)
             
     # Convert xarray Dataset to pandas DataFrame
     qout_df = qout_ds.to_dataframe()
             
     return (qout_df)
 
-def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_Folder, NetCDF_Historical_Folder, Outfile_file_path):
+def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Historical_Folder, Outfile_file_path):
+    """
+    Creates a streamflow input file that can be used by the Automated Rating Curve (ARC) tool
+
+    Parameters
+    ----------
+    NetCDF_RecurrenceInterval_File_Path: str
+        The file path and file name of a NetCDF of recurrence interval streamflow file from the GEOGLOWS ECMWF Streamflow Service
+    NetCDF_Historical_Folder: str
+        The file path to a directory containing yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files
+    Outfile_file_path: str
+        The file path and file name of the file that will store the resulting streamflow inputs for ARC
+    
+    Returns
+    -------
+    combined_df: Pandas dataframe
+        A Pandas dataframe of the mean, median, maximum, 2-year recurrence interval, 5-year recurrence interval, 10-year recurrence interval, 25-year recurrence interval,
+        50-year recurrence interval, and 100-year recurrence interval streamflow values contained in the recurrence interval streamflow file 
+        from the GEOGLOWS ECMWF Streamflow Service
+
+    """
     overall_median_Qout = GetMedianFlowValues(NetCDF_Historical_Folder)
     overall_median_Qout = abs(overall_median_Qout)
     overall_mean_Qout = GetMeanFlowValues(NetCDF_Historical_Folder)
-    combined_df = GetReturnPeriodFlowValues(NetCDF_RecurrenceInterval_Folder)
+    combined_df = GetReturnPeriodFlowValues(NetCDF_RecurrenceInterval_File_Path)
     
     # Append Series to DataFrame using .loc indexer
     combined_df.loc[:, overall_mean_Qout.name] = overall_mean_Qout
