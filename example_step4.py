@@ -17,7 +17,7 @@ if __name__ == "__main__":
 
     # By-pass creating the SEED file, if it already exists
     if os.path.isfile(SEED_Point_File) is False:
-        (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Curves_To_GeoJSON.Write_SEED_Data_To_File_FAST_UPDATED(STRM_Raster_File, DEM_Raster_File, SEED_Point_File)
+        (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Curves_To_GeoJSON.Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File)
     else:
         (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Curves_To_GeoJSON.GetSEED_Data_From_File(SEED_Point_File)
     
