@@ -1,3 +1,6 @@
+# built-in imports
+import os
+
 if __name__ == "__main__":
 
     #### STEP 4 Example ####
