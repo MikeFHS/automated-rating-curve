@@ -7,109 +7,8 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from osgeo import gdal
 
-
-def Get_Raster_Details(DEM_File):
-    """
-    Retrieves the geograhic details of a raster using GDAL in a slightly different way than Read_Raster_GDAL().
-
-    Parameters
-    ----------
-    DEM_File: str
-        The file name and full path to the raster you are analyzing
-
-    Returns
-    -------
-    minx: float
-        The longitude of the top left corner of the top pixel of the raster
-    miny: 
-        The lowest latitude of the the raster
-    maxx: 
-        The highest latitude of the the raster
-    maxy:
-        The latitude of the top left corner of the top pixel of the raster
-    dx: float
-        The pixel size of the raster longitudinally
-    dy: float
-        The pixel size of the raster latitudinally 
-    ncols: int
-        The raster width in pixels
-    nrows: int
-        The raster height in pixels
-
-    """
-    print(DEM_File)
-    gdal.Open(DEM_File, gdal.GA_ReadOnly)
-    data = gdal.Open(DEM_File)
-    geoTransform = data.GetGeoTransform()
-    ncols = int(data.RasterXSize)
-    nrows = int(data.RasterYSize)
-    minx = geoTransform[0]
-    dx = geoTransform[1]
-    maxy = geoTransform[3]
-    dy = geoTransform[5]
-    maxx = minx + dx * ncols
-    miny = maxy + dy * nrows
-    data = None
-    return minx, miny, maxx, maxy, dx, dy, ncols, nrows
-
-def Read_Raster_GDAL(InRAST_Name):
-    """
-    Retrieves the geograhic details of a raster using GDAL in a slightly different way than Get_Raster_Details().
-
-    Parameters
-    ----------
-    InRAST_Name: str
-        The file name and full path to the raster you are analyzing
-
-    Returns
-    -------
-    RastArray: arr
-        A numpy array of the values in the first band of the raster you are analyzing
-    ncols: int
-        The raster width in pixels
-    nrows: int
-        The raster height in pixels
-    cellsize: float
-        The pixel size of the raster longitudinally
-    yll: float
-        The lowest latitude of the the raster
-    yur: float
-        The latitude of the top left corner of the top pixel of the raster
-    xll: float
-        The longitude of the top left corner of the top pixel of the raster
-    xur: float
-        The highest longitude of the the raster
-    lat
-        The average of the yur and yll latitude values
-    """
-    try:
-        dataset = gdal.Open(InRAST_Name, gdal.GA_ReadOnly)     
-    except RuntimeError:
-        sys.exit(" ERROR: Field Raster File cannot be read!")
-    # Retrieve dimensions of cell size and cell count then close DEM dataset
-    geotransform = dataset.GetGeoTransform()
-    # Continue grabbing geospatial information for this use...
-    band = dataset.GetRasterBand(1)
-    RastArray = band.ReadAsArray()
-    ncols=band.XSize
-    nrows=band.YSize
-    band = None
-    cellsize = geotransform[1]
-    yll = geotransform[3] - nrows * np.fabs(geotransform[5])
-    yur = geotransform[3]
-    xll = geotransform[0];
-    xur = xll + (ncols)*geotransform[1]
-    lat = np.fabs((yll+yur)/2.0)
-    dataset = None
-    print('Spatial Data for Raster File:')
-    print('   ncols = ' + str(ncols))
-    print('   nrows = ' + str(nrows))
-    print('   cellsize = ' + str(cellsize))
-    print('   yll = ' + str(yll))
-    print('   yur = ' + str(yur))
-    print('   xll = ' + str(xll))
-    print('   xur = ' + str(xur))
-    return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat
+# local imports
+from process_geospatial_data import Get_Raster_Details, Read_Raster_GDAL
 
 def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File ):
     """
@@ -142,7 +41,7 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )
         A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
     """
     print('\nReading Data from Raster: ' + STRM_Raster_File)
-    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat) = Read_Raster_GDAL(STRM_Raster_File)
+    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection) = Read_Raster_GDAL(STRM_Raster_File)
     dx = abs(xll-xur) / (ncols)
     dy = abs(yll-yur) / (nrows)
     print(str(dx) + '  ' + str(dy) + '  ' + str(cellsize))
@@ -163,7 +62,7 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )
     S = None
     
     print('\nReading Data from Raster: ' + DEM_Raster_File)
-    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat) = Read_Raster_GDAL(DEM_Raster_File)
+    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, geotransform, Rast_Projection) = Read_Raster_GDAL(DEM_Raster_File)
     DEM = DEM.astype(float)
     
     COMID_Elev_Min = np.zeros(len(COMID_Unique))
@@ -535,7 +434,7 @@ def Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, CO
     
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + STRM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows) = Get_Raster_Details(STRM_Raster_File)
+    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
     cellsize_x = abs(float(dx))
     cellsize_y = abs(float(dy))
     lat_base = float(maxy) - 0.5*cellsize_y
@@ -575,19 +474,19 @@ def Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, CO
     # Calculate Depth Values
     a = curve_data[1:,6].astype(float)
     b = curve_data[1:,7].astype(float)
-    CP_DEP = a*np.power(CP_Q, b, dtype=float)
+    CP_DEP = np.around(a*np.power(CP_Q, b, dtype=float), 3)
     CP_DEP = np.maximum(CP_DEP,float(0.05)) # This is so you always have some sort of value to map
-    CP_WSE = CP_ELEV + CP_DEP
+    CP_WSE = np.around(CP_ELEV + CP_DEP, 3)
 
     # Calculate TopWidth Values
     a = curve_data[1:,8].astype(float)
     b = curve_data[1:,9].astype(float)
-    CP_TW = a*np.power(CP_Q, b, dtype=float)
+    CP_TW = np.around(a*np.power(CP_Q, b, dtype=float), 3)
     
     #Calculate Velocity Values
     a = curve_data[1:,10].astype(float)
     b = curve_data[1:,11].astype(float)
-    CP_VEL = a*np.power(CP_Q, b, dtype=float)
+    CP_VEL = np.around(a*np.power(CP_Q, b, dtype=float), 3)
     
     # Calculate Latitude and Longitude
     CP_LAT = lat_base - CP_ROW * cellsize_y
@@ -611,9 +510,10 @@ if __name__ == "__main__":
     #This forces the program to redo the SEED values
     Redo_Seed_Point_File = False
     Updated_DEM = False
-    Filtered_Results = True
+    Filtered_Results = False
        
     Watershed_List = ['SC_TestCase','OH_TestCase','TX_TestCase','IN_TestCase','PA_TestCase']
+    Watershed_List = ['Shields_TestCase']
 
     for WatershedName in Watershed_List:
 
@@ -645,7 +545,7 @@ if __name__ == "__main__":
                 os.mkdir(OutFolder)
 
             STRM_Raster_File = os.path.join(WatershedName,"STRM","STRM_Raster_Clean.tif")
-            DEM_Raster_File = os.path.join(WatershedName,"DEM_Updated",f"{updated_dem_text}.tif")
+            DEM_Raster_File = os.path.join(WatershedName,"DEM",f"{updated_dem_text}.tif")
             SEED_Point_File = os.path.join(OutFolder,"SEED_Points.txt")
             OutProjection = os.path.join("EPSG:4269")
             CurveParam_File = os.path.join(WatershedName,f"VDT_{updated_dem_text}", "CurveFile.csv")

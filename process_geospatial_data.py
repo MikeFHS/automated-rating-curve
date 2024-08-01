@@ -13,15 +13,71 @@ import netCDF4
 import geopandas as gpd
 
 def Create_Folder(F):
+    """
+    Creates an empty directory
+
+    Parameters
+    ----------
+    F: str
+        The path to the directory you want to create
+    
+    Returns
+    -------
+    None
+
+    """
     if os.path.exists(F):
         shutil.rmtree(F)
     if not os.path.exists(F): 
         os.makedirs(F)
     return
 
-def Create_ARC_Model_Input_File(MD, ARC_Input_File, DEM_File, COMID_Param, Q_Param, Q_BF_Param, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, VDT_Test_File,  XS_Out_File, DEM_Cleaner_File):
+def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, Q_BF_Param, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File):
+    """
+    Creates an input text file for the Automated Rating Curve (ARC) tool
+
+    Parameters
+    ----------
+    ARC_Input_File: str
+        The path and file name of the text file that contains the ARC execution instructions
+    DEM_File: str
+        The path and file name of the digital elevation model (DEM) raster file that will be used in the ARC simulation
+    COMID_Param: str
+        The header of the column in the FLOW_File that contains the unique identifiers for all streams and is identicial to the stream cell values in the stream raster
+    Q_Param: str
+        The header of the column in the FLOW_File that contains the maximum streamflow that will be used int he ARC simulation
+    Q_BF_Param: str
+        The header of the column in the FLOW_File that contains the streamflow value that will be used by ARC to estimate bathymetry
+    STRM_File_Clean: str
+        The path and file name of the stream raster that will be used in the ARC simulation
+    LAND_File: str
+        The path and file name of the land-use/land-cover raster that will be used in the ARC simulation
+    FLOW_File: str
+        The path and file name of the comma-delimited text file that contains the COMID_Param, Q_Param, and Q_BF_Param values that will be used in the ARC simulation
+    VDT_File: str
+        The path and file name of the velocity, depth, top-width (VDT) text file database file that will be output by ARC
+    Curve_File: str
+        The path and file name of the file that contains power function curves for each stream cell that will be output by ARC
+    ManningN: str
+        The path and file name of the file that contains the Manning's n values for each land-cover in the LAND_File
+    FloodMapFile: str
+        The path and file name of the output raster that provides a flood inundation map that will be output by FloodSpreader
+    DepthMapFile: str
+        The path and file name of the output raster that provides a depth-grid flood inundation map that will be output by FloodSpreader
+    ARC_BathyFile: str
+        The path and file name of the output raster containing the bathymetry estimates output by ARC
+    XS_Out_File: str
+        The path and file name of the output comma-delimited text file that contains data on the cross-section output by ARC.
+    DEM_Cleaner_File:
+        The path and file name of the text file containing streamflows that will be passed to the DEM cleaner program to clean the DEM 
+    
+    Returns
+    -------
+    None
+
+    """
     out_file = open(ARC_Input_File,'w')
-    out_file.write('#ARC_Inputs')
+    out_file.write('#ARC Inputs')
     out_file.write('\n' + 'DEM_File	' + DEM_File)
     out_file.write('\n' + 'Stream_File	' + STRM_File_Clean)
     out_file.write('\n' + 'LU_Raster_SameRes	' + LAND_File)
@@ -39,15 +95,14 @@ def Create_ARC_Model_Input_File(MD, ARC_Input_File, DEM_File, COMID_Param, Q_Par
     out_file.write('\n' + 'Gen_Dir_Dist	10')
     out_file.write('\n' + 'Gen_Slope_Dist	10')
     
-    out_file.write('\n\n#VDT_Output_File_and_CurveFile')
-    out_file.write('\n' + 'Print_VDT_Database	' + VDT_File)
+    out_file.write('\n\n#Output CurveFile')
     out_file.write('\n' + 'Print_Curve_File	' + Curve_File)
     
-    out_file.write('\n\n#VDT_File_For_TestingPurposes_Only')
-    out_file.write('\n' + 'Print_VDT	' + VDT_Test_File)
-    out_file.write('\n' + 'OutFLD	' + FloodMapFile)
+    out_file.write('\n\n#VDT File For Testing Purposes Only')
+    out_file.write('\n' + 'Print_VDT	' + VDT_File)
     
-    out_file.write('\n\n#Bathymetry_Information')
+    
+    out_file.write('\n\n#Bathymetry Information')
     out_file.write('\n' + 'Bathy_Trap_H	0.20')
     out_file.write('\n' + 'AROutBATHY	' + ARC_BathyFile)
 
@@ -56,18 +111,32 @@ def Create_ARC_Model_Input_File(MD, ARC_Input_File, DEM_File, COMID_Param, Q_Par
 
     out_file.write('\n\n#Current FloodSpreader Inputs')
     out_file.write('\n' + 'Print_VDT_Database	' + VDT_File)
-    
     if DEM_Cleaner_File is not False:
         out_file.write('\n' + 'COMID_Flow_File	' + DEM_Cleaner_File)
     else:
         out_file.write('\n' + 'COMID_Flow_File	' + FLOW_File)
+    out_file.write('\n' + 'OutFLD	' + FloodMapFile)
 
     out_file.close()
 
     return
-    
 
 def Create_BaseLine_Manning_n_File(ManningN):
+    """
+    Creates an text file that associates Manning's n values with National Land Cover Database (NLCD) land cover classes
+    
+    Values were used in https://doi.org/10.5194/nhess-20-625-2020 and https://doi.org/10.1111/1752-1688.12476
+    
+    Parameters
+    ----------
+    ManningN:
+        The path and file name of the file that contains the Manning's n values for each land-cover in the LAND_File
+    
+    Returns
+    -------
+    None
+
+    """
     out_file = open(ManningN,'w')
     out_file.write('LC_ID	Description	Manning_n')
     out_file.write('\n' + '11	Water	0.030')
@@ -90,19 +159,89 @@ def Create_BaseLine_Manning_n_File(ManningN):
     return
 
 def Create_AR_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows):
+    """
+    Creates an land cover raster that is cloped to a specified extent and cell size
+    
+   
+    Parameters
+    ----------
+    LandCoverFile: str
+        The path and file name of the source National Land Cover Database land-use/land-cover raster
+    LAND_File: str
+        The path and file name of the output land-use/land-cover dataset 
+    projWin_extents: list
+        A list of the minimum and maximum extents to which the LAND_File will be clipped, specified as [minimum longitude, maximum latitude, maximum longitude, minimum latitude]
+    ncols: int
+        The number of columns in the output LAND_File raster
+    nrows: int
+        The number of rows in the output LAND_File raster
+    
+    Returns
+    -------
+    None
+
+    """
     ds = gdal.Open(LandCoverFile)
     ds = gdal.Translate(LAND_File, ds, projWin = projWin_extents, width=ncols, height = nrows)
     ds = None
     return
 
-def Create_AR_StrmRaster(StrmSHP, STRM_File, outputBounds, minx, miny, maxx, maxy, dx, dy, ncols, nrows, Param):
+def Create_AR_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, Param):
+    """
+    Creates an stream raster from an input stream shapefile that is cloped to a specified extent and cell size
+       
+    Parameters
+    ----------
+    StrmSHP: str
+        The path and filename of the input stream shapefile that will be used in the ARC analysis
+    STRM_File
+        The path and filename of the output stream raster that will be used in the ARC analysis 
+    outputBounds: list
+        A list of the minimum and maximum extents to which the STRM_File will be clipped, specified as [minimum longitude, mininum latitude, maximum longitude, maximum latitude] 
+    ncols: int
+        The number of columns in the output STRM_File raster
+    nrows: int
+        The number of rows in the output STRM_File raster
+    Param:
+        The field in the StrmSHP that will be used to populate the stream cells in the STRM_File
+    
+    Returns
+    -------
+    None
+
+    """
     source_ds = gdal.OpenEx(StrmSHP)
-    # gdal.Rasterize(STRM_File, source_ds, format='GTiff', outputType=gdal.GDT_Int32, outputBounds = outputBounds, width = ncols, height = nrows, noData = 0, attribute = Param)
     gdal.Rasterize(STRM_File, source_ds, format='GTiff', outputType=gdal.GDT_Int64, outputBounds = outputBounds, width = ncols, height = nrows, noData = -9999, attribute = Param)
     source_ds = None
     return
 
 def Write_Output_Raster(s_output_filename, raster_data, ncols, nrows, dem_geotransform, dem_projection, s_file_format, s_output_type):   
+    """
+    Creates a raster from the specified inputs using GDAL
+       
+    Parameters
+    ----------
+    s_output_filename: str
+        The path and file name of the output raster
+    raster_data: arr
+        An array of data values that will be written to the output raster
+    ncols: int
+        The number of columns in the output raster
+    nrows: int
+        The number of rows in the output raster
+    dem_geotransform: list
+        A GDAL GetGeoTransform list that is passed to the output raster
+    dem_projection: str
+        A GDAL GetProjectionRef() string that contains the projection reference that is passed to the output raster
+    s_file_format
+        The string that specifies the type of raster that will be output (e.g., GeoTIFF = "GTiff")
+    s_output_type
+        The type of value that the output raster will be stored as (e.g., gdal.GDT_Int32)
+    Returns
+    -------
+    None
+
+    """
     o_driver = gdal.GetDriverByName(s_file_format)  #Typically will be a GeoTIFF "GTiff"
     #o_metadata = o_driver.GetMetadata()
     
@@ -121,7 +260,40 @@ def Write_Output_Raster(s_output_filename, raster_data, ncols, nrows, dem_geotra
     # Once we're done, close properly the dataset
     o_output_file = None
 
+    return
+
 def Get_Raster_Details(DEM_File):
+    """
+    Retrieves the geograhic details of a raster using GDAL in a slightly different way than Read_Raster_GDAL()
+
+    Parameters
+    ----------
+    DEM_File: str
+        The file name and full path to the raster you are analyzing
+
+    Returns
+    -------
+    minx: float
+        The longitude of the top left corner of the top pixel of the raster
+    miny: 
+        The lowest latitude of the the raster
+    maxx: 
+        The highest latitude of the the raster
+    maxy:
+        The latitude of the top left corner of the top pixel of the raster
+    dx: float
+        The pixel size of the raster longitudinally
+    dy: float
+        The pixel size of the raster latitudinally 
+    ncols: int
+        The raster width in pixels
+    nrows: int
+        The raster height in pixels
+    geoTransform: list
+        A list of geotranform characteristics for the raster
+    Rast_Projection:str
+        The projection system reference for the raster
+    """
     print(DEM_File)
     gdal.Open(DEM_File, gdal.GA_ReadOnly)
     data = gdal.Open(DEM_File)
@@ -139,6 +311,39 @@ def Get_Raster_Details(DEM_File):
     return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
 
 def Read_Raster_GDAL(InRAST_Name):
+    """
+    Retrieves the geograhic details of a raster using GDAL in a slightly different way than Get_Raster_Details()
+
+    Parameters
+    ----------
+    InRAST_Name: str
+        The file name and full path to the raster you are analyzing
+
+    Returns
+    -------
+    RastArray: arr
+        A numpy array of the values in the first band of the raster you are analyzing
+    ncols: int
+        The raster width in pixels
+    nrows: int
+        The raster height in pixels
+    cellsize: float
+        The pixel size of the raster longitudinally
+    yll: float
+        The lowest latitude of the the raster
+    yur: float
+        The latitude of the top left corner of the top pixel of the raster
+    xll: float
+        The longitude of the top left corner of the top pixel of the raster
+    xur: float
+        The highest longitude of the the raster
+    lat: float
+        The average of the yur and yll latitude values
+    geoTransform: list
+        A list of geotranform characteristics for the raster
+    Rast_Projection:str
+        The projection system reference for the raster
+    """
     try:
         dataset = gdal.Open(InRAST_Name, gdal.GA_ReadOnly)     
     except RuntimeError:
@@ -171,6 +376,21 @@ def Read_Raster_GDAL(InRAST_Name):
     return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
 
 def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
+    """
+    Removes redundant stream cells from the stream raster
+
+    Parameters
+    ----------
+    STRM_File: str
+        The path and file name of the input stream raster
+    STRM_File_Clean: str
+        The path and file name of the ouput stream raster
+
+    Returns
+    -------
+    None
+
+    """
     print('\nCleaning up the Stream File.')
     (SN, ncols, nrows, cellsize, yll, yur, xll, xur, lat, dem_geotransform, dem_projection) = Read_Raster_GDAL(STRM_File)
     
@@ -252,8 +472,27 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
     #return B[1:nrows+1,1:ncols+1], ncols, nrows, cellsize, yll, yur, xll, xur
     return
 
+def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path):
+    """
+    The main function that orchestrates the creation of ARC inputs
 
-def Process_AutoRoute_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path):
+    Parameters
+    ----------
+    Main_Directory: str
+        The path to the directory where ARC inputs are stored and where outputs will also be stored
+    id_field: str
+        The name of the field containing the unique identifier for your stream shapefile
+    max_flow_field: str
+        The name of the field containing the maximum streamflow input into ARC that is in the flow_file_path file
+    baseflow_field: str
+        The name of the field containing the baseflow streamflow input into ARC that is in the flow_file_path file
+    flow_file_path: str
+        The path and file name of the csv file containing the maximum flow and baseflow that will be used to create ARC outputs
+    Returns
+    -------
+    None
+    
+    """
     # we won't worry about using DEM cleaner files in this version
     DEM_Cleaner_File = False
     
@@ -313,7 +552,7 @@ def Process_AutoRoute_Geospatial_Data(Main_Directory, id_field, max_flow_field, 
         print(STRM_File + ' Already Exists')
     else:
         print('Creating ' + STRM_File)
-        Create_AR_StrmRaster(StrmSHP, STRM_File, outputBounds, minx, miny, maxx, maxy, dx, dy, ncols, nrows, id_field)
+        Create_AR_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, id_field)
     
     #Clean Stream Raster
     if os.path.isfile(STRM_File_Clean):
@@ -329,7 +568,7 @@ def Process_AutoRoute_Geospatial_Data(Main_Directory, id_field, max_flow_field, 
     #Create a Starting AutoRoute Input File
     ARC_FileName = os.path.join(ARC_Folder,'ARC_Input_File.txt')
     print('Creating ARC Input File: ' + ARC_FileName)
-    Create_ARC_Model_Input_File(Main_Directory, ARC_FileName, DEM_File, id_field, max_flow_field, baseflow_field, STRM_File_Clean, LAND_File, flow_file_path, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, VDT_Test_File,  XS_Out_File, DEM_Cleaner_File)
+    Create_ARC_Model_Input_File(ARC_FileName, DEM_File, id_field, max_flow_field, baseflow_field, STRM_File_Clean, LAND_File, flow_file_path, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File)
     
     
     print('\n\n')
@@ -340,7 +579,13 @@ def Process_AutoRoute_Geospatial_Data(Main_Directory, id_field, max_flow_field, 
 
 if __name__ == "__main__":
 
+    dem_cleaner = False
+    use_clean_dem = True
+    # test_cases = ['Shields_TestCase', 'Gardiner_TestCase']
     test_cases = ['SC_TestCase','OH_TestCase','TX_TestCase','IN_TestCase','PA_TestCase']
+    # test_cases = ['SC_TestCase','OH_TestCase','IN_TestCase','PA_TestCase']
+    # test_cases = ['TX_TestCase']
+
 
     test_cases_dict = {'SC_TestCase':
                         {'id_field':'COMID',
@@ -348,7 +593,7 @@ if __name__ == "__main__":
                          'baseflow_field': 'BaseFlow',
                          'medium_flow_field': 'MedFlow',
                          'low_flow_field': 'LowFlow',
-                         'flow_file': 'COMID_Q_qout_max.txt'
+                         'flow_file': 'FlowFile.txt'
                         },
                       'OH_TestCase':
                         {'id_field':'COMID',
@@ -356,7 +601,7 @@ if __name__ == "__main__":
                          'baseflow_field': 'BaseFlow',
                          'medium_flow_field': 'MedFlow',
                          'low_flow_field': 'LowFlow',
-                         'flow_file': 'COMID_Q_qout_max.txt'
+                         'flow_file': 'FlowFile.txt'
                         },
                       'TX_TestCase':
                         {'id_field':'permanent_',
@@ -364,7 +609,7 @@ if __name__ == "__main__":
                          'baseflow_field': 'BaseFlow',
                          'medium_flow_field': 'MedFlow',
                          'low_flow_field': 'LowFlow',
-                         'flow_file': 'COMID_Q_qout_max.txt'
+                         'flow_file': 'FlowFile.txt'
                         },
                       'IN_TestCase':
                         {'id_field':'COMID',
@@ -372,7 +617,7 @@ if __name__ == "__main__":
                          'baseflow_field': 'MedFlow',
                          'medium_flow_field': 'MedFlow',
                          'low_flow_field': 'LowFlow',
-                         'flow_file': 'COMID_Q_qout_max.txt'
+                         'flow_file': 'FlowFile.txt'
                         },
                       'PA_TestCase':
                         {'id_field':'permanent_',
@@ -380,14 +625,17 @@ if __name__ == "__main__":
                          'baseflow_field': 'BaseFlow',
                          'medium_flow_field': 'MedFlow',
                          'low_flow_field': 'LowFlow',
-                         'flow_file': 'COMID_Q_qout_max.txt'
+                         'flow_file': 'FlowFile.txt'
                         },
                      }
 
     for test_case in test_cases:
         test_case_dict = test_cases_dict[test_case]
 
-        FLOW_File = os.path.join(test_case, test_case_dict['flow_file'])
+        FLOW_File = os.path.join(test_case, "FLOW", test_case_dict['flow_file'])
 
-        Process_AutoRoute_Geospatial_Data(test_case, test_case_dict['id_field'], 'qout_max', 'qout_median', FLOW_File)
+        # Process_AutoRoute_Geospatial_Data_for_testing(test_case, test_case_dict['id_field'], test_case_dict['flow_field'], 
+        #                                   test_case_dict['baseflow_field'], test_case_dict['medium_flow_field'], 
+        #                                   test_case_dict['low_flow_field'], dem_cleaner, use_clean_dem)
+        Process_ARC_Geospatial_Data(test_case, test_case_dict['id_field'], 'HighFlow', 'BaseFlow', FLOW_File)
     
