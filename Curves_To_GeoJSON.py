@@ -1,16 +1,11 @@
-# Mike Follum
-# This code uses regression curves to define depth and top-width based on regression curves.  This information is then exported to a GeoJSON format for FIST
-import numpy as np
-
-from scipy.sparse import csr_matrix
-
+# built-in imports
 import os, sys
+import json
 
-try:
-    from osgeo import gdal
-except:
-    import gdal
-    from gdalconst import GA_ReadOnly
+# third-party imports
+import numpy as np
+from scipy.sparse import csr_matrix
+from osgeo import gdal
 
 
 def Get_Raster_Details(DEM_File):
@@ -343,22 +338,9 @@ def Write_GeoJSON_File(OutGeoJSON_File, num_records, OutProjection, CP_COMID, CP
                     out_str = out_str + '      "properties": {' + '\n'
                     
                     out_str = out_str + '           	"WaterSurfaceElev_m": "' + str(CP_WSE[i]) + '",' + '\n'
-                    
-                    out_str = out_str + '           	"Elev_m": "' + str(CP_ELEV[i]) + '",' + '\n'
-                    
-                    out_str = out_str + '           	"COMID": "' + str(int(CP_COMID[i])) + '",' + '\n'
-                    
-                    out_str = out_str + '           	"Flow_cms": "' + str(CP_Q[i]) + '",' + '\n'
-                    
-                    out_str = out_str + '           	"Velocity": "' + str(CP_VEL[i]) + '",' + '\n'
-                    
-                    out_str = out_str + '           	"TopWidth": "' + str(CP_TW[i]) + '",' + '\n'
-                    
+                                       
                     out_str = out_str + '           	"SEED": "'
                     out_str = out_str + str(int(CP_SEED[i]))
-                    #    out_str = out_str + str(int(CP_SEED[i]))
-                    #else:
-                    #    out_str = out_str + ''
                     out_str = out_str + '"'
                     
                     out_str = out_str + '\n' + '      	}' + '\n' + '      }'
@@ -366,6 +348,17 @@ def Write_GeoJSON_File(OutGeoJSON_File, num_records, OutProjection, CP_COMID, CP
     out_str = '\n' + '    ]' + '\n' + '  }'
     outfile.write(out_str)
     outfile.close()
+
+    # If the JSON data is in a file, you can load it first and then minify
+    # minify will remove all the unnecessary white space and reduce the file size
+    with open(OutGeoJSON_File, 'r') as f:
+        data = json.load(f)
+        f.close()
+    
+    with open(OutGeoJSON_File, 'w') as f:
+        json.dump(data, f, separators=(',', ':'))
+        f.close()
+
     return
 
 def DetermineMedianDEP_MedianWSE_for_Each_COMID(COMID_List, CP_COMID, CP_DEP, CP_WSE):
