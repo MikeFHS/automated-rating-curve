@@ -1817,6 +1817,8 @@ if __name__ == "__main__":
             for i_entry_elevation in range(i_number_of_increments + 1):
                 # Calculate the geometry
                 d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
+
+                    
                 A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
                 A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
 
@@ -1830,6 +1832,8 @@ if __name__ == "__main__":
                     da_total_t[i_entry_elevation] = 0.0
                     da_total_a[i_entry_elevation] = 0.0
                     da_total_p[i_entry_elevation] = 0.0
+                    # this is the channel bottom elevation that we will use as depth = 0 when building the power functions
+                    da_total_wse[i_entry_elevation] = d_wse
                     i_start_elevation_index = i_entry_elevation
 
                 else:
@@ -1842,11 +1846,11 @@ if __name__ == "__main__":
 
                     # Estimate total flows
                     da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
-                                                     math.pow(d_slope_use, 0.5))
+                                                    math.pow(d_slope_use, 0.5))
                     da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
                     da_total_wse[i_entry_elevation] = d_wse
                     i_last_elevation_index = i_entry_elevation
-
+            
             # Process each of the elevations to the output file if feasbile values were produced
             for i_entry_elevation in range(i_number_of_elevations - 1, 0, -1):
                 if i_entry_elevation == i_number_of_elevations-1:
@@ -1933,17 +1937,15 @@ if __name__ == "__main__":
 
                 o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
                 i_outprint_yes = 1
-                
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
-            #print(da_total_q[i_start_elevation_index:i_last_elevation_index+1])
-            #Not needed here, but [::-1] basically reverses the order of the array
+            # Not needed here, but [::-1] basically reverses the order of the array
             (d_t_a, d_t_b, d_t_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_t[i_start_elevation_index:i_last_elevation_index+1])
             (d_v_a, d_v_b, d_v_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_v[i_start_elevation_index:i_last_elevation_index+1])
             da_total_depth = da_total_wse - da_xs_profile1[0]
             (d_d_a, d_d_b, d_d_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_depth[i_start_elevation_index:i_last_elevation_index+1])
-            #COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b
+            # COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b
             o_curve_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_dem_low_point_elev) + ",{:.3f}".format(da_total_q[i_last_elevation_index]))
             o_curve_file.write(",{:.3f}".format(d_d_a) + ",{:.3f}".format(d_d_b) + ",{:.3f}".format(d_t_a) + ",{:.3f}".format(d_t_b) + ",{:.3f}".format(d_v_a) + ",{:.3f}".format(d_v_b) )
 
@@ -1955,7 +1957,7 @@ if __name__ == "__main__":
         if s_xs_output_file != '':
             o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
 
-    
+   
     # Close the output file
     o_out_file.close()
     print('Finished writing ' + str(s_output_vdt_database))
