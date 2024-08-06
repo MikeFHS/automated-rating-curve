@@ -11,4 +11,5 @@ dependencies:
   - pip
   - netCDF4
   - xarray
+  - geojson
 
