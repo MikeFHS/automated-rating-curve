@@ -38,5 +38,7 @@ if __name__ == "__main__":
     OutGeoJSON_File = ""
     # The ESPG description of the coordinate system of the OutGeoJSON_File.
     OutProjection = ""
+    # True/False of whether or not to filter the output GeoJSON
+    Thin_GeoJSON = True
     
-    Curves_To_GeoJSON.Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev)
+    Curves_To_GeoJSON.Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev, Thin_GeoJSON)
