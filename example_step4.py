@@ -11,19 +11,6 @@ if __name__ == "__main__":
     # local imports
     import Curves_To_GeoJSON
 
-    # The path to the stream raster that you created as input for ARC in Step 2.
-    STRM_Raster_File = ""
-    # The path to the DEM raster that you used as input for ARC in Step 2.
-    DEM_Raster_File = "" 
-    # The path to the file where you will store you SEED output.
-    SEED_Point_File =""
-
-    # By-pass creating the SEED file, if it already exists
-    if os.path.isfile(SEED_Point_File) is False:
-        (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Curves_To_GeoJSON.Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File)
-    else:
-        (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Curves_To_GeoJSON.GetSEED_Data_From_File(SEED_Point_File)
-    
     # The name of the watershed or area of interest you're simulating.
     WatershedName = ""
     # The CurveFile.csv you created in Step 3.
@@ -40,5 +27,15 @@ if __name__ == "__main__":
     OutProjection = ""
     # True/False of whether or not to filter the output GeoJSON
     Thin_GeoJSON = True
-    
-    Curves_To_GeoJSON.Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev, Thin_GeoJSON)
+    # The file path and file name of the vector shapefile of flowlines
+    StrmShp = ""
+    # The field in the StrmShp that is the streams unique identifier
+    Stream_ID_Field = ""
+    # The field in the StrmShp that is used to identify the stream downstream of the stream
+    Downstream_ID_Field = ""
+    # The file path and file name of the output shapefile that contains the SEED locations and the unique ID of the stream each represents
+    SEED_Output_File = ""
+    # True/False of whether or not to filter the output GeoJSON
+    Thin_Output = True
+        
+    Curves_To_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output)
