@@ -12,4 +12,5 @@ dependencies:
   - netCDF4
   - xarray
   - geojson
+  - networkx
 
