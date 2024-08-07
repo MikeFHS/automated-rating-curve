@@ -152,22 +152,18 @@ def FindClosestSEEDPoints(seed_gdf, curve_data_gdf):
 
     return (curve_data_gdf)
 
-def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output):
+def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output):
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
     Parameters
     ----------
-    WatershedName: str
-        The name of the watershed or domain you are modeling
     CurveParam_File: str
         The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
         The file path and file name of the file that contains the streamflow estimates for the streams in your domain
     STRM_Raster_File: str
         The file path and file name of the stream raster that contains the stream cells you used to run ARC 
-    DEM_Raster_File: str
-        The file path and file name of the digital elevation model (DEM) that you used to run ARC
     OutGeoJSON_File: str
         The file path and file name of the output GeoJSON the program will be creating
     OutProjection: str
@@ -608,22 +604,18 @@ def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_
 
     return (curve_data_gdf)
 
-def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev, Thin_GeoJSON):
+def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, Thin_GeoJSON):
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
     Parameters
     ----------
-    WatershedName: str
-        The name of the watershed or domain you are modeling
     CurveParam_File: str
         The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
         The file path and file name of the file that contains the streamflow estimates for the streams in your domain
     STRM_Raster_File: str
         The file path and file name of the stream raster that contains the stream cells you used to run ARC 
-    DEM_Raster_File: str
-        The file path and file name of the digital elevation model (DEM) that you used to run ARC
     OutGeoJSON_File: str
         The file path and file name of the output GeoJSON the program will be creating
     OutProjection: str
@@ -638,10 +630,6 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(WatershedName, CurveParam_Fi
         A list of integer values that represent the row in stream and DEM raster where the SEED location is
     SEED_c: list
         A list of integer values that represent the column in stream and DEM raster where the SEED location is
-    SEED_MinElev: list
-        A list of float values that represent the minimum elevation of the stream cells on the stream reach of the SEED location
-    SEED_MaxElev: list
-        A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
     Thin_GeoJSON: bool
         True/False of whether or not to filter the output GeoJSON
     
