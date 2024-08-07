@@ -11,16 +11,12 @@ if __name__ == "__main__":
     # local imports
     import Curves_To_GeoJSON
 
-    # The name of the watershed or area of interest you're simulating.
-    WatershedName = ""
     # The CurveFile.csv you created in Step 3.
     CurveParam_File = ""
     # The file containing the unique ID and streamflow for your area of interest that you intend to simulate flood inundation for using FIST.
     COMID_Q_File = ""
     # The path to the stream raster that you created as input for ARC in Step 2.
     STRM_Raster_File = ""
-    # The path to the DEM raster that you used as input for ARC in Step 2.
-    DEM_Raster_File = ""
     # The path to the GeoJSON file that will be used as input into the FIST model.
     OutGeoJSON_File = ""
     # The ESPG description of the coordinate system of the OutGeoJSON_File.
@@ -38,4 +34,4 @@ if __name__ == "__main__":
     # True/False of whether or not to filter the output GeoJSON
     Thin_Output = True
         
-    Curves_To_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output)
+    Curves_To_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output)
