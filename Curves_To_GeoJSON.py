@@ -141,9 +141,6 @@ def FindClosestSEEDPoints(seed_gdf, curve_data_gdf):
     # Get the rows with the minimum distance
     nearest_cp = nearest_cp.loc[min_distance_idx]
 
-    # Ensure the result contains only one value for each unique row in gdf1
-    nearest_cp = nearest_cp.drop_duplicates(subset=['LINKNO'])
-
     # Create a boolean mask for matching rows in the original dataframe
     mask = curve_data_gdf.set_index(['COMID', 'Row', 'Col']).index.isin(nearest_cp.set_index(['COMID', 'Row', 'Col']).index)
 
