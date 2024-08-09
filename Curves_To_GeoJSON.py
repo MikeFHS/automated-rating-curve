@@ -244,6 +244,12 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, COMID_Q_Fil
     # estimate velocity
     curve_data_gdf['CP_VEL'] = round(curve_data_gdf['vel_a']*curve_data_gdf['qout']**curve_data_gdf['vel_b'], 3)
 
+    # drop any stream cells where NaNs are present in the WaterSurfaceElev_m column
+    curve_data_gdf = curve_data_gdf[~curve_data_gdf['WaterSurfaceElev_m'].isna()]
+
+    # drop any stream cells where water surface elevation is <= 0
+    curve_data_gdf = curve_data_gdf[curve_data_gdf['WaterSurfaceElev_m'] > 0]
+
     # find the median depth and WSE value for each COMID, these will be used for filtering
     COMID_MedDEP = curve_data_gdf.groupby('COMID')['CP_DEP'].median().reset_index()
     COMID_MedDEP.rename(columns={'CP_DEP': 'COMID_MedDEP'}, inplace=True)
@@ -696,6 +702,12 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     
     # estimate velocity
     curve_data_gdf['CP_VEL'] = round(curve_data_gdf['vel_a']*curve_data_gdf['qout']**curve_data_gdf['vel_b'], 3)
+
+    # drop any stream cells where NaNs are present in the WaterSurfaceElev_m column
+    curve_data_gdf = curve_data_gdf[~curve_data_gdf['WaterSurfaceElev_m'].isna()]
+
+    # drop any stream cells where water surface elevation is <= 0
+    curve_data_gdf = curve_data_gdf[curve_data_gdf['WaterSurfaceElev_m'] > 0]
 
     # find the median depth and WSE value for each COMID, these will be used for filtering
     COMID_MedDEP = curve_data_gdf.groupby('COMID')['CP_DEP'].median().reset_index()

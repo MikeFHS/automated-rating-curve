@@ -763,6 +763,7 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     XSFileFolder = os.path.join(Main_Directory, 'XS')
     LandFolder = os.path.join(Main_Directory, 'LAND')
     VDTFolder = os.path.join(Main_Directory, 'VDT')
+    FISTFolder = os.path.join(Main_Directory, 'FIST')
     VDT_File = os.path.join(Main_Directory, 'VDT', 'VDT_Database.txt')
     Curve_File = os.path.join(Main_Directory, 'VDT', 'CurveFile.csv')
     FloodMapFile = os.path.join(FloodFolder,'ARC_Flood.tif')
@@ -778,6 +779,7 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     Create_Folder(ARC_Folder)
     Create_Folder(BathyFileFolder)
     Create_Folder(XSFileFolder)
+    Create_Folder(FISTFolder)
     
     
     #Get the Spatial Information from the DEM Raster
