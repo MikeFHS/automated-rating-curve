@@ -8,49 +8,143 @@ Program simply creates depth, velocity, and top-width information for each strea
 import sys
 import os
 import numpy as np
-import math
+import math, time
 from datetime import datetime
 from scipy.optimize import curve_fit
 try:
     import gdal 
-    #import osr 
-    #import ogr
-    #from gdalconst import GA_ReadOnly
+
 except: 
     from osgeo import gdal
-    #from osgeo import osr
-    #from osgeo import ogr
-    #from osgeo.gdalconst import GA_ReadOnly
 
-def array_to_string(array, decimal_places=6):
-    """Convert a NumPy array to a formatted string with consistent spacing and no new lines."""
-    format_str = f"{{:.{decimal_places}f}}"
-    
-    def format_array(arr):
-        return "[" + ",".join(format_str.format(x) for x in arr) + "]"
-    
-    if array.ndim == 1:
-        return format_array(array)
-    elif array.ndim == 2:
-        return "[" + ",".join(format_array(row) for row in array) + "]"
+
+def format_array(da_array: np.ndarray, s_format: str):
+    """
+    Formats a string. Helper function to allow multidimensional formats
+
+    Parameters
+    ----------
+    da_array: np.array
+        Array to be formatted
+    s_format: str
+        Specifies the format of the output
+
+    Returns
+    -------
+    s_formatted_output: str
+        Formatted output as a string
+
+    """
+
+    # Format the output
+    s_formatted_output = "[" + ",".join(s_format.format(x) for x in da_array) + "]"
+
+    # Return to the calling function
+    return s_formatted_output
+
+
+def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
+    """
+    Convert a NumPy array to a formatted string with consistent spacing and no new lines.
+
+    Parameters
+    ----------
+    da_array: np.ndarray
+        Array to conver to a string
+    i_decimal_places: int
+        Number oof decimal places to return in the string
+
+    Returns
+    -------
+
+    """
+
+    # Define the format string
+    s_format = f"{{:.{i_decimal_places}f}}"
+
+    # Format the string based on the dimensionality of the array
+    if da_array.ndim == 1:
+        # Array is one-dimensional
+        s_output = format_array(da_array, s_format)
+
+    elif da_array.ndim == 2:
+        # Array is two-dimensional
+        s_output = "[" + ",".join(format_array(row, s_format) for row in da_array) + "]"
+
     else:
+        # Array is ill formated. Throw an error.
         raise ValueError("Only 1D and 2D arrays are supported")
+        s_output = None
+
+    # Return to the calling function
+    return s_output
+
 
 # Power function equation
-def power_func(x, a, b):
-    return a * np.power(x, b)
+def power_func(d_value: float, d_coefficient: float, d_power: float):
+    """
+    Define a general power function that can be used for fitting
 
-def LinearRegressionPowerFunction(Q,P):
+    Parameters
+    ----------
+    d_value: float
+        Current x value
+    d_coefficient: float
+        Coefficient at the lead of the power function
+    d_power: float
+        Power value
+
+    Returns
+    -------
+    d_power_value: float
+        Calculated value
+
+    """
+
+    # Calculate the power
+    d_power_value = d_coefficient * np.power(d_value, d_power)
+
+    # Return to the calling function
+    return d_power_value
+
+
+def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndarray):
+    """
+    Performs a curve fit to a power function
+
+    Parameters
+    ----------
+    da_x_input: np.ndarray
+        X values input to the fit
+    da_y_input: np.ndarray
+        Y values input to the fit
+
+    Returns
+    -------
+    d_coefficient: float
+         Coeffient of the fit
+    d_power: float
+        Power of the fit
+    d_R2: float
+        Goodness of fit
+
+    """
+
+    # Attempt to calculate the fit
     try:
-        (a,b), pcov = curve_fit(power_func, Q, P)
-        corr_matrix = np.corrcoef(P, power_func(Q, a, b))
-        corr = corr_matrix[0,1]
-        R2 = corr**2
+        (d_coefficient, d_power), dm_pcov = curve_fit(power_func, da_x_input, da_y_input)
+        dm_corr_matrix = np.corrcoef(da_y_input, power_func(da_x_input, d_coefficient, d_power))
+        d_corr = dm_corr_matrix[0, 1]
+        d_R2 = d_corr ** 2
+
     except:
-        a=-9999.9
-        b=-9999.9
-        R2 = -9999.9
-    return a, b, R2
+        # Fit was not successful. Put in flag values to indicate failure
+        d_coefficient=-9999.9
+        d_power=-9999.9
+        d_R2 = -9999.9
+
+    # Return to the calling function
+    return d_coefficient, d_power, d_R2
 
 
 def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_number_of_columns: int, i_number_of_rows: int, l_dem_geotransform: list, s_dem_projection: str,
@@ -785,62 +879,63 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
     
     # Determine the best direction to perform calcualtions
     if d_xs_direction >= math.pi / 4 and d_xs_direction <= 3 * math.pi / 4:
-        for i_entry in range(i_centerpoint):
-            # Calculate the distance in the x direction
-            d_distance_x = i_entry * d_dy * math.cos(d_xs_direction)
+        # Calculate the distance in the x direction
+        da_distance_x = np.arange(i_centerpoint) * d_dy * math.cos(d_xs_direction)
 
-            # Convert the distance to a number of indices
-            i_x_index_offset = int(d_distance_x / d_dx)
-            ia_xc_dr_index_main[i_entry] = i_entry
-            ia_xc_dc_index_main[i_entry] = i_x_index_offset
+        # Convert the distance to a number of indices
+        ia_x_index_offset = da_distance_x / d_dx
+        ia_x_index_offset = ia_x_index_offset.astype(int)
 
-            # Calculate the sign of the angle
-            i_sign = 1
-            if d_distance_x < 0:
-                i_sign = -1
+        ia_xc_dr_index_main[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
+        ia_xc_dc_index_main[np.arange(i_centerpoint)] = ia_x_index_offset
 
-            # Round using the angle direction
-            i_x_index_offset = round((d_distance_x / d_dx) + 0.5 * i_sign)
+        # Calculate the sign of the angle
+        ia_sign = np.ones(i_centerpoint)
+        ia_sign[da_distance_x < 0] = -1
 
-            # Set the values in as index locations
-            ia_xc_dr_index_second[i_entry] = i_entry
-            ia_xc_dc_index_second[i_entry] = i_x_index_offset
+        # Round using the angle direction
+        ia_x_index_offset = np.round((da_distance_x / d_dx) + 0.5 * ia_sign, 0)
 
-            # ddx is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
-            d_ddx = abs(float(d_distance_x / d_dx) - i_x_index_offset)
-            da_xc_main_fract[i_entry] = 1.0 - d_ddx
-            da_xc_second_fract[i_entry] = d_ddx
+        # Set the values in as index locations
+        ia_xc_dr_index_second[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
+        ia_xc_dc_index_second[np.arange(i_centerpoint)] = ia_x_index_offset
+
+        # ddx is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
+        da_ddx = np.fabs((da_distance_x / d_dx) - ia_x_index_offset)
+        da_xc_main_fract[np.arange(i_centerpoint)] = 1.0 - da_ddx
+        da_xc_second_fract[np.arange(i_centerpoint)] = da_ddx
 
         # Distance between each increment
         d_distance_z = math.sqrt((d_dy * math.cos(d_xs_direction)) * (d_dy * math.cos(d_xs_direction)) + d_dy * d_dy)
 
+
     else:
         # Calculate based on the column being the dominate direction
-        for i_entry in range(i_centerpoint):
-            # Calculate the distance in the y direction
-            d_distance_y = i_entry * d_dx * math.sin(d_xs_direction)
+        # Calculate the distance in the y direction
+        da_distance_y = np.arange(i_centerpoint) * d_dx * math.sin(d_xs_direction)
 
-            # Convert the distance to a number of indices
-            i_y_index_offset = int(d_distance_y / d_dy)
-            ia_xc_dr_index_main[i_entry] = i_y_index_offset
-            ia_xc_dc_index_main[i_entry] = i_entry
+        # Convert the distance to a number of indices
+        ia_y_index_offset = da_distance_y / d_dy
+        ia_y_index_offset = ia_y_index_offset.astype(int)
 
-            # Calculate the sign of the angle
-            i_sign = 1
-            if d_distance_y < 0:
-                i_sign = -1
+        ia_xc_dr_index_main[np.arange(i_centerpoint)] = ia_y_index_offset
+        ia_xc_dc_index_main[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
 
-            # Round using the angle direction
-            i_y_index_offset = round((d_distance_y / d_dy) + 0.5 * i_sign)
+        # Calculate the sign of the angle
+        ia_sign = np.ones(i_centerpoint)
+        ia_sign[da_distance_y < 0] = -1
 
-            # Set the values in as index locations
-            ia_xc_dr_index_second[i_entry] = i_y_index_offset
-            ia_xc_dc_index_second[i_entry] = i_entry
+        # Round using the angle direction
+        ia_y_index_offset = np.round((da_distance_y / d_dy) + 0.5 * ia_sign, 0)
 
-            # ddy is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
-            d_ddy = abs(float(d_distance_y / d_dy) - i_y_index_offset)
-            da_xc_main_fract[i_entry] = 1.0 - d_ddy
-            da_xc_second_fract[i_entry] = d_ddy
+        # Set the values in as index locations
+        ia_xc_dr_index_second[np.arange(i_centerpoint)] = ia_y_index_offset
+        ia_xc_dc_index_second[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
+
+        # ddy is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
+        da_ddy = np.fabs((da_distance_y / d_dy) - ia_y_index_offset)
+        da_xc_main_fract[np.arange(i_centerpoint)] = 1.0 - da_ddy
+        da_xc_second_fract[np.arange(i_centerpoint)] = da_ddy
 
         # Distance between each increment
         d_distance_z = math.sqrt((d_dx * math.sin(d_xs_direction)) * (d_dx * math.sin(d_xs_direction)) + d_dx * d_dx)
@@ -1085,28 +1180,16 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
             elif d_dist_cell_to_bank >= d_distance_h and d_dist_cell_to_bank <= (d_trap_base + d_distance_h):
                 da_xs_profile[x] = d_y_bathy
                 dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                #if ia_xc_r_index_main[x]<0 or ia_xc_r_index_main[x]>=nrows or ia_xc_c_index_main[x]<0 or ia_xc_c_index_main[x]>=nrows:
-                #    break
-                #else:
-                #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # If the cell is in the slope part of the trapezoid you need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank <= d_distance_h:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
                 dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                #if ia_xc_r_index_main[x]<0 or ia_xc_r_index_main[x]>=nrows or ia_xc_c_index_main[x]<0 or ia_xc_c_index_main[x]>=nrows:
-                #    break
-                #else:
-                #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
                 dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                #if ia_xc_r_index_main[x]<0 or ia_xc_r_index_main[x]>=nrows or ia_xc_c_index_main[x]<0 or ia_xc_c_index_main[x]>=nrows:
-                #    break
-                #else:
-                #    dm_output_bathymetry[ia_xc_1_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
 
 def calculate_hypotnuse(d_side_one: float, d_side_two: float):
@@ -1158,6 +1241,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
 
     """
 
+
     # Set initial values for the variables
     d_area = 0.0
     d_perimeter = 0.0
@@ -1169,47 +1253,52 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
     da_y_depth = d_wse - da_xs_profile
 
     # Estimate geometry if the depth is valid
-    if len(da_y_depth) > 0 and da_y_depth[0] > 1e-16:
-        # Loop on the cross section cells
-        for x in range(1, len(da_y_depth)):
-            # Check that the depth is valid
-            if da_y_depth[x] <= 0.0:
-                # Depth is not valid. Attempt an adjustment.
-                d_dist_use = d_distance_z * da_y_depth[x - 1] / (abs(da_y_depth[x - 1]) + abs(da_y_depth[x]))
-                d_area = d_area + 0.5*d_dist_use * da_y_depth[x-1]
-                d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[x - 1])
-                d_perimeter = d_perimeter + d_perimeter_i
-                d_hydraulic_radius = d_area / d_perimeter
+    if da_y_depth.shape[0] > 0 and da_y_depth[0] > 1e-16:
+        # Calculate the good values for later use
+        da_area_good = d_distance_z * 0.5 * (da_y_depth[1:] + da_y_depth[:-1])
+        da_perimeter_i_good = calculate_hypotnuse(d_distance_z, (da_y_depth[1:] - da_y_depth[:-1]))
 
-                # Check the mannings n
-                if da_n_profile[x - 1] > 0.3 or da_n_profile[x - 1] < 0.005:
-                    da_n_profile[x - 1] = 0.035
+        # Correct the Mannings values if too high or low
+        da_n_profile_copy = np.copy(da_n_profile)
+        da_n_profile_copy[da_n_profile_copy > 0.3] = 0.035
+        da_n_profile_copy[da_n_profile_copy < 0.005] = 0.005
 
-                # Calculate the composite n
-                d_composite_n = d_composite_n + d_perimeter_i * math.pow(da_n_profile[x - 1], 1.5)
+        # Calculate the Mannings n for later use
+        da_composite_n_good = da_perimeter_i_good * np.power(da_n_profile_copy[1:], 1.5)
 
-                # Update the top width
-                d_top_width = d_top_width + d_dist_use
+        # Take action if there are bad values
+        if np.any(da_y_depth[1:] <= 0):
+            # A bad value exists. Calculate up to that value then break for the rest of hte values.
+            # Get the index of the first bad vadlue
+            i_target_index = int(np.argwhere(da_y_depth[1:] <= 0)[0]) + 1
 
-                # Return values immediately
-                break
+            # Calculate the distance to use
+            d_dist_use = d_distance_z * da_y_depth[i_target_index - 1] / (abs(da_y_depth[i_target_index - 1]) + abs(da_y_depth[i_target_index]))
 
-            else:
-                # Depth is valid. Proceed with calculation.
-                d_area = d_area + d_distance_z * 0.5 * (da_y_depth[x] + da_y_depth[x - 1])
-                d_perimeter_i = calculate_hypotnuse(d_distance_z, (da_y_depth[x] - da_y_depth[x - 1]))
-                d_perimeter = d_perimeter + d_perimeter_i
-                d_hydraulic_radius = d_area / d_perimeter
+            # Calculate the geometric variables
+            d_area = np.sum(da_area_good[:i_target_index - 1]) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
+            d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
+            d_perimeter = np.sum(da_perimeter_i_good[:i_target_index - 1]) + d_perimeter_i
+            d_hydraulic_radius = d_area / d_perimeter
 
-                # Check the mannings n
-                if da_n_profile[x] > 0.3 or da_n_profile[x] < 0.005:
-                    da_n_profile[x] = 0.035
+            # Calculate the composite n
+            d_composite_n = np.sum(da_composite_n_good[:i_target_index - 1]) + d_perimeter_i * np.power(da_n_profile_copy[i_target_index - 1], 1.5)
 
-                # Update the composite n
-                d_composite_n = d_composite_n + d_perimeter_i * math.pow(da_n_profile[x], 1.5)
+            # Update the top width
+            d_top_width = d_distance_z * (i_target_index - 1) + d_dist_use
 
-                # Update the top width
-                d_top_width = d_top_width + d_distance_z
+        else:
+            # All values are good, so include them all.
+            # Calculate teh geometric values
+            d_area = np.sum(da_area_good[da_y_depth[1:] > 0])
+            d_perimeter = np.sum(da_perimeter_i_good[da_y_depth[1:] > 0])
+            d_hydraulic_radius = d_area / d_perimeter
+
+            # Calculate the composite Mannings N
+            d_composite_n = np.sum(da_composite_n_good)
+
+            # Update the top width
+            d_top_width = d_distance_z * np.sum(da_y_depth[1:] > 0)
 
     # Return to the calling function
     return d_area, d_perimeter, d_hydraulic_radius, d_composite_n, d_top_width
@@ -1535,8 +1624,8 @@ if __name__ == "__main__":
         d_dem_low_point_elev = da_xs_profile1[0]
         if i_low_spot_range > 0:
             i_lowest_point_index_offset = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
-                                                                                                 ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, nrows, ncols,
-                                                                                                 i_boundary_number)
+                                                                               ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, nrows, ncols,
+                                                                               i_boundary_number)
 
    
         # The r and c for the stream cell is adjusted because it may have moved
@@ -1941,10 +2030,10 @@ if __name__ == "__main__":
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
             # Not needed here, but [::-1] basically reverses the order of the array
-            (d_t_a, d_t_b, d_t_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_t[i_start_elevation_index:i_last_elevation_index+1])
-            (d_v_a, d_v_b, d_v_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_v[i_start_elevation_index:i_last_elevation_index+1])
+            (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_t[i_start_elevation_index:i_last_elevation_index + 1])
+            (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_v[i_start_elevation_index:i_last_elevation_index + 1])
             da_total_depth = da_total_wse - da_xs_profile1[0]
-            (d_d_a, d_d_b, d_d_R2) = LinearRegressionPowerFunction(da_total_q[i_start_elevation_index:i_last_elevation_index+1], da_total_depth[i_start_elevation_index:i_last_elevation_index+1])
+            (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_depth[i_start_elevation_index:i_last_elevation_index + 1])
             # COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b
             o_curve_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_dem_low_point_elev) + ",{:.3f}".format(da_total_q[i_last_elevation_index]))
             o_curve_file.write(",{:.3f}".format(d_d_a) + ",{:.3f}".format(d_d_b) + ",{:.3f}".format(d_t_a) + ",{:.3f}".format(d_t_b) + ",{:.3f}".format(d_v_a) + ",{:.3f}".format(d_v_b) )
