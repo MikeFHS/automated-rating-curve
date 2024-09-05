@@ -1,18 +1,347 @@
 # built-in imports
 import os, sys
 import json
+from io import StringIO
+import time
+
 
 # third-party imports
 import numpy as np
 from scipy.sparse import csr_matrix
 from osgeo import gdal
+import geopandas as gpd
+from shapely.geometry import Point
+from scipy.spatial import cKDTree
+import geojson
+from geojson import Point, Feature, FeatureCollection
+import pandas as pd
+import networkx as nx
+from shapely.geometry import Point, LineString, MultiLineString
 
 # local imports
 from process_geospatial_data import Get_Raster_Details, Read_Raster_GDAL
 
-def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File ):
+import geopandas as gpd
+import networkx as nx
+import pandas as pd
+from shapely.geometry import Point, LineString, MultiLineString
+
+def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
     """
-    Uses the stream raster and digital elevation model (DEM) raster to define the potential SEED points or the locations of outlets for streams in the stream raster.
+    Finds the locations of SEED points, or the most upstream locations in our modeling domain, using the topology in the stream shapefile
+    Parameters
+    ----------
+    StrmShp: str
+        The file path and file name of the stream flowline vector network shapefile 
+    SEED_Output_File: str
+        The file path and file name of the output shapefile that contains the SEED locations and the unique ID of the stream each represents
+    OutProjection: str
+        A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
+    Stream_ID_Field: str
+        The field in the StrmShp that is the streams unique identifier
+    Downstream_ID_Field: str
+        The field in the StrmShp that is used to identify the stream downstream of the stream
+    
+    Returns
+    -------
+    seed_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
+    """
+    # Load the hydrographic network data
+    gdf = gpd.read_file(StrmShp)
+
+    # Build the graph using LINKNO and DSLINKNO
+    G = nx.DiGraph()
+
+    for idx, row in gdf.iterrows():
+        if not pd.isna(row[Downstream_ID_Field]):
+            G.add_edge(row[Stream_ID_Field], row[Downstream_ID_Field])
+
+    # Find all source nodes (uppermost locations)
+    sources = [node for node in G.nodes() if G.in_degree(node) == 0]
+
+    # Filter the source geometries
+    source_geometries = gdf[gdf[Stream_ID_Field].isin(sources)].geometry
+    source_linknos = gdf[gdf[Stream_ID_Field].isin(sources)][Stream_ID_Field]
+
+    # Function to extract start and end coordinates, excluding confluence points
+    def get_coords(geometry):
+        if isinstance(geometry, LineString):
+            return [geometry.coords[-1]], [geometry.coords[0]]
+        elif isinstance(geometry, MultiLineString):
+            start_coords = [line.coords[-1] for line in geometry.geoms]
+            end_coords = [line.coords[0] for line in geometry.geoms]
+            return start_coords, end_coords
+        else:
+            raise TypeError("Geometry must be a LineString or MultiLineString")
+
+    # Extract the start and end coordinates
+    start_coords_list = []
+    end_coords_list = []
+    linkno_list = []
+
+    for geometry, linkno in zip(source_geometries, source_linknos):
+        start_coords, end_coords = get_coords(geometry)
+        start_coords_list.extend(start_coords)
+        end_coords_list.extend(end_coords)
+        linkno_list.extend([linkno] * len(start_coords))
+
+    # Convert end_coords to a set for efficient lookup
+    end_coords_set = set(end_coords_list)
+
+    # Filter start_coords to exclude any coordinates present in end_coords
+    filtered_seed_coords = [(coord, linkno) for coord, linkno in zip(start_coords_list, linkno_list) if coord not in end_coords_set]
+
+    # Convert the filtered start coordinates to Point geometries and keep the LINKNO field
+    seed_points = [Point(coords) for coords, _ in filtered_seed_coords]
+    seed_linknos = [linkno for _, linkno in filtered_seed_coords]
+
+    # Create a new GeoDataFrame for the starting locations
+    seed_gdf = gpd.GeoDataFrame({'LINKNO': seed_linknos, 'geometry': seed_points}, crs=gdf.crs)
+
+    # Export the starting locations to a point shapefile
+    seed_gdf.to_file(SEED_Output_File)
+
+    print("SEED locations have been exported as a separate point shapefile.")
+    
+    return (seed_gdf)
+
+def FindClosestSEEDPoints(seed_gdf, curve_data_gdf):
+    """
+    Compares stream cell locations to SEED point locations (i.e., the uppermost headwater extents of the ARC model domain) and finds the closest stream cell for each SEED point 
+
+    Parameters
+    ----------
+    seed_gdf: geodataframe
+        A geodataframe of all SEED locations in your model domain, created using the find_SEED_locations function
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model with depth, top-width, and velocity, all estimated using the ARC synthetic rating curves
+
+    Returns
+    -------
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
+    """
+    # Reproject to a projected coordinate system so that we can accurately measure distances
+    seed_gdf = seed_gdf.to_crs(epsg=6933) 
+
+    # Prefill the curve data file with a SEED value, this will be set to 1 if the column is designated as a SEED column
+    curve_data_gdf['SEED'] = "0"
+
+    # Spatial join to find the distance between each CP point and each SEED point
+    nearest_cp = gpd.sjoin_nearest(seed_gdf, curve_data_gdf, how='left', distance_col='dist')
+
+    # Filter based on attributes
+    # Make sure the COMID's match betweent the SEED and curves
+    nearest_cp = nearest_cp[nearest_cp['LINKNO'] == nearest_cp['COMID']]
+
+    # Find the minimum distance for each unique gdf1 row
+    min_distance_idx = nearest_cp.groupby(nearest_cp.index)['dist'].idxmin()
+
+    # Get the rows with the minimum distance
+    nearest_cp = nearest_cp.loc[min_distance_idx]
+
+    # Create a boolean mask for matching rows in the original dataframe
+    mask = curve_data_gdf.set_index(['COMID', 'Row', 'Col']).index.isin(nearest_cp.set_index(['COMID', 'Row', 'Col']).index)
+
+    # Update the 'SEED' value to 1 for matching rows
+    curve_data_gdf.loc[mask, 'SEED'] = "1"
+
+    return (curve_data_gdf)
+
+def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output):
+    """
+    Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
+
+    Parameters
+    ----------
+    CurveParam_File: str
+        The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
+    COMID_Q_File: str
+        The file path and file name of the file that contains the streamflow estimates for the streams in your domain
+    STRM_Raster_File: str
+        The file path and file name of the stream raster that contains the stream cells you used to run ARC 
+    OutGeoJSON_File: str
+        The file path and file name of the output GeoJSON the program will be creating
+    OutProjection: str
+        A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
+    StrmShp: str
+        The file path and file name of the vector shapefile of flowlines
+    Stream_ID_Field: str
+        The field in the StrmShp that is the streams unique identifier
+    Downstream_ID_Field: str
+        The field in the StrmShp that is used to identify the stream downstream of the stream
+    SEED_Output_File: str
+        The file path and file name of the output shapefile that contains the SEED locations and the unique ID of the stream each represents
+    Thin_Output: bool
+        True/False of whether or not to filter the output GeoJSON
+    
+    
+    Returns
+    -------
+    None
+    """
+
+    # Read the streamflow data into pandas
+    comid_q_df = pd.read_csv(COMID_Q_File)
+    
+    # Assuming we want to rename the first two columns
+    new_column_names = ['COMID', 'qout']
+
+    # Create a mapping from the old column names to the new column names based on their positions
+    column_mapping = {comid_q_df.columns[i]: new_column_names[i] for i in range(len(new_column_names))}
+
+    # Rename the columns
+    comid_q_df.rename(columns=column_mapping, inplace=True)    
+
+    # Get the Extents and cellsizes of the Raster Data
+    print('\nGetting the Spatial information from ' + STRM_Raster_File)
+    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
+    cellsize_x = abs(float(dx))
+    cellsize_y = abs(float(dy))
+    lat_base = float(maxy) - 0.5*cellsize_y
+    lon_base = float(minx) + 0.5*cellsize_x
+    print('Geographic Information:')
+    print(lat_base)
+    print(lon_base)
+    print(cellsize_x)
+    print(cellsize_y)
+
+    # Reading with pandas
+    curve_data_df = pd.read_csv(CurveParam_File, 
+                                dtype={'COMID': 'int64', 'Row': 'int64', 'Col': 'int64',
+                                       'BaseElev': 'float64', 'DEM_Elev': 'float64', 'QMax': 'float64',
+                                       'depth_a': 'float64', 'depth_b': 'float64', 
+                                       'tw_a': 'float64', 'tw_b': 'float64',
+                                       'vel_a': 'float64', 'vel_b': 'float64'})
+    
+    # Calculate Latitude and Longitude
+    curve_data_df['CP_LAT'] = lat_base - curve_data_df['Row'] * cellsize_y
+    curve_data_df['CP_LON'] = lon_base + curve_data_df['Col'] * cellsize_x
+
+    # Create a GeoSeries from the latitude and longitude values
+    geometry = [Point(xy) for xy in zip(curve_data_df['CP_LON'], curve_data_df['CP_LAT'])]
+
+    # Create a GeoDataFrame
+    curve_data_gdf = gpd.GeoDataFrame(curve_data_df, geometry=geometry)
+
+    # set the coordinate system for the geodataframe
+    curve_data_gdf = curve_data_gdf.set_crs(OutProjection, inplace=True)
+
+    # Reproject to a projected coordinate system so that we can accurately measure distances
+    curve_data_gdf = curve_data_gdf.to_crs(epsg=6933)
+
+    # Merge using 'CP_COMID' from gdf and 'COMID_List' from df
+    curve_data_gdf = curve_data_gdf.merge(comid_q_df, on="COMID")
+    
+    # estimate water depth and water surface elevation
+    curve_data_gdf['CP_DEP'] = round(curve_data_gdf['depth_a']*curve_data_gdf['qout']**curve_data_gdf['depth_b'], 3)
+    curve_data_gdf['WaterSurfaceElev_m'] = round(curve_data_gdf['CP_DEP']+curve_data_gdf['BaseElev'], 3)
+    
+    # estimate top-width
+    curve_data_gdf['CP_TW'] = round(curve_data_gdf['tw_a']*curve_data_gdf['qout']**curve_data_gdf['tw_b'], 3)
+    
+    # estimate velocity
+    curve_data_gdf['CP_VEL'] = round(curve_data_gdf['vel_a']*curve_data_gdf['qout']**curve_data_gdf['vel_b'], 3)
+
+    # drop any stream cells where NaNs are present in the WaterSurfaceElev_m column
+    curve_data_gdf = curve_data_gdf[~curve_data_gdf['WaterSurfaceElev_m'].isna()]
+
+    # drop any stream cells where water surface elevation is <= 0
+    curve_data_gdf = curve_data_gdf[curve_data_gdf['WaterSurfaceElev_m'] > 0]
+
+    # find the median depth and WSE value for each COMID, these will be used for filtering
+    COMID_MedDEP = curve_data_gdf.groupby('COMID')['CP_DEP'].median().reset_index()
+    COMID_MedDEP.rename(columns={'CP_DEP': 'COMID_MedDEP'}, inplace=True)
+    curve_data_gdf = curve_data_gdf.merge(COMID_MedDEP, on="COMID")
+    COMID_MedWSE = curve_data_gdf.groupby('COMID')['WaterSurfaceElev_m'].median().reset_index()
+    COMID_MedWSE.rename(columns={'WaterSurfaceElev_m': 'COMID_MedWSE'}, inplace=True)
+    curve_data_gdf = curve_data_gdf.merge(COMID_MedWSE, on="COMID")
+
+    # thin the data before we go looking for SEED locations
+    if Thin_Output is True:
+        curve_data_gdf = Thin_Curve_data(curve_data_gdf)
+
+    # find the SEED locations
+    seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
+    curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf)
+
+    # output the GeoJSON file
+    Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
+
+    return
+
+def wse_diff_percentage(wse1, wse2):
+    """
+    Function to calculate WSE difference percentage
+
+    Parameters
+    ----------
+    wse1: float
+        A value representing the water surface elevation of our stream cell of interest
+    wse2: float
+        A value representing the water surface elevation of a stream cell within 50 meters of our stream cell of interest
+    Returns
+    -------
+    The absolute percentage difference between the water surface elevation of our point of interest and the water surface elevation of a stream cell within 50 meters of it
+
+    """
+    return abs(wse1 - wse2) / ((wse1 + wse2) / 2) * 100
+
+def Thin_Curve_data(curve_data_gdf):
+    """
+    Thins the stream cells out in two ways 
+    
+    1. Removes stream cells that have depths that are greater than 3 times the average depth for the stream reach
+    2. Removes stream cells that are within 50 meters of other streams and have water surface elevations that are within 0.05% of one another.
+
+    Parameters
+    ----------
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model
+
+    Returns
+    -------
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model, now thinned 
+    """
+   
+    # This is a filter Mike imposed to keep some of the outliers out
+    curve_data_gdf = curve_data_gdf[(curve_data_gdf['COMID_MedDEP']>0) & (curve_data_gdf['CP_DEP']<3.0*curve_data_gdf['COMID_MedDEP'])]
+
+    # Create spatial index
+    sindex = curve_data_gdf.sindex
+
+    # List to keep track of indices to drop
+    indices_to_drop = set()
+
+    # Iterate through each stream cell
+    for i, point in curve_data_gdf.iterrows():
+        if i in indices_to_drop:
+            continue
+
+        # Find potential neighbors within 50 meters
+        buffer = point.geometry.buffer(50)
+        possible_matches_index = list(sindex.intersection(buffer.bounds))
+        possible_matches = curve_data_gdf.iloc[possible_matches_index]
+
+        # iterate and compare each stream cell to the other stream cells
+        for j, other_point in possible_matches.iterrows():
+            if i != j and j not in indices_to_drop:
+                distance = point.geometry.distance(other_point.geometry)
+                if distance <= 50:  # 50 meters
+                    wse_diff = wse_diff_percentage(float(point['WaterSurfaceElev_m']), float(other_point['WaterSurfaceElev_m']))
+                    if wse_diff <= 0.05:  # 0.05%
+                        indices_to_drop.add(j)
+
+    # Drop the points that meet the criteria
+    curve_data_gdf = curve_data_gdf.drop(indices_to_drop)
+
+    return (curve_data_gdf)
+
+def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File):
+    """
+    Uses the stream raster and digital elevation model (DEM) raster to define the potential SEED points or the uppermost headwaters of an ARC domain.
 
     Parameters
     ----------
@@ -41,19 +370,17 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )
         A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
     """
     print('\nReading Data from Raster: ' + STRM_Raster_File)
-    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection) = Read_Raster_GDAL(STRM_Raster_File)
+    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat) = Read_Raster_GDAL(STRM_Raster_File)
     dx = abs(xll-xur) / (ncols)
     dy = abs(yll-yur) / (nrows)
     print(str(dx) + '  ' + str(dy) + '  ' + str(cellsize))
     SN = np.asarray(S)
     SN_Flat = SN.flatten().astype(int)
     
-    
     B = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the STRM Raster Array
     B[1:(nrows+1), 1:(ncols+1)] = SN
     B = B.astype(int)
     B = np.where(B>0,1,0)   #Streams are identified with zeros
-    
     
     COMID_Unique = np.unique(SN_Flat)
     COMID_Unique = np.delete(COMID_Unique, 0)  #We don't need the first entry of zero
@@ -62,7 +389,10 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )
     S = None
     
     print('\nReading Data from Raster: ' + DEM_Raster_File)
-    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, geotransform, Rast_Projection) = Read_Raster_GDAL(DEM_Raster_File)
+    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat) = Read_Raster_GDAL(DEM_Raster_File)
+    #E = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the STRM Raster Array
+    #E[1:(nrows+1), 1:(ncols+1)] = DEM
+    #E = E.astype(float)
     DEM = DEM.astype(float)
     
     COMID_Elev_Min = np.zeros(len(COMID_Unique))
@@ -81,7 +411,6 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )
     SEED_MaxElev=[]
     p_count = 0
     p_percent = int((num_comid_unique)/10.0)
-    
     
     for i in range(num_comid_unique):
         p_count = p_count + 1
@@ -165,7 +494,7 @@ def GetSEED_Data_From_File(SEED_Point_File):
         (SEED_COMID[i], SEED_Lat[i], SEED_Lon[i], SEED_r[i], SEED_c[i], SEED_MinElev[i], SEED_MaxElev[i]) = line.strip().split(',')
     return SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev
 
-def Write_GeoJSON_File(OutGeoJSON_File, num_records, OutProjection, CP_COMID, CP_WSE, CP_DEP, CP_VEL, CP_TW, CP_ELEV, CP_LON, CP_LAT, CP_SEED, CP_Q, COMID_List, COMID_MedDEP):
+def Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf):
     """
     Writes a GeoJSON file that describes the hydraulic characteristics of a region at a point level
 
@@ -173,139 +502,32 @@ def Write_GeoJSON_File(OutGeoJSON_File, num_records, OutProjection, CP_COMID, CP
     ----------
     OutGeoJSON_File: str
         A string that represents the file path and file name of the output GeoJSON the function creates
-    num_records: int
-        An integer representing the number of stream cells in the modeled area
     OutProjection: str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
-    CP_COMID: list
-        List of unique identifiers for the stream of each stream cell that read from the ARC curve file
-    CP_WSE: list
-        List of water surface elevation estimates for each stream cell estimated using the ARC curves
-    CP_DEP: list
-        List of water depths at each stream cell estimated using the ARC curves
-    CP_VEL: list
-        List of cross-sectional average streamflow velocities for each stream cell estimated using the ARC curves
-    CP_TW: list
-        List of top-width estimates of streamflow for each stream cell estimated using the ARC curves
-    CP_ELEV: list
-        List of channel bottom elevation estimates for each stream cell estimated using the ARC curves
-    CP_LON: list
-        List of longitude values for each stream cell
-    CP_LAT: list
-        List of latitude values for each stream cell
-    CP_SEED: list
-        A list of binary 0 and 1 values with 1 representing a stream cell designated as a SEED location and 0 representing a stream cell location that is not a SEED location.
-    CP_Q: list
-        A list of float values representing streamflow estimates that are used to estimate CP_WSE, CP_DEP, CP_VEL, and CP_TW values using the ARC curves
-    COMID_List: list
-        A list of integers that represent unique identifiers for each stream in the modeled area
-    COMID_MedDEP: list
-        A list of float values that represent the median water depth values for each stream in the modeled area
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations and water surface elevation estimates
+    Thin_GeoJSON: bool
+        True/False of whether or not to filter the output GeoJSON
 
     Returns
     -------
     None
     """
-    # Write out the Initial Header
-    print('\nWriting the GeoJSON File ' + OutGeoJSON_File)
-    outfile = open(OutGeoJSON_File,'w')
-    out_str = '{ "type": "FeatureCollection",'
-    
-    # Give the projection information
-    out_str = out_str + '\n' + '  "crs": {' + '\n' + '    "type": "name",' + '\n' + '    "properties":' + '\n' + '    {'
-    out_str = out_str + '\n' + '      "name": "' + OutProjection + '"' #+ ','
-    out_str = out_str + '\n' + '    }' #+ ',' 
-    out_str = out_str + '\n' + '  },'
-    
-    out_str = out_str + '\n' + '  "features": ['
-    outfile.write(out_str)
-    
-    p=-1
-    for x in range(len(COMID_List)):
-        c_index = np.where(CP_COMID==int(COMID_List[x]))
-        if np.any(c_index)==True:
-            for i in c_index[0]:
-                # If the depth values are whack, don't report them
-                if COMID_MedDEP[x]>0 and CP_DEP[i]<3.0*COMID_MedDEP[x]:
-                    p=p+1
-                    if p==0:
-                        out_str = '\n'
-                    else:
-                        out_str = ',\n'
-                    out_str = out_str + '    { "type": "Feature",' + '\n' + '      "geometry": {"type": "Point", "coordinates": ['
-                    out_str = out_str + str(CP_LON[i]) + ', ' + str(CP_LAT[i]) + ']},' + '\n'
-                    out_str = out_str + '      "properties": {' + '\n'
-                    
-                    out_str = out_str + '           	"WaterSurfaceElev_m": "' + str(CP_WSE[i]) + '",' + '\n'
-                                       
-                    out_str = out_str + '           	"SEED": "'
-                    out_str = out_str + str(int(CP_SEED[i]))
-                    out_str = out_str + '"'
-                    
-                    out_str = out_str + '\n' + '      	}' + '\n' + '      }'
-                    outfile.write(out_str)
-    out_str = '\n' + '    ]' + '\n' + '  }'
-    outfile.write(out_str)
-    outfile.close()
+    # Select the desired columns
+    selected_columns = ['WaterSurfaceElev_m', 'SEED', 'geometry']
+    curve_data_gdf = curve_data_gdf[selected_columns]
 
-    # If the JSON data is in a file, you can load it first and then minify
-    # minify will remove all the unnecessary white space and reduce the file size
-    with open(OutGeoJSON_File, 'r') as f:
-        data = json.load(f)
-        f.close()
-    
-    with open(OutGeoJSON_File, 'w') as f:
-        json.dump(data, f, separators=(',', ':'))
-        f.close()
+    # Reproject to a projected coordinate system so that we can accurately measure distances
+    curve_data_gdf = curve_data_gdf.to_crs(OutProjection)
+
+    # Save the converted GeoDataFrame to a new file
+    curve_data_gdf.to_file(OutGeoJSON_File, driver='GeoJSON')
 
     return
 
-def DetermineMedianDEP_MedianWSE_for_Each_COMID(COMID_List, CP_COMID, CP_DEP, CP_WSE):
+def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, OutProjection):
     """
-    Estimates the median water depth and water surface elevation for all streams in a modeled area
-
-    Parameters
-    ----------
-    COMID_List: list
-        A list of integers that represent unique identifiers for each stream in the modeled area
-    CP_COMID: list
-        List of unique identifiers for the stream of each stream cell that read from the ARC curve file
-    CP_DEP: list
-        List of water depths at each stream cell estimated using the ARC curves
-    CP_WSE: list
-        List of water surface elevation estimates for each stream cell estimated using the ARC curves       
-
-    Returns
-    -------
-    COMID_MedDEP: list
-        A list of float values that represent the median water depth values for each stream in the modeled area
-    COMID_MedWSE: list
-        A list of float values that represent the median water surface elevation values for each stream in the modeled area   
-    """
-    print('Determining the Median DEP / WSE for each COMID.')
-    COMID_MedDEP = [0.0]*len(COMID_List)
-    COMID_MedWSE = [0.0]*len(COMID_List)
-    for i in range(len(COMID_List)):
-        CID = int(COMID_List[i])
-        try:
-            index_array = np.where(CP_COMID==CID)
-            depth_array = np.array(CP_DEP)[index_array]
-            dep_med = np.median(depth_array[0])
-            COMID_MedDEP[i]=float(dep_med)
-            
-            #Although the below says depth, these are WSE
-            depth_array = np.array(CP_WSE)[index_array]
-            dep_med = np.median(depth_array[0])
-            COMID_MedWSE[i]=float(dep_med)
-        except:
-            COMID_MedDEP[i]=-999.9
-            COMID_MedWSE[i]=-999.9
-    return COMID_MedDEP, COMID_MedWSE
-
-
-def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, dx, dy, CP_SEED, CP_ROW, CP_COL, CP_LAT, CP_LON, CP_COMID, CP_WSE, CP_DEP, COMID_List, COMID_MedDEP, COMID_MedWSE):
-    """
-    Compares stream cell locations to SEED point locations (i.e., stream outlets) and finds the closest stream cell for each SEED point 
+    Compares stream cell locations to SEED point locations (i.e., the uppermost headwater extents of the ARC model domain) and finds the closest stream cell for each SEED point 
 
     Parameters
     ----------
@@ -319,87 +541,84 @@ def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_
         A list of integer values that represent the row in stream and DEM raster where the SEED location is
     SEED_c: list
         A list of integer values that represent the column in stream and DEM raster where the SEED location is
-    dx: float
-        The pixel size of the raster longitudinally
-    dy: float
-        The pixel size of the raster latitudinally 
-    CP_SEED: list
-        A list of binary 0 and 1 values with 1 representing a stream cell designated as a SEED location and 0 representing a stream cell location that is not a SEED location.
-    CP_ROW: list
-        List of the row in the stream raster where each stream cell is located
-    CP_COL: list
-        List of the column in the stream raster where each stream cell is located
-    CP_LAT: list
-        List of latitude values for each stream cell
-    CP_LON: list
-        List of longitude values for each stream cell
-    CP_COMID: list
-        List of unique identifiers for the stream of each stream cell that read from the ARC curve file
-    CP_WSE: list
-        List of water surface elevation estimates for each stream cell estimated using the ARC curves
-    CP_DEP: list
-        List of water depths at each stream cell estimated using the ARC curves
-    COMID_List: list
-        A list of integers that represent unique identifiers for each stream in the modeled area
-    COMID_MedDEP: list
-        A list of float values that represent the median water depth values for each stream in the modeled area
-    COMID_MedWSE
-        A list of float values that represent the median water surface elevation values for each stream in the modeled area
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model with depth, top-width, and velocity, all estimated using the ARC synthetic rating curves
+    OutProjection: str
+        A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
     
     Returns
     -------
+    curve_data_gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
     None
     """
-    Lat_np = np.array(SEED_Lat).astype(float)
-    Lon_np = np.array(SEED_Lon).astype(float)
-    
-    for i in range(len(SEED_COMID)):
-        index_vals = np.where(CP_COMID==int(SEED_COMID[i]))
-        
-        if np.any(index_vals)==True:
-            print('Finding SEED location for ' + str(SEED_COMID[i]) + ' with Lat=' + str(Lat_np[i]) + '  and Lon=' + str(Lon_np[i]))
-            D_Lat2 = CP_LAT[index_vals] - Lat_np[i]
-            D_Lon2 = CP_LON[index_vals] - Lon_np[i]
-            D_Lat2 = D_Lat2 * D_Lat2
-            D_Lon2 = D_Lon2 * D_Lon2
-            
-            D = np.sqrt(D_Lat2 + D_Lon2)
-            min_index = np.where(D==min(D))
-            min_index = min_index[0] # There are a lot of min_index[0] because there could be multiple places that have similar distance, so just go with the first one.
-            print(D[min_index[0]])
-            first_index = int(index_vals[0][min_index[0]])
-            print('         Found Closest cell with Lat/Lon of ' + str(CP_LAT[first_index]) + ' / '  + str(CP_LON[first_index]))
-            c_index = np.where(COMID_List==CP_COMID[first_index])
-            try:
-                c_index = c_index[0][0]
-                print('           ' + str(CP_WSE[first_index]) + '  vs  ' + str(COMID_MedWSE[c_index]))
-                if CP_WSE[first_index]>=(COMID_MedWSE[c_index]-0.01):
-                    CP_SEED[first_index] = 1 # This just marks that this location within the Curve Paramter file should be a SEED Value
-                else:
-                    print('             NOT USING DUE TO BEING AT OUTLET, NOT START')
-            except:
-                print('             NOT USING DUE TO COMPLICATIONS')
-        else:
-            print('Skipping SEED location ' + str(SEED_COMID[i]) + ' with Lat=' + str(Lat_np[i]) + '  and Lon=' + str(Lon_np[i]))
-    return
+    # Create a pandas DataFrame from the lists
+    data = {
+        'SEED_COMID': [int(x) for x in SEED_COMID],
+        'SEED_Lat': [float(x) for x in SEED_Lat],
+        'SEED_Lon': [float(x) for x in SEED_Lon],
+        'SEED_r': [int(x) for x in SEED_r],
+        'SEED_c': [int(x) for x in SEED_c],
+    }
+    df = pd.DataFrame(data)
 
+    # Create a GeoSeries from the latitude and longitude values
+    geometry = [Point(xy) for xy in zip(df['SEED_Lon'], df['SEED_Lat'])]
 
-def Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev):
+    # Create a GeoDataFrame
+    seed_gdf = gpd.GeoDataFrame(df, geometry=geometry)
+
+    # Set the coordinate reference system (CRS)
+    seed_gdf.set_crs(OutProjection, inplace=True)  
+
+    # Reproject to a projected coordinate system so that we can accurately measure distances
+    seed_gdf = seed_gdf.to_crs(epsg=6933) 
+
+    # Prefill the curve data file with a SEED value, this will be set to 1 if the column is designated as a SEED column
+    curve_data_gdf['SEED'] = "0"
+
+    # Spatial join to find the distance between each CP point and each SEED point
+    nearest_cp = gpd.sjoin_nearest(seed_gdf, curve_data_gdf, how='inner', distance_col='dist')
+
+    # Filter based on attributes
+    # Make sure the COMID's match betweent the SEED and curves
+    nearest_cp = nearest_cp[nearest_cp['SEED_COMID'] == nearest_cp['COMID']]
+
+    # Find the minimum distance for each unique gdf1 row
+    min_distance_idx = nearest_cp.groupby(nearest_cp.index)['dist'].idxmin()
+
+    # Get the rows with the minimum distance
+    nearest_cp = nearest_cp.loc[min_distance_idx]
+
+    # Find the highest elevation for each COMID
+    max_elev_idx = nearest_cp.groupby('SEED_COMID')['BaseElev'].idxmax()
+
+    # Get the rows with the maximum elevatio for each COMID
+    nearest_cp = nearest_cp.loc[max_elev_idx]
+
+    # Ensure the result contains only one value for each unique row in gdf1
+    nearest_cp = nearest_cp.drop_duplicates(subset=['SEED_COMID','SEED_r','SEED_c'])
+
+    # Create a boolean mask for matching rows in the original dataframe
+    mask = curve_data_gdf.set_index(['COMID', 'Row', 'Col']).index.isin(nearest_cp.set_index(['COMID', 'Row', 'Col']).index)
+
+    # Update the 'SEED' value to 1 for matching rows
+    curve_data_gdf.loc[mask, 'SEED'] = "1"
+
+    return (curve_data_gdf)
+
+def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, Thin_GeoJSON):
     """
-    Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain
+    Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
     Parameters
     ----------
-    WatershedName: str
-        The name of the watershed or domain you are modeling
     CurveParam_File: str
         The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
         The file path and file name of the file that contains the streamflow estimates for the streams in your domain
     STRM_Raster_File: str
         The file path and file name of the stream raster that contains the stream cells you used to run ARC 
-    DEM_Raster_File: str
-        The file path and file name of the digital elevation model (DEM) that you used to run ARC
     OutGeoJSON_File: str
         The file path and file name of the output GeoJSON the program will be creating
     OutProjection: str
@@ -414,24 +633,26 @@ def Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, CO
         A list of integer values that represent the row in stream and DEM raster where the SEED location is
     SEED_c: list
         A list of integer values that represent the column in stream and DEM raster where the SEED location is
-    SEED_MinElev: list
-        A list of float values that represent the minimum elevation of the stream cells on the stream reach of the SEED location
-    SEED_MaxElev: list
-        A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
+    Thin_GeoJSON: bool
+        True/False of whether or not to filter the output GeoJSON
     
     Returns
     -------
     None
     """
 
-    # Read in the COMID_Q file to get all the COMID values and the associated Flow Rates
-    print('\nOpening and Reading ' + COMID_Q_File)
-    comid_q_data = np.genfromtxt(COMID_Q_File, delimiter=',')
-    COMID_List = comid_q_data[1:,0].astype(int)
-    Q_List = comid_q_data[1:,1].astype(float)
-    comid_q_data = None
+    # Read the streamflow data into pandas
+    comid_q_df = pd.read_csv(COMID_Q_File)
     
-    
+    # Assuming we want to rename the first two columns
+    new_column_names = ['COMID', 'qout']
+
+    # Create a mapping from the old column names to the new column names based on their positions
+    column_mapping = {comid_q_df.columns[i]: new_column_names[i] for i in range(len(new_column_names))}
+
+    # Rename the columns
+    comid_q_df.rename(columns=column_mapping, inplace=True)    
+
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + STRM_Raster_File)
     (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
@@ -439,81 +660,87 @@ def Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, CO
     cellsize_y = abs(float(dy))
     lat_base = float(maxy) - 0.5*cellsize_y
     lon_base = float(minx) + 0.5*cellsize_x
-    
     print('Geographic Information:')
     print(lat_base)
     print(lon_base)
     print(cellsize_x)
     print(cellsize_y)
-    
-    
-    print('\nOpening and Reading ' + CurveParam_File)
-    curve_data = np.genfromtxt(CurveParam_File, delimiter=',')
-    
-    # Go through the Curve Params File and Create A list of all the COMID, Row, and Col
-    CP_COMID = curve_data[1:,0].astype(int)
-    CP_ROW = curve_data[1:,1].astype(int)
-    CP_COL = curve_data[1:,2].astype(int)
-    CP_ELEV = curve_data[1:,3].astype(float)
-    CP_BF = curve_data[1:,4].astype(float)
-    CP_MF = curve_data[1:,5].astype(float)
-    
-    num_records = len(CP_COMID)
-    CP_SEED = np.zeros(num_records)
-    CP_LAT = np.zeros(num_records)
-    CP_LON = np.zeros(num_records)
-    CP_Q = np.zeros(num_records).astype(float)
-    
-    
-    # Set the Flow Rates
-    for i in range(len(COMID_List)):
-        c_index = np.where(CP_COMID==int(COMID_List[i]))
-        if np.any(c_index)==True:
-            CP_Q[c_index] = Q_List[i]
-    
-    # Calculate Depth Values
-    a = curve_data[1:,6].astype(float)
-    b = curve_data[1:,7].astype(float)
-    CP_DEP = np.around(a*np.power(CP_Q, b, dtype=float), 3)
-    CP_DEP = np.maximum(CP_DEP,float(0.05)) # This is so you always have some sort of value to map
-    CP_WSE = np.around(CP_ELEV + CP_DEP, 3)
 
-    # Calculate TopWidth Values
-    a = curve_data[1:,8].astype(float)
-    b = curve_data[1:,9].astype(float)
-    CP_TW = np.around(a*np.power(CP_Q, b, dtype=float), 3)
-    
-    #Calculate Velocity Values
-    a = curve_data[1:,10].astype(float)
-    b = curve_data[1:,11].astype(float)
-    CP_VEL = np.around(a*np.power(CP_Q, b, dtype=float), 3)
+    # Reading with pandas
+    curve_data_df = pd.read_csv(CurveParam_File, 
+                                dtype={'COMID': 'int64', 'Row': 'int64', 'Col': 'int64',
+                                       'BaseElev': 'float64', 'DEM_Elev': 'float64', 'QMax': 'float64',
+                                       'depth_a': 'float64', 'depth_b': 'float64', 
+                                       'tw_a': 'float64', 'tw_b': 'float64',
+                                       'vel_a': 'float64', 'vel_b': 'float64'})
     
     # Calculate Latitude and Longitude
-    CP_LAT = lat_base - CP_ROW * cellsize_y
-    CP_LON = lon_base + CP_COL * cellsize_x
+    curve_data_df['CP_LAT'] = lat_base - curve_data_df['Row'] * cellsize_y
+    curve_data_df['CP_LON'] = lon_base + curve_data_df['Col'] * cellsize_x
+
+    # Create a GeoSeries from the latitude and longitude values
+    geometry = [Point(xy) for xy in zip(curve_data_df['CP_LON'], curve_data_df['CP_LAT'])]
+
+    # Create a GeoDataFrame
+    curve_data_gdf = gpd.GeoDataFrame(curve_data_df, geometry=geometry)
+
+    # set the coordinate system for the geodataframe
+    curve_data_gdf = curve_data_gdf.set_crs(OutProjection, inplace=True)
+
+    # Reproject to a projected coordinate system so that we can accurately measure distances
+    curve_data_gdf = curve_data_gdf.to_crs(epsg=6933)
+
+    # Merge using 'CP_COMID' from gdf and 'COMID_List' from df
+    curve_data_gdf = curve_data_gdf.merge(comid_q_df, on="COMID")
     
+    # estimate water depth and water surface elevation
+    curve_data_gdf['CP_DEP'] = round(curve_data_gdf['depth_a']*curve_data_gdf['qout']**curve_data_gdf['depth_b'], 3)
+    curve_data_gdf['WaterSurfaceElev_m'] = round(curve_data_gdf['CP_DEP']+curve_data_gdf['BaseElev'], 3)
     
-    # For Each COMID, find the Median Depth Value that you would expect to see
-    (COMID_MedDEP, COMID_MedWSE) = DetermineMedianDEP_MedianWSE_for_Each_COMID(COMID_List, CP_COMID, CP_DEP, CP_WSE)
+    # estimate top-width
+    curve_data_gdf['CP_TW'] = round(curve_data_gdf['tw_a']*curve_data_gdf['qout']**curve_data_gdf['tw_b'], 3)
     
-    # Now look for the Curve points that are closest to the SEED Points that we previously discovered
-    FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, dx, dy, CP_SEED, CP_ROW, CP_COL, CP_LAT, CP_LON, CP_COMID, CP_WSE, CP_DEP, COMID_List, COMID_MedDEP, COMID_MedWSE)
-    
-    # Write the GeoJSON File
-    Write_GeoJSON_File(OutGeoJSON_File, num_records, OutProjection, CP_COMID, CP_WSE, CP_DEP, CP_VEL, CP_TW, CP_ELEV, CP_LON, CP_LAT, CP_SEED, CP_Q, COMID_List, COMID_MedDEP)
+    # estimate velocity
+    curve_data_gdf['CP_VEL'] = round(curve_data_gdf['vel_a']*curve_data_gdf['qout']**curve_data_gdf['vel_b'], 3)
+
+    # drop any stream cells where NaNs are present in the WaterSurfaceElev_m column
+    curve_data_gdf = curve_data_gdf[~curve_data_gdf['WaterSurfaceElev_m'].isna()]
+
+    # drop any stream cells where water surface elevation is <= 0
+    curve_data_gdf = curve_data_gdf[curve_data_gdf['WaterSurfaceElev_m'] > 0]
+
+    # find the median depth and WSE value for each COMID, these will be used for filtering
+    COMID_MedDEP = curve_data_gdf.groupby('COMID')['CP_DEP'].median().reset_index()
+    COMID_MedDEP.rename(columns={'CP_DEP': 'COMID_MedDEP'}, inplace=True)
+    curve_data_gdf = curve_data_gdf.merge(COMID_MedDEP, on="COMID")
+    COMID_MedWSE = curve_data_gdf.groupby('COMID')['WaterSurfaceElev_m'].median().reset_index()
+    COMID_MedWSE.rename(columns={'WaterSurfaceElev_m': 'COMID_MedWSE'}, inplace=True)
+    curve_data_gdf = curve_data_gdf.merge(COMID_MedWSE, on="COMID")
+
+    # thin the data before we go looking for SEED locations
+    if Thin_GeoJSON is True:
+        curve_data_gdf = Thin_Curve_data(curve_data_gdf)
+
+    # find the SEED locations 
+    curve_data_gdf = FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, OutProjection)
+
+    # output the GeoJSON file
+    Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf, Thin_GeoJSON)
 
     return
 
 
+
+
 if __name__ == "__main__":
        
-    #This forces the program to redo the SEED values
+    # This forces the program to redo the SEED values
     Redo_Seed_Point_File = False
     Updated_DEM = False
     Filtered_Results = False
+    Thin_Output = True
        
     Watershed_List = ['SC_TestCase','OH_TestCase','TX_TestCase','IN_TestCase','PA_TestCase']
-    Watershed_List = ['Shields_TestCase']
 
     for WatershedName in Watershed_List:
 
@@ -575,16 +802,15 @@ if __name__ == "__main__":
         for scenario in scenarios:
             COMID_Q_File = os.path.join(WatershedName, "FlowFile",f"COMID_Q_qout_{scenario}.txt")
             OutGeoJSON_File = os.path.join(OutFolder,f"FIST_Input_{scenario}.geojson")
-            # Get the SEED Values
+            # Get the SEED Values by either estimating them or reading the existing data in 
             if os.path.isfile(SEED_Point_File)==False or Redo_Seed_Point_File==True:
                 (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )  #The Write_SEED_Data_To_File_FAST_UPDATED version uses less RAM
             else:
                 (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = GetSEED_Data_From_File(SEED_Point_File)
             
             #Run the Main Program to Create a GeoJSON output file
-            Run_Main_REDUCED_Curve_to_GEOJSON_Program(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev)
+            Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev, Thin_Output)
 
-    
     
 
     

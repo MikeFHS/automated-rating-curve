@@ -12,6 +12,177 @@ import numpy as np
 import netCDF4
 import geopandas as gpd
 
+def Process_AutoRoute_Geospatial_Data_for_testing(test_case, id_field, flow_field, baseflow_field, medium_flow_field, low_flow_field, dem_cleaner, use_clean_dem):
+    #Input Dataset
+    if use_clean_dem is False:
+        Main_Directory = ''
+        ARC_Folder = os.path.join(test_case, 'ARC_InputFiles')
+        ARC_FileName = os.path.join(test_case, ARC_Folder, 'ARC_Input_File.txt')
+        DEM_File = os.path.join(test_case,'DEM', 'DEM.tif')
+        LandCoverFile = os.path.join(test_case,'LandCover', 'LandCover.tif')
+        ManningN = os.path.join(test_case, 'LAND', 'AR_Manning_n_for_NLCD_MED.txt')
+        StrmSHP = os.path.join(test_case,'StrmShp', 'StreamShapefile.shp')
+        FlowNC = os.path.join(test_case,'FlowData', 'returnperiods_714.nc')
+        VDT_Test_File = os.path.join(test_case, 'VDT', 'VDT_FS.csv')
+        
+        #Datasets to be Created
+        STRM_File = os.path.join(test_case, 'STRM', 'STRM_Raster.tif')
+        STRM_File_Clean = STRM_File.replace('.tif','_Clean.tif')
+        LAND_File = os.path.join(test_case, 'LAND', 'LAND_Raster.tif')
+        FLOW_File = os.path.join(test_case, 'FLOW', 'FlowFile.txt')
+        FlowFileFolder = os.path.join(test_case, 'FlowFile')
+        BathyFileFolder = os.path.join(test_case, 'Bathymetry')
+        FloodFolder = os.path.join(test_case, 'FloodMap')
+        STRMFolder = os.path.join(test_case, 'STRM') 
+        ARC_Folder = os.path.join(test_case, 'ARC_InputFiles')
+        XSFileFolder = os.path.join(test_case, 'XS')
+        LandFolder = os.path.join(test_case, 'LAND')
+        FlowFolder = os.path.join(test_case, 'FLOW')
+        VDTFolder = os.path.join(test_case, 'VDT')
+        VDT_File = os.path.join(test_case, 'VDT', 'VDT_Database.txt')
+        Curve_File = os.path.join(test_case, 'VDT', 'CurveFile.csv')
+        FloodMapFile = os.path.join(FloodFolder,'ARC_Flood.tif')
+        DepthMapFile = os.path.join(FloodFolder, 'ARC_Depth.tif')
+        ARC_BathyFile = os.path.join(BathyFileFolder,'ARC_Bathy.tif')
+        XS_Out_File = os.path.join(XSFileFolder, 'XS_File.txt')
+    else:
+        Main_Directory = ''
+        dem_cleaned_text = "Modified_DEM"
+        ARC_Folder = os.path.join(test_case, f'ARC_InputFiles_{dem_cleaned_text}')
+        ARC_FileName = os.path.join(test_case, ARC_Folder, f'ARC_Input_File.txt')
+        DEM_File = os.path.join(test_case,'DEM_Updated', f'{dem_cleaned_text}.tif')
+        LandCoverFile = os.path.join(test_case,'LandCover', 'LandCover.tif')
+        ManningN = os.path.join(test_case, 'LAND', 'AR_Manning_n_for_NLCD_MED.txt')
+        StrmSHP = os.path.join(test_case,'StrmShp', 'StreamShapefile.shp')
+        FlowNC = os.path.join(test_case,'FlowData', 'returnperiods_714.nc')
+        VDT_Test_File = os.path.join(test_case, f'VDT_{dem_cleaned_text}', 'VDT_FS.csv')
+        
+        #Datasets to be Created
+        STRM_File = os.path.join(test_case, f'STRM_{dem_cleaned_text}', 'STRM_Raster.tif')
+        STRM_File_Clean = STRM_File.replace('.tif',f'_Clean_{dem_cleaned_text}.tif')
+        LAND_File = os.path.join(test_case, 'LAND', 'LAND_Raster.tif')
+        FLOW_File = os.path.join(test_case, 'FLOW', 'FlowFile.txt')
+        FlowFileFolder = os.path.join(test_case, 'FlowFile')
+        BathyFileFolder = os.path.join(test_case, f'Bathymetry_{dem_cleaned_text}')
+        FloodFolder = os.path.join(test_case, f'FloodMap_{dem_cleaned_text}')
+        STRMFolder = os.path.join(test_case, f'STRM_{dem_cleaned_text}') 
+        ARC_Folder = os.path.join(test_case, f'ARC_InputFiles_{dem_cleaned_text}')
+        XSFileFolder = os.path.join(test_case, f'XS_{dem_cleaned_text}')
+        LandFolder = os.path.join(test_case, 'LAND')
+        FlowFolder = os.path.join(test_case, 'FLOW')
+        VDTFolder = os.path.join(test_case, f'VDT_{dem_cleaned_text}')
+        VDT_File = os.path.join(VDTFolder, 'VDT_Database.txt')
+        Curve_File = os.path.join(VDTFolder, 'CurveFile.csv')
+        FloodMapFile = os.path.join(FloodFolder,'ARC_Flood.tif')
+        DepthMapFile = os.path.join(FloodFolder, 'ARC_Depth.tif')
+        ARC_BathyFile = os.path.join(BathyFileFolder,'ARC_Bathy.tif')
+        XS_Out_File = os.path.join(XSFileFolder, 'XS_File.txt')
+    
+    #Create Folders
+    Create_Folder(STRMFolder)
+    Create_Folder(LandFolder)
+    Create_Folder(FlowFolder)
+    Create_Folder(VDTFolder)
+    Create_Folder(FloodFolder)
+    Create_Folder(FlowFileFolder)
+    Create_Folder(ARC_Folder)
+    Create_Folder(BathyFileFolder)
+    Create_Folder(XSFileFolder)
+    
+    
+    
+    #Get the Spatial Information from the DEM Raster
+    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, dem_geoTransform, dem_projection) = Get_Raster_Details(DEM_File)
+    projWin_extents = [minx, maxy, maxx, miny]
+    outputBounds = [minx, miny, maxx, maxy]  #https://gdal.org/api/python/osgeo.gdal.html
+    
+    
+    #Create Land Dataset
+    if os.path.isfile(LAND_File):
+        print(LAND_File + ' Already Exists')
+    else: 
+        print('Creating ' + LAND_File) 
+        Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows)
+    
+    #Create Stream Raster
+    if os.path.isfile(STRM_File):
+        print(STRM_File + ' Already Exists')
+    else:
+        print('Creating ' + STRM_File)
+        Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, id_field)
+    
+    #Clean Stream Raster
+    if os.path.isfile(STRM_File_Clean):
+        print(STRM_File_Clean + ' Already Exists')
+    else:
+        print('Creating ' + STRM_File_Clean)
+        Clean_STRM_Raster(STRM_File, STRM_File_Clean)
+    
+    #Read all of the flow information for each stream reach
+    stream_gdf = gpd.read_file(StrmSHP)
+    ID = stream_gdf[id_field].array
+    QMax = stream_gdf[flow_field].array
+    QBaseflow = stream_gdf[baseflow_field].array
+    
+    #Get the unique values for all the stream ids
+    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat, dem_geotransform, dem_projection) = Read_Raster_GDAL(STRM_File_Clean)
+    (RR,CC) = S.nonzero()
+    # (RR, CC) = np.where(S > 0)
+    num_strm_cells = len(RR)
+    COMID_Unique = np.unique(S)
+    COMID_Unique = COMID_Unique[COMID_Unique > 0]
+    print(COMID_Unique)
+    # COMID_Unique = np.delete(COMID_Unique, 0)  #We don't need the first entry of zero
+    COMID_Unique = np.sort(COMID_Unique).astype(int)
+    num_comids = len(COMID_Unique)
+    
+    #Organize the recurrence interval flow data so it easily links with stream raster data
+    print('Linking data from ' + STRM_File_Clean + '  with  ' + FlowNC)
+    print('\n\nCreating COMID Flow Files in the folder ' + FlowFileFolder)
+    MinCOMID = int(COMID_Unique.min())
+    MaxCOMID = int(COMID_Unique.max())
+    Create_COMID_Flow_Files(stream_gdf, COMID_Unique, num_comids, MinCOMID, MaxCOMID, FlowFileFolder, id_field, baseflow_field, flow_field, medium_flow_field, low_flow_field)
+    
+    #Write the Flow File for ARC
+    num_unique_comid = len(COMID_Unique)
+    print('Writing ' + FLOW_File + ' for ' + str(num_unique_comid) + ' unique ID values')
+    out_file = open(FLOW_File,'w')
+    out_str = f'COMID,{baseflow_field},{flow_field}'
+    out_file.write(out_str)
+    for i, row in stream_gdf.iterrows():
+        out_str = '\n' + str(row[id_field]) + ',' + str(row[baseflow_field]) + ',' + str(row[flow_field])
+        out_file.write(out_str)
+    out_file.close()
+
+    if dem_cleaner is True:
+        DEM_Cleaner_File = os.path.join(FlowFileFolder, "dem_cleaner_flow.txt")
+        out_file = open(DEM_Cleaner_File,'w')
+        out_str = f'COMID,{baseflow_field},{flow_field}'
+        out_file.write(out_str)
+        for i, row in stream_gdf.iterrows():
+            out_str = f'COMID,{baseflow_field},{flow_field}'
+            out_str = '\n' + str(row[id_field]) + ',' + str(row[baseflow_field]) + ',' + str(row[baseflow_field])
+            out_file.write(out_str)
+    else:
+        DEM_Cleaner_File = False
+    
+    #Create a Baseline Manning N File
+    print('Creating Manning n file: ' + ManningN)
+    Create_BaseLine_Manning_n_File(ManningN)
+    
+    #Create a Starting AutoRoute Input File
+    ARC_FileName = os.path.join(ARC_Folder,'ARC_Input_File.txt')
+    print('Creating ARC Input File: ' + ARC_FileName)
+    COMID_Q_File = FlowFileFolder + '/' + 'COMID_Q_qout_max.txt'
+    Create_ARC_Model_Input_File(ARC_FileName, DEM_File, id_field, flow_field, baseflow_field, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File)
+    
+    
+    print('\n\n')
+    print('Next Step is to Run Automated_Rating_Curve_Generator.py by copying the following into the Command Prompt:')
+    print('python Automated_Rating_Curve_Generator.py ' + Main_Directory + ARC_Folder + '/' + 'ARC_Input_File.txt')
+    
+    return
+
 def Create_Folder(F):
     """
     Creates an empty directory
@@ -158,7 +329,82 @@ def Create_BaseLine_Manning_n_File(ManningN):
 
     return
 
-def Create_AR_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows):
+def Create_COMID_Flow_Files(stream_gdf, COMID_Unique, num_comids, MinCOMID, MaxCOMID, FlowFileFolder, id_field, baseflow_field, flow_field, medium_flow_field, low_flow_field):
+    fmax = open(str(FlowFileFolder) + '/COMID_Q_qout_max.txt', 'w')
+    fmax.write('COMID,qout')
+    fmed = open(str(FlowFileFolder) + '/COMID_Q_qout_med.txt', 'w')
+    fmed.write('COMID,qout')
+    flow = open(str(FlowFileFolder) + '/COMID_Q_qout_low.txt', 'w')
+    flow.write('COMID,qout')
+    fbaseflow = open(str(FlowFileFolder) + '/COMID_Q_baseflow.txt', 'w')
+    fbaseflow.write('COMID,qout')
+    for i, row in stream_gdf.iterrows():
+        out_str = '\n' + str(row[id_field]) + ',' + str(row[flow_field])
+        fmax.write(out_str)
+        out_str = '\n' + str(row[id_field]) + ',' + str(row[medium_flow_field])
+        fmed.write(out_str)
+        out_str = '\n' + str(row[id_field]) + ',' + str(row[low_flow_field])
+        flow.write(out_str)
+        out_str = '\n' + str(row[id_field]) + ',' + str(row[baseflow_field])
+        fbaseflow.write(out_str)
+    fmax.close()
+    fmed.close()
+    flow.close()
+    fbaseflow.close()
+    return
+
+def PullNetCDFInfo(infilename, id_index, q_max, q_2, q_5, q_10, q_25, q_50, q_100):
+    print('Opening ' + infilename)
+    
+    #For NetCDF4
+    file2read = netCDF4.Dataset(infilename) 
+    temp = file2read.variables[id_index]
+    ID = temp[:]*1 
+    
+    temp = file2read.variables[q_max]
+    QMax = temp[:]*1 
+    
+    temp = file2read.variables[q_2]
+    Q2 = temp[:]*1 
+    
+    temp = file2read.variables[q_5]
+    Q5 = temp[:]*1 
+    
+    temp = file2read.variables[q_10]
+    Q10 = temp[:]*1 
+    
+    temp = file2read.variables[q_25]
+    Q25 = temp[:]*1 
+    
+    temp = file2read.variables[q_50]
+    Q50 = temp[:]*1 
+    
+    temp = file2read.variables[q_100]
+    Q100 = temp[:]*1 
+    
+    file2read.close()
+    print('Closed ' + infilename)
+    
+    #This is for NetCDF3
+    '''
+    file2read = netcdf.NetCDFFile(infilename,'r') 
+    
+    ID = []
+    Q = []
+    rivid = file2read.variables[id_index] # var can be 'Theta', 'S', 'V', 'U' etc..
+    q = file2read.variables[q_index] # var can be 'Theta', 'S', 'V', 'U' etc..
+    n=-1
+    for i in rivid:
+        n=n+1
+        #min_val = min(q[n])
+        max_val = max(q[n])
+        ID.append(i)
+        Q.append(max_val)
+    file2read.close()
+    '''
+    return ID, QMax, Q2, Q5, Q10, Q25, Q50, Q100
+
+def Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows):
     """
     Creates an land cover raster that is cloped to a specified extent and cell size
     
@@ -186,7 +432,7 @@ def Create_AR_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows
     ds = None
     return
 
-def Create_AR_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, Param):
+def Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, Param):
     """
     Creates an stream raster from an input stream shapefile that is cloped to a specified extent and cell size
        
@@ -517,6 +763,7 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     XSFileFolder = os.path.join(Main_Directory, 'XS')
     LandFolder = os.path.join(Main_Directory, 'LAND')
     VDTFolder = os.path.join(Main_Directory, 'VDT')
+    FISTFolder = os.path.join(Main_Directory, 'FIST')
     VDT_File = os.path.join(Main_Directory, 'VDT', 'VDT_Database.txt')
     Curve_File = os.path.join(Main_Directory, 'VDT', 'CurveFile.csv')
     FloodMapFile = os.path.join(FloodFolder,'ARC_Flood.tif')
@@ -532,6 +779,7 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     Create_Folder(ARC_Folder)
     Create_Folder(BathyFileFolder)
     Create_Folder(XSFileFolder)
+    Create_Folder(FISTFolder)
     
     
     #Get the Spatial Information from the DEM Raster
@@ -545,14 +793,14 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
         print(LAND_File + ' Already Exists')
     else: 
         print('Creating ' + LAND_File) 
-        Create_AR_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows)
+        Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows)
     
     #Create Stream Raster
     if os.path.isfile(STRM_File):
         print(STRM_File + ' Already Exists')
     else:
         print('Creating ' + STRM_File)
-        Create_AR_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, id_field)
+        Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, id_field)
     
     #Clean Stream Raster
     if os.path.isfile(STRM_File_Clean):
