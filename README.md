@@ -1,4 +1,10 @@
 # Automated Rating Curve (ARC) Generator
+
+MOST RECENT UPDATE: 
+```
+Merge pull request #6 from MikeFHS/fixing_geojson_generation
+```
+
 ARC is an Python-based code that encompasses much of the functionality of the hydraulic modeling software AutoRoute. ARC inputs a series of raster datasets and outputs rating curves that describe the relationship between streamflow and water surface elevation.
 
 The resulting rating curves can be paired with a flood inundation mapping software to produce flood inundation maps.
