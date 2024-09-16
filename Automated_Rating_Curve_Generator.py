@@ -4,18 +4,20 @@ Written initially by Mike Follum with Follum Hydrologic Solutions, LLC.
 Program simply creates depth, velocity, and top-width information for each stream cell in a domain.
 
 """
-
-import sys
-import os
-import numpy as np
-import math, time
+# built-in imports
 from datetime import datetime
-from scipy.optimize import curve_fit
+import math, time
+import os
+import sys
+
+# third-party imports
 try:
     import gdal 
-
 except: 
     from osgeo import gdal
+import numpy as np
+import pandas as pd
+from scipy.optimize import curve_fit
 
 
 def format_array(da_array: np.ndarray, s_format: str):
@@ -846,6 +848,8 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
 def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
                         da_xc_second_fract: np.ndarray, d_xs_direction: np.ndarray, i_r_start: int, i_c_start: int, i_centerpoint: int, d_dx: float, d_dy: float):
     """
+    i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, d_xs_direction, i_row_cell,
+                                               i_column_cell, i_center_point, dx, dy
     Calculates the distance of the stream cross section
 
     Parameters
@@ -1832,7 +1836,7 @@ if __name__ == "__main__":
         dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2)).astype(int)
 
     # Get the list of stream locations
-    ia_valued_row_indices, ia_valued_column_indices = dm_stream.nonzero()
+    ia_valued_row_indices, ia_valued_column_indices = np.where(dm_stream > 0)
     i_number_of_stream_cells = len(ia_valued_row_indices)
     
     #Make all Land Cover that is a stream look like water
@@ -1884,15 +1888,37 @@ if __name__ == "__main__":
     i_row_top = nrows + i_boundary_number-1
     i_column_bottom = i_boundary_number
     i_column_top = ncols + i_boundary_number-1
+
+    # These are the number of increments of water surface elevation that we will use to construct the VDT database and the 
+    i_number_of_increments = 15
     
-    # Open the output file and write the initial metadata
-    o_out_file = open(s_output_vdt_database, 'w')
-    o_out_file.write('COMID,Row,Col,Elev,QBaseflow,Q,V,T,WSE')
+    # Create the dictionary and lists that will be used to create our VDT database
+    o_out_file_dict = {}
+    o_out_file_dict['COMID'] = []
+    o_out_file_dict['Row'] = []
+    o_out_file_dict['Col'] = []
+    o_out_file_dict['Elev'] = []
+    o_out_file_dict['QBaseflow'] = []
+    for i in range(1, i_number_of_increments+1):
+        o_out_file_dict[f'q_{i}'] = []
+        o_out_file_dict[f'v_{i}'] = []
+        o_out_file_dict[f't_{i}'] = []
+        o_out_file_dict[f'wse_{i}'] = []
     
-    #Open the output Curve file and write the initial metadata
+    #Create the list that we will use to generate the output Curve file
     if len(s_output_curve_file)>0:
-        o_curve_file = open(s_output_curve_file, 'w')
-        o_curve_file.write('COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b')
+        COMID_curve_list = []
+        Row_curve_list = []
+        Col_curve_list = []
+        BaseElev_curve_list = []
+        DEM_Elev_curve_list = []
+        QMax_curve_list = []
+        depth_a_curve_list = []
+        depth_b_curve_list = []
+        tw_a_curve_list = []
+        tw_b_curve_list = []
+        vel_a_curve_list = []
+        vel_b_curve_list = []
 
     # Write the percentiles into the files
     print('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
@@ -2009,8 +2035,8 @@ if __name__ == "__main__":
 
             # Now rerun everything with the shortest top-width angle
             d_xs_direction = d_shortest_tw_angle
-            d_distance_z = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, d_xs_direction, i_row_cell,
-                                               i_column_cell, i_center_point, dx, dy)
+            (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_angle_use, 
+                                                                                               i_row_cell, i_column_cell, i_center_point, dx, dy)
 
             ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main
             ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main * -1
@@ -2229,7 +2255,6 @@ if __name__ == "__main__":
                 continue
             
             # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
-            i_number_of_increments = 15
             d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
 
@@ -2276,10 +2301,24 @@ if __name__ == "__main__":
                     if sum(da_total_q[0:int(i_number_of_elevations / 2.0)]) <= 1e-16 or i_row_cell < 0 or i_column_cell < 0 or dm_elevation[i_row_cell, i_column_cell] <= 1e-16:  # Need at least half the increments filled in order to report results.
                         break
                     else:
-                        o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(dm_elevation[i_row_cell,i_column_cell]) + ",{:.3f}".format(d_q_baseflow))
-                        # o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_q_baseflow))
-
-                o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
+                        COMID_list = o_out_file_dict['COMID']
+                        Row_list = o_out_file_dict['Row']
+                        Col_list = o_out_file_dict['Col']
+                        Elev_list = o_out_file_dict['Elev']
+                        QBaseflow_list = o_out_file_dict['QBaseflow']
+                        COMID_list.append(int(i_cell_comid))
+                        Row_list.append(int(i_row_cell - i_boundary_number))
+                        Col_list.append(int(i_column_cell - i_boundary_number))
+                        Elev_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                        QBaseflow_list.append(round(d_q_baseflow, 3))
+                q_list = o_out_file_dict[f'q_{i_entry_elevation}']
+                v_list = o_out_file_dict[f'v_{i_entry_elevation}']
+                t_list = o_out_file_dict[f't_{i_entry_elevation}']
+                wse_list = o_out_file_dict[f'wse_{i_entry_elevation}']
+                q_list.append(round(da_total_q[i_entry_elevation], 3))
+                v_list.append(round(da_total_v[i_entry_elevation], 3))
+                t_list.append(round(da_total_t[i_entry_elevation], 3))
+                wse_list.append(round(da_total_wse[i_entry_elevation], 3))
                 i_outprint_yes = 1
         
         elif i_volume_fill_approach == 2:
@@ -2354,9 +2393,24 @@ if __name__ == "__main__":
                     if da_total_q[i_entry_elevation] < d_q_maximum or da_total_q[i_entry_elevation] > d_q_maximum * 3:
                         break
                     else:
-                        o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(dm_elevation[i_row_cell,i_column_cell]) + ",{:.3f}".format(d_q_baseflow))
-
-                o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
+                        COMID_list = o_out_file_dict['COMID']
+                        Row_list = o_out_file_dict['Row']
+                        Col_list = o_out_file_dict['Col']
+                        Elev_list = o_out_file_dict['Elev']
+                        QBaseflow_list = o_out_file_dict['QBaseflow']
+                        COMID_list.append(int(i_cell_comid))
+                        Row_list.append(int(i_row_cell - i_boundary_number))
+                        Col_list.append(int(i_column_cell - i_boundary_number))
+                        Elev_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                        QBaseflow_list.append(round(d_q_baseflow, 3))
+                q_list = o_out_file_dict[f'q_{i_entry_elevation}']
+                v_list = o_out_file_dict[f'v_{i_entry_elevation}']
+                t_list = o_out_file_dict[f't_{i_entry_elevation}']
+                wse_list = o_out_file_dict[f'wse_{i_entry_elevation}']
+                q_list.append(round(da_total_q[i_entry_elevation], 3))
+                v_list.append(round(da_total_v[i_entry_elevation], 3))
+                t_list.append(round(da_total_t[i_entry_elevation], 3))
+                wse_list.append(round(da_total_wse[i_entry_elevation], 3))
                 i_outprint_yes = 1
 
         # Work on the Regression Equations File
@@ -2366,9 +2420,18 @@ if __name__ == "__main__":
             (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_v[i_start_elevation_index:i_last_elevation_index + 1])
             da_total_depth = da_total_wse - da_xs_profile1[0]
             (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_depth[i_start_elevation_index:i_last_elevation_index + 1])
-            # COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b
-            o_curve_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_dem_low_point_elev) + ",{:.3f}".format(da_total_q[i_last_elevation_index]))
-            o_curve_file.write(",{:.3f}".format(d_d_a) + ",{:.3f}".format(d_d_b) + ",{:.3f}".format(d_t_a) + ",{:.3f}".format(d_t_b) + ",{:.3f}".format(d_v_a) + ",{:.3f}".format(d_v_b) )
+            COMID_curve_list.append(int(i_cell_comid))
+            Row_curve_list.append(int(i_row_cell - i_boundary_number))
+            Col_curve_list.append(int(i_column_cell - i_boundary_number))
+            BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
+            DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
+            QMax_curve_list.append(round(da_total_q[i_last_elevation_index], 3))
+            depth_a_curve_list.append(round(d_d_a, 3))
+            depth_b_curve_list.append(round(d_d_b, 3))
+            tw_a_curve_list.append(round(d_t_a, 3))
+            tw_b_curve_list.append(round(d_t_b, 3))
+            vel_a_curve_list.append(round(d_v_a, 3))
+            vel_b_curve_list.append(round(d_v_b, 3))
 
         # Output the XS information, if you've chosen to do so
         da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
@@ -2379,13 +2442,34 @@ if __name__ == "__main__":
             o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
 
    
-    # Close the output file
-    o_out_file.close()
+    # Write the output VDT Database file
+    dtypes = {
+                "COMID": 'int64',
+                "Row": 'int64',
+                "Col": 'int64',
+    }
+    o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
+    o_out_file_df = o_out_file_df.dropna()
+    o_out_file_df.to_csv(s_output_vdt_database, index=False)
     print('Finished writing ' + str(s_output_vdt_database))
     
-    # Close the output file
+    # Write the output Curve file
     if len(s_output_curve_file)>0:
-        o_curve_file.close()
+        o_curve_file_dict = {'COMID': COMID_curve_list,
+                             'Row': Row_curve_list,
+                             'Col': Col_curve_list,
+                             'BaseElev': BaseElev_curve_list,
+                             'DEM_Elev': DEM_Elev_curve_list,
+                             'QMax': QMax_curve_list,
+                             'depth_a': depth_a_curve_list,
+                             'depth_b': depth_b_curve_list,
+                             'tw_a': tw_a_curve_list,
+                             'tw_b': tw_b_curve_list,
+                             'vel_a': vel_a_curve_list,
+                             'vel_b': vel_b_curve_list,}
+        o_curve_file_df = pd.DataFrame(o_curve_file_dict)
+        o_curve_file_df = o_curve_file_df.dropna()
+        o_curve_file_df.to_csv(s_output_curve_file, index=False)
         print('Finished writing ' + str(s_output_curve_file))
     
     
