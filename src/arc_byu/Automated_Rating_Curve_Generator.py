@@ -1579,7 +1579,7 @@ def main(MIF_Name: str):
         i_lowest_point_index_offset=0
         d_dem_low_point_elev = da_xs_profile1[0]
         if i_low_spot_range > 0:
-            i_lowest_point_index_offset = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
+            i_lowest_point_index_offset, _ = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
                                                                                ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, nrows, ncols,
                                                                                i_boundary_number)
 
