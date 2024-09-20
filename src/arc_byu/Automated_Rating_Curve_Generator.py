@@ -656,7 +656,10 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
     # Extract the required columns into numpy arrays
     da_comid = df[s_flow_id].to_numpy(dtype=int)
-    da_base_flow = df[s_flow_baseflow].to_numpy(dtype=float)
+    if s_flow_baseflow:
+        da_base_flow = df[s_flow_baseflow].to_numpy(dtype=float)
+    else:
+        da_base_flow = np.zeros(len(da_comid))
     da_flow_maximum = df[s_flow_qmax].to_numpy(dtype=float)
 
     # Return to the calling function
@@ -1430,6 +1433,7 @@ def main(MIF_Name: str):
     STRM, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection = read_raster_gdal(s_input_stream_path)
     LC, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection = read_raster_gdal(s_input_land_use_path)
 
+
     if dnrows != snrows or dnrows != lnrows:
         logging.warning('Rows do not Match!')
     else:
@@ -2021,6 +2025,7 @@ def main(MIF_Name: str):
         write_output_raster(s_output_flood, dm_out_flood[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
 
     # Log the compute time
+    global starttime
     d_sim_time = datetime.now() - starttime
     i_sim_time_s = int(d_sim_time.seconds)
 
