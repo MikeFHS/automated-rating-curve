@@ -1163,7 +1163,7 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
             # If the cell is in the slope part of the trapezoid you need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank <= d_distance_h:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                dm_output_bathymetry[ia_xc_r1_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
@@ -1421,7 +1421,8 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
 
     
     
-def main(MIF_Name: str):
+def main(MIF_Name: str, quiet: bool):
+    starttime = datetime.now()
     ### Read Main Input File ###
     read_main_input_file(MIF_Name)
     
@@ -1535,7 +1536,7 @@ def main(MIF_Name: str):
     da_percent_cells = (da_percent_cells * i_number_of_stream_cells / 100).astype(int)
 
     ### Begin the stream cell solution loop ###
-    for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells):
+    for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet):
         # Get the metadata for the loop
         i_row_cell = ia_valued_row_indices[i_entry_cell]
         i_column_cell = ia_valued_column_indices[i_entry_cell]
@@ -2025,7 +2026,6 @@ def main(MIF_Name: str):
         write_output_raster(s_output_flood, dm_out_flood[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
 
     # Log the compute time
-    global starttime
     d_sim_time = datetime.now() - starttime
     i_sim_time_s = int(d_sim_time.seconds)
 
@@ -2035,8 +2035,6 @@ def main(MIF_Name: str):
         logging.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
         
 if __name__ == "__main__":
-    starttime = datetime.now()
-    
     logging.info('Inputs to the Program is a Main Input File')
     logging.info('\nFor Example:')
     logging.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
