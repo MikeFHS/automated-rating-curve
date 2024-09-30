@@ -8,19 +8,15 @@ Program simply creates depth, velocity, and top-width information for each strea
 import sys
 import os
 import math, time
-import logging
 
 import tqdm
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from scipy.optimize import curve_fit
-try:
-    import gdal 
+from osgeo import gdal
 
-except: 
-    from osgeo import gdal
-
+from arc_byu import LOG
 
 def format_array(da_array: np.ndarray, s_format: str):
     """
@@ -85,7 +81,8 @@ def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
 
 
 # Power function equation
-def power_func(d_value: float, d_coefficient: float, d_power: float):
+@np.errstate(divide='ignore')
+def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
     """
     Define a general power function that can be used for fitting
 
@@ -238,7 +235,7 @@ def read_raster_gdal(s_input_filename: str):
 
     # Check that the file exists to open
     if os.path.isfile(s_input_filename) == False:
-        logging.info('Cannot Find Raster ' + s_input_filename)
+        LOG.info('Cannot Find Raster ' + s_input_filename)
 
     # Attempt to open the dataset
     try:
@@ -275,14 +272,14 @@ def read_raster_gdal(s_input_filename: str):
     o_dataset = None
 
     # Write metdata information to the console
-    logging.info('Spatial Data for Raster File:')
-    logging.info('   ncols = ' + str(i_number_of_columns))
-    logging.info('   nrows = ' + str(i_number_of_rows))
-    logging.info('   cellsize = ' + str(d_cell_size))
-    logging.info('   yll = ' + str(d_y_lower_left))
-    logging.info('   yur = ' + str(d_y_upper_right))
-    logging.info('   xll = ' + str(d_x_lower_left))
-    logging.info('   xur = ' + str(d_x_upper_right))
+    LOG.info('Spatial Data for Raster File:')
+    LOG.info('   ncols = ' + str(i_number_of_columns))
+    LOG.info('   nrows = ' + str(i_number_of_rows))
+    LOG.info('   cellsize = ' + str(d_cell_size))
+    LOG.info('   yll = ' + str(d_y_lower_left))
+    LOG.info('   yur = ' + str(d_y_upper_right))
+    LOG.info('   xll = ' + str(d_x_lower_left))
+    LOG.info('   xur = ' + str(d_x_upper_right))
 
     # Return dataset information to the calling function
     return dm_raster_array, i_number_of_columns, i_number_of_rows, d_cell_size, d_y_lower_left, d_y_upper_right, d_x_lower_left, d_x_upper_right, d_latitude, l_geotransform, s_raster_projection
@@ -329,10 +326,10 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
 
     # Log the value to the console
     if d_return_value != '':
-        logging.info('  ' + s_target + ' is set to ' + d_return_value)
+        LOG.info('  ' + s_target + ' is set to ' + d_return_value)
 
     else:
-       logging.warning('  Could not find ' + s_target)
+       LOG.info('  Could not find ' + s_target)
 
     # Return value to the calling function
     return d_return_value
@@ -649,7 +646,7 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     """
     # Check if file exists
     if not os.path.exists(s_flow_file_name):
-        logging.error('Cannot Find Flow File ' + s_flow_file_name)
+        LOG.error('Cannot Find Flow File ' + s_flow_file_name)
         exit()
 
     df = pd.read_csv(s_flow_file_name)
@@ -1009,7 +1006,7 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
         da_xs_profile[0:i_center_point] = dm_elevation[ia_xc_row_index_main[0:i_center_point], ia_xc_column_index_main[0:i_center_point]] * da_xc_main_fract[0:i_center_point] + dm_elevation[ia_xc_row_index_second[0:i_center_point],
                                                    ia_xc_column_index_second[0:i_center_point]] * da_xc_second_fract[0:i_center_point]
     except:
-        logging.error('Error on Cell ' + str(i_entry_cell))
+        LOG.error('Error on Cell ' + str(i_entry_cell))
 
     # Return the center point to the calling function
     return i_center_point
@@ -1271,7 +1268,10 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
             # Calculate teh geometric values
             d_area = np.sum(da_area_good[da_y_depth[1:] > 0])
             d_perimeter = np.sum(da_perimeter_i_good[da_y_depth[1:] > 0])
-            d_hydraulic_radius = d_area / d_perimeter
+            if d_perimeter == 0:
+                d_hydraulic_radius = np.inf
+            else:
+                d_hydraulic_radius = d_area / d_perimeter
 
             # Calculate the composite Mannings N
             d_composite_n = np.sum(da_composite_n_good)
@@ -1436,12 +1436,12 @@ def main(MIF_Name: str, quiet: bool):
 
 
     if dnrows != snrows or dnrows != lnrows:
-        logging.warning('Rows do not Match!')
+        LOG.warning('Rows do not Match!')
     else:
         nrows = dnrows
 
     if dncols != sncols or dncols != lncols:
-        logging.warning('Cols do not Match!')
+        LOG.warning('Cols do not Match!')
     else:
         ncols = dncols
 
@@ -1485,8 +1485,8 @@ def main(MIF_Name: str, quiet: bool):
 
     # Get the cell dx and dy coordinates
     dx, dy, dproject = convert_cell_size(dcellsize, dyll, dyur)
-    logging.info('Cellsize X = ' + str(dx))
-    logging.info('Cellsize Y = ' + str(dy))
+    LOG.info('Cellsize X = ' + str(dx))
+    LOG.info('Cellsize Y = ' + str(dy))
     
     # Pull cross sections
     i_center_point = int((d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
@@ -1513,7 +1513,7 @@ def main(MIF_Name: str, quiet: bool):
                 for s in range(-1, 2, 2):
                     l_angles_to_test.append(s * d * d_degree_interval)
 
-    logging.info('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(l_angles_to_test))
+    LOG.info('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(l_angles_to_test))
     
     # Get the extents of the boundaries
     i_row_bottom = i_boundary_number
@@ -1522,8 +1522,9 @@ def main(MIF_Name: str, quiet: bool):
     i_column_top = ncols + i_boundary_number-1
     
     # Open the output file and write the initial metadata
-    o_out_file = open(s_output_vdt_database, 'w')
-    o_out_file.write('COMID,Row,Col,Elev,QBaseflow,Q,V,T,WSE')
+    if s_output_vdt_database:
+        o_out_file = open(s_output_vdt_database, 'w')
+        o_out_file.write('COMID,Row,Col,Elev,QBaseflow,Q,V,T,WSE')
     
     #Open the output Curve file and write the initial metadata
     if len(s_output_curve_file)>0:
@@ -1531,7 +1532,7 @@ def main(MIF_Name: str, quiet: bool):
         o_curve_file.write('COMID,Row,Col,BaseElev,DEM_Elev,QMax,depth_a,depth_b,tw_a,tw_b,vel_a,vel_b')
 
     # Write the percentiles into the files
-    logging.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
+    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
     da_percent_cells = np.array([1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99, 100, 110])
     da_percent_cells = (da_percent_cells * i_number_of_stream_cells / 100).astype(int)
 
@@ -1697,7 +1698,7 @@ def main(MIF_Name: str, quiet: bool):
             continue
 
         if i_number_of_elevations >= ep:
-            logging.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+            LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
             continue
         
         # Calculate the volumes
@@ -1906,11 +1907,11 @@ def main(MIF_Name: str, quiet: bool):
                 if i_entry_elevation == i_number_of_elevations-1:
                     if sum(da_total_q[0:int(i_number_of_elevations / 2.0)]) <= 1e-16 or i_row_cell < 0 or i_column_cell < 0 or dm_elevation[i_row_cell, i_column_cell] <= 1e-16:  # Need at least half the increments filled in order to report results.
                         break
-                    else:
+                    elif s_output_vdt_database:
                         o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(dm_elevation[i_row_cell,i_column_cell]) + ",{:.3f}".format(d_q_baseflow))
                         # o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(da_xs_profile1[0]) + ",{:.3f}".format(d_q_baseflow))
-
-                o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
+                if s_output_vdt_database:
+                    o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
                 i_outprint_yes = 1
         
         elif i_volume_fill_approach == 2:
@@ -1931,7 +1932,7 @@ def main(MIF_Name: str, quiet: bool):
 
             # Check that the number of elevations is reasonable
             if i_number_of_elevations >= ep:
-                logging.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+                LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
 
             for i_entry_elevation in range(1, i_number_of_elevations):
                 # Calculate the geometry
@@ -1982,10 +1983,11 @@ def main(MIF_Name: str, quiet: bool):
                 if i_entry_elevation == i_number_of_elevations - 1:
                     if da_total_q[i_entry_elevation] < d_q_maximum or da_total_q[i_entry_elevation] > d_q_maximum * 3:
                         break
-                    else:
+                    elif s_output_vdt_database:
                         o_out_file.write('\n' + str(i_cell_comid) + ',' + str(int(i_row_cell - i_boundary_number)) + ',' + str(int(i_column_cell - i_boundary_number)) + ",{:.3f}".format(dm_elevation[i_row_cell,i_column_cell]) + ",{:.3f}".format(d_q_baseflow))
 
-                o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
+                if s_output_vdt_database:
+                    o_out_file.write(",{:.3f}".format(da_total_q[i_entry_elevation]) + ",{:.3f}".format(da_total_v[i_entry_elevation]) + ",{:.3f}".format(da_total_t[i_entry_elevation]) + ",{:.3f}".format(da_total_wse[i_entry_elevation]))
                 i_outprint_yes = 1
 
         # Work on the Regression Equations File
@@ -2000,22 +2002,23 @@ def main(MIF_Name: str, quiet: bool):
             o_curve_file.write(",{:.3f}".format(d_d_a) + ",{:.3f}".format(d_d_b) + ",{:.3f}".format(d_t_a) + ",{:.3f}".format(d_t_b) + ",{:.3f}".format(d_v_a) + ",{:.3f}".format(d_v_b) )
 
         # Output the XS information, if you've chosen to do so
-        da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
-        dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
-        da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
-        dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
         if s_xs_output_file != '':
+            da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
+            dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
+            da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
+            dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
             o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
 
    
     # Close the output file
-    o_out_file.close()
-    logging.info('Finished writing ' + str(s_output_vdt_database))
+    if s_output_vdt_database:
+        o_out_file.close()
+    LOG.info('Finished writing ' + str(s_output_vdt_database))
     
     # Close the output file
     if len(s_output_curve_file)>0:
         o_curve_file.close()
-        logging.info('Finished writing ' + str(s_output_curve_file))
+        LOG.info('Finished writing ' + str(s_output_curve_file))
     
     
     # Write the output rasters
@@ -2030,22 +2033,22 @@ def main(MIF_Name: str, quiet: bool):
     i_sim_time_s = int(d_sim_time.seconds)
 
     if i_sim_time_s < 60:
-        logging.info('Simulation Took ' + str(i_sim_time_s) + ' seconds')
+        LOG.info('Simulation Took ' + str(i_sim_time_s) + ' seconds')
     else:
-        logging.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
+        LOG.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
         
 if __name__ == "__main__":
-    logging.info('Inputs to the Program is a Main Input File')
-    logging.info('\nFor Example:')
-    logging.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
+    LOG.info('Inputs to the Program is a Main Input File')
+    LOG.info('\nFor Example:')
+    LOG.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
     
     ### User-Defined Main Input File ###
     if len(sys.argv) > 1:
         MIF_Name = sys.argv[1]
-        logging.info('Main Input File Given: ' + MIF_Name)
+        LOG.info('Main Input File Given: ' + MIF_Name)
     else:
         #Read Main Input File
         MIF_Name = 'ARC_InputFiles/ARC_Input_File.txt'
-        logging.warning('Moving forward with Default MIF Name: ' + MIF_Name)
+        LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
         
     main(MIF_Name)

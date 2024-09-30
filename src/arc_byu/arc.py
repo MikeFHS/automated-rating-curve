@@ -11,6 +11,8 @@ class Arc():
     def __init__(self, mifn: str = "", quiet: bool = False) -> None:
         self._mifn = mifn
         self.quiet = quiet
+        if quiet:
+            self.set_log_level('error')
         
     def run(self):
         global starttime
@@ -33,16 +35,22 @@ class Arc():
         main(MIF_Name, self.quiet)
         
     def set_log_level(self, log_level: str):
+        handler = LOG.handlers[0]
         if log_level == 'debug':
             LOG.setLevel(logging.DEBUG)
+            handler.setLevel(logging.DEBUG)
         elif log_level == 'info':
             LOG.setLevel(logging.INFO)
+            handler.setLevel(logging.INFO)
         elif log_level == 'warn':
             LOG.setLevel(logging.WARNING)
+            handler.setLevel(logging.WARNING)
         elif log_level == 'error':
             LOG.setLevel(logging.ERROR)
+            handler.setLevel(logging.ERROR)
         else:
             LOG.setLevel(logging.WARNING)
+            handler.setLevel(logging.WARNING)
             LOG.warning('Invalid log level. Defaulting to warning.')
             return
             
