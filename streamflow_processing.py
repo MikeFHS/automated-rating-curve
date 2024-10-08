@@ -10,9 +10,9 @@ import sys
 import dask.array as da
 import dask.dataframe as dd
 from dask.diagnostics import ProgressBar
-# import geoglows       #pip install geoglows -q     #conda install pip      #https://gist.github.com/rileyhales/873896e426a5bd1c4e68120b286bc029
+import geoglows       #pip install geoglows -q     #conda install pip      #https://gist.github.com/rileyhales/873896e426a5bd1c4e68120b286bc029
 import geopandas as gpd
-#import netCDF4   #conda install netCDF4
+import netCDF4   #conda install netCDF4
 import numpy as np
 from osgeo import gdal, osr
 import pandas as pd
@@ -343,81 +343,104 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     ymin = gt[3] + gt[5] * raster_dataset.RasterYSize
     ymax = gt[3]
 
-    raster_bounds = (xmin, ymin, xmax, ymax)
-    raster_bbox = box(*raster_bounds)  # Create a shapely box from raster bounds
+    # Create a bounding box
+    raster_bbox = box(xmin, ymin, xmax, ymax)
 
-    # Check which polyline features are within the raster tile boundary
-    StrmShp_gdf['within_raster'] = StrmShp_gdf.geometry.apply(lambda geom: geom.within(raster_bbox))
+    # Use GeoPandas spatial index to quickly find geometries within the bounding box
+    sindex = StrmShp_gdf.sindex
+    possible_matches_index = list(sindex.intersection(raster_bbox.bounds))
+    possible_matches = StrmShp_gdf.iloc[possible_matches_index]
 
     # Collect IDs of polyline features within the raster tile boundary
-    DEM_StrmShp_gdf = StrmShp_gdf.loc[StrmShp_gdf['within_raster']==True]
-    DEM_StrmShp_gdf.to_file(OutShp_File_Name)
+    StrmShp_filtered_gdf = possible_matches[possible_matches.geometry.within(raster_bbox)]
 
-    rivids = DEM_StrmShp_gdf[rivid_field].values
+    # Check if StrmShp_filtered_gdf is empty
+    if StrmShp_filtered_gdf.empty:
+        print(f"Skipping processing for {DEM_Tile} because StrmShp_filtered_gdf is empty.")
+        CSV_File_Name = None
+        OutShp_File_Name = None
+        rivids_int = None
+        StrmShp_filtered_gdf = None
+        return (CSV_File_Name, OutShp_File_Name, rivids_int, StrmShp_filtered_gdf)
+    
+    StrmShp_filtered_gdf.to_file(OutShp_File_Name)
+    StrmShp_filtered_gdf[rivid_field] = StrmShp_filtered_gdf[rivid_field].astype(int)
 
-
-    # Set this back to false for the next go round with another DEM tile
-    StrmShp_gdf['within_raster'] = False
+    # create a list of river IDs to throw to AWS
+    rivids_str = StrmShp_filtered_gdf[rivid_field].astype(str).to_list()
+    rivids_int = StrmShp_filtered_gdf[rivid_field].astype(int).to_list()
 
     # Set up the S3 connection
     ODP_S3_BUCKET_REGION = 'us-west-2'
     s3 = s3fs.S3FileSystem(anon=True, client_kwargs=dict(region_name=ODP_S3_BUCKET_REGION))
 
-    # Load retrospective data from S3 using Dask
-    retro_s3_uri = 's3://geoglows-v2-retrospective/retrospective.zarr'
-    retro_s3store = s3fs.S3Map(root=retro_s3_uri, s3=s3, check=False)
-    retro_ds = xr.open_zarr(retro_s3store).sel(rivid=rivids)
-
+    # Load FDC data from S3 using Dask
+    # Convert to a list of integers
+    fdc_s3_uri = 's3://geoglows-v2-retrospective/fdc.zarr'
+    fdc_s3store = s3fs.S3Map(root=fdc_s3_uri, s3=s3, check=False)
+    p_exceedance = [float(50.0), float(0.0)]
+    fdc_ds = xr.open_zarr(fdc_s3store).sel(p_exceed=p_exceedance, river_id=rivids_str)
     # Convert Xarray to Dask DataFrame
-    retro_df = retro_ds.to_dataframe().reset_index()
+    fdc_df = fdc_ds.to_dataframe().reset_index()
 
-    # Perform groupby operations in Dask for mean, median, and max
-    mean_df = retro_df.groupby('rivid').Qout.mean().round(3).rename('qout_mean').reset_index()
-    median_df = retro_df.groupby('rivid').Qout.median().round(3).rename('qout_median').reset_index()
-    max_df = retro_df.groupby('rivid').Qout.max().round(3).rename('qout_max').reset_index()
+    # Check if fdc_df is empty
+    if fdc_df.empty:
+        print(f"Skipping processing for {DEM_Tile} because fdc_df is empty.")
+        CSV_File_Name = None
+        OutShp_File_Name = None
+        rivids_int = None
+        StrmShp_filtered_gdf = None
+        return (CSV_File_Name, OutShp_File_Name, rivids_int, StrmShp_filtered_gdf)
 
-    # Set the index for alignment and repartition
-    mean_df = mean_df.set_index('rivid')
-    median_df = median_df.set_index('rivid')
-    max_df = max_df.set_index('rivid')
+    # Create 'qout_median' column where 'p_exceed' is 50.0
+    fdc_df.loc[fdc_df['p_exceed'] == 50.0, 'qout_median'] = fdc_df['fdc']
+    # Create 'qout_max' column where 'p_exceed' is 100.0
+    fdc_df.loc[fdc_df['p_exceed'] == 0.0, 'qout_max'] = fdc_df['fdc']
+    # Group by 'river_id' and aggregate 'qout_median' and 'qout_max' by taking the non-null value
+    fdc_df = fdc_df.groupby('river_id').agg({
+        'qout_median': 'max',  # or use 'max' as both approaches would work
+        'qout_max': 'max'
+    }).reset_index()
 
-    # Align partitions
-    combined_df = pd.concat([ mean_df,
-                               median_df,
-                               max_df
-                            ], axis=1)
+    # making our index for this dataframe match the recurrence interval index 
+    fdc_df['rivid'] = fdc_df['river_id'].astype(int)
+    # Drop two columns from the DataFrame
+    fdc_df = fdc_df.drop(['river_id'], axis=1)
+    fdc_df = fdc_df.set_index('rivid')
 
-    # Clean up memory
-    del retro_ds, retro_df, mean_df, median_df, max_df
-    gc.collect()
-
-    # Enable Dask progress bar
-    with ProgressBar():
+    # round the values
+    fdc_df['qout_median'] = fdc_df['qout_median'].round(3)
+    fdc_df['qout_max'] = fdc_df['qout_max'].round(3)
     
-        # Load return periods data from S3 using Dask
-        rp_s3_uri = 's3://geoglows-v2-retrospective/return-periods.zarr'
-        rp_s3store = s3fs.S3Map(root=rp_s3_uri, s3=s3, check=False)
-        rp_ds = xr.open_zarr(rp_s3store).sel(rivid=rivids)
-        
-        # Convert Xarray to Dask DataFrame and pivot
-        rp_df = rp_ds.to_dataframe().reset_index()
+    # Load return periods data from S3 using Dask
+    rp_s3_uri = 's3://geoglows-v2-retrospective/return-periods.zarr'
+    rp_s3store = s3fs.S3Map(root=rp_s3_uri, s3=s3, check=False)
+    rp_ds = xr.open_zarr(rp_s3store).sel(rivid=rivids_int)
+    
+    # Convert Xarray to Dask DataFrame and pivot
+    rp_df = rp_ds.to_dataframe().reset_index()
 
-        # Convert 'return_period' to category dtype
-        rp_df['return_period'] = rp_df['return_period'].astype('category')
-        
-        # Pivot the table
-        rp_pivot_df = rp_df.pivot_table(index='rivid', columns='return_period', values='return_period_flow', aggfunc='mean')
+    # Check if rp_df is empty
+    if rp_df.empty:
+        print(f"Skipping processing for {DEM_Tile} because rp_df is empty.")
+        CSV_File_Name = None
+        OutShp_File_Name = None
+        rivids_int = None
+        StrmShp_filtered_gdf = None
+        return (CSV_File_Name, OutShp_File_Name, rivids_int, StrmShp_filtered_gdf)
 
-        # Rename columns to indicate return periods
-        rp_pivot_df = rp_pivot_df.rename(columns={col: f'rp{int(col)}' for col in rp_pivot_df.columns})
+    # Convert 'return_period' to category dtype
+    rp_df['return_period'] = rp_df['return_period'].astype('category')
+    
+    # Pivot the table
+    rp_pivot_df = rp_df.pivot_table(index='rivid', columns='return_period', values='return_period_flow', aggfunc='mean')
 
-    # Clean up memory
-    del rp_ds, rp_df
-    gc.collect()
+    # Rename columns to indicate return periods
+    rp_pivot_df = rp_pivot_df.rename(columns={col: f'rp{int(col)}' for col in rp_pivot_df.columns})
 
     # Combine the results from retrospective and return periods data
-    final_df = pd.concat([combined_df, rp_pivot_df], axis=1)
-
+    # final_df = pd.concat([combined_df, rp_pivot_df], axis=1)
+    final_df = pd.concat([fdc_df, rp_pivot_df], axis=1)
     final_df['COMID'] = final_df.index
 
     # Column to move to the front
@@ -427,61 +450,72 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     columns = [target_column] + [col for col in final_df.columns if col != target_column]
     final_df = final_df[columns]
 
+    # Add a safety factor to one of the columns we could use to run the ARC model
+    for col in final_df.columns:
+        if col in ['qout_max','rp100']:
+            final_df[f'{col}_premium'] = round(final_df[col]*1.5, 3)
+    
+    print(final_df)
+
     # Write the final Dask DataFrame to CSV
     final_df.to_csv(CSV_File_Name, index=False)
-
-    # Clean up memory
-    del rp_pivot_df, combined_df, final_df
-    gc.collect()
     
     # Return the combined DataFrame as a Dask DataFrame
-    return (CSV_File_Name, OutShp_File_Name, rivids, DEM_StrmShp_gdf)
-
+    return (CSV_File_Name, OutShp_File_Name, rivids_int, StrmShp_filtered_gdf)
 
 if __name__ == "__main__":
     
-    # WatershedID = '714'
-    # NetCDF_RecurrenceInterval_Folder = '714_ReturnPeriods'
-    # NetCDF_Historical_Folder = '714_HistoricFlows'
-    # Outfile_file_path = 'GeoGLoWS_Flow_Data_' + str(WatershedID)  + 'JLG.csv'
-    # combined_df = Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_Folder, NetCDF_Historical_Folder, Outfile_file_path)
+    # StrmShp = r"F:\Global_Forecast\StrmShp\geoglows-v2-map-optimized.parquet"
+    # rivid_field = "LINKNO"
+    # DEM_Tile_Dir = r"F:\FABDEM_DEM"
 
-    StrmGDB = r"E:\2023_MultiModelFloodMapping\Global_Forecast\StrmShp\geoglows-v2-map-optimized.parquet"
+    StrmShp = r"C:\Users\jlgut\OneDrive\Desktop\AutomatedRatingCurve_TestCase\Gardiner_TestCase\StrmShp\Gardiner_GeoGLoWS_StreamShapefile.shp"
     rivid_field = "LINKNO"
-    #CSV_File_Name = r"E:\2023_MultiModelFloodMapping\Global_Forecast\HistoricFlow\GEOGLOWS_retrospective.csv"
-    
-    # Specify the layer you want to access
-    layer_name = "geoglowsv2"
-    # Read the layer from the geodatabase
-    StrmShp_gdf = gpd.read_file(StrmGDB, layer=layer_name)
-    
-    # list all of the DEM tiles to create a flow file and stream shapefile for
-    DEM_Dir = r"E:\2023_MultiModelFloodMapping\Global_Forecast\DEM"
-    DEM_Tiles = os.listdir(DEM_Dir)
-    
-    # Directory where all the flow data will be stored
-    FLOW_Dir = r"E:\2023_MultiModelFloodMapping\Global_Forecast\FLOW"
-    StrmShp_Dir = r"E:\2023_MultiModelFloodMapping\Global_Forecast\StrmShp"
-    
-    
-    for DEM_Tile in DEM_Tiles:
-        if DEM_Tile.endswith(".tif"):
-            DEM_Path = os.path.join(DEM_Dir, DEM_Tile)
-            
+    DEM_Tile_Dir = r"C:\Users\jlgut\OneDrive\Desktop\AutomatedRatingCurve_TestCase\Gardiner_TestCase\DEM"
+
+    # load in the the StrmShp GDF
+    # StrmShp_gdf = gpd.read_parquet(StrmShp)
+    StrmShp_gdf = gpd.read_file(StrmShp)
+
+
+
+    # make sure the Stream shapefile and DEMs are in the same coordinate system
+    print('Converting the coordinate system of the stream file to match the DEM files, if necessary')
+    dem_dir = os.listdir(DEM_Tile_Dir)
+    dem_dir.sort()
+    for test_dem in dem_dir:
+        if test_dem.endswith(".tif"):
+            test_dem_path = os.path.join(DEM_Tile_Dir,test_dem)
             # Load the DEM file and get its CRS using gdal
-            dem_dataset = gdal.Open(DEM_Path)
+            dem_dataset = gdal.Open(test_dem_path)
             dem_proj = dem_dataset.GetProjection()  # Get the projection as a WKT string
             dem_spatial_ref = osr.SpatialReference()
             dem_spatial_ref.ImportFromWkt(dem_proj)
             dem_crs = dem_spatial_ref.ExportToProj4()  # Export CRS to a Proj4 string (or other formats if needed)
-	   
             # Check if the CRS of the shapefile matches the DEM's CRS
             if StrmShp_gdf.crs != dem_crs:
                 # Reproject the shapefile to match the DEM's CRS
                 StrmShp_gdf = StrmShp_gdf.to_crs(dem_crs)
-        
-            
-            CSV_File_Name = os.path.join(FLOW_Dir,f"{DEM_Tile[:-4]}_Reanalysis.csv")
-            OutShp_File_Name = os.path.join(StrmShp_Dir,f"{DEM_Tile[:-4]}_StrmShp.shp")
-            
-            Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Path, CSV_File_Name, OutShp_File_Name)
+            dem_dataset = None
+            dem_proj = None 
+            dem_spatial_ref = None
+            dem_crs = None     
+            break
+
+
+    # Walk through the DEM directory to find all DEM files
+    for root, _, files in os.walk(DEM_Tile_Dir):
+        for file in files:
+            if file.endswith(".tif"):
+                DEM_Tile = os.path.join(DEM_Tile_Dir, file)
+                # OutShp_File_Name = rf"F:\Global_Forecast\StrmShp\{file[:-4]}_StrmShp.shp"
+                # CSV_File_Name = rf"F:\Global_Forecast\Global_Forecast\FLOW\{file[:-4]}_Reanalysis.csv"
+
+                OutShp_File_Name = rf"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Gardiner_TestCase\STRM\{file[:-4]}_StrmShp.shp"
+                CSV_File_Name = rf"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Gardiner_TestCase\FLOW\{file[:-4]}_Reanalysis.csv"
+
+                Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name)
+                # if os.path.exists(OutShp_File_Name):
+                #     pass
+                # else:
+                #     Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name)
