@@ -19,12 +19,58 @@ import networkx as nx
 from shapely.geometry import Point, LineString, MultiLineString
 
 # local imports
-from process_geospatial_data import Get_Raster_Details, Read_Raster_GDAL
+# from streamflow_processing import Get_Raster_Details, Read_Raster_GDAL
 
-import geopandas as gpd
-import networkx as nx
-import pandas as pd
-from shapely.geometry import Point, LineString, MultiLineString
+
+
+def Get_Raster_Details(DEM_File):
+    print(DEM_File)
+    gdal.Open(DEM_File, gdal.GA_ReadOnly)
+    data = gdal.Open(DEM_File)
+    geoTransform = data.GetGeoTransform()
+    ncols = int(data.RasterXSize)
+    nrows = int(data.RasterYSize)
+    minx = geoTransform[0]
+    dx = geoTransform[1]
+    maxy = geoTransform[3]
+    dy = geoTransform[5]
+    maxx = minx + dx * ncols
+    miny = maxy + dy * nrows
+    Rast_Projection = data.GetProjectionRef()
+    data = None
+    return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
+
+def Read_Raster_GDAL(InRAST_Name):
+    try:
+        dataset = gdal.Open(InRAST_Name, gdal.GA_ReadOnly)     
+    except RuntimeError:
+        sys.exit(" ERROR: Field Raster File cannot be read!")
+    # Retrieve dimensions of cell size and cell count then close DEM dataset
+    geotransform = dataset.GetGeoTransform()
+    # Continue grabbing geospatial information for this use...
+    band = dataset.GetRasterBand(1)
+    RastArray = band.ReadAsArray()
+    #global ncols, nrows, cellsize, yll, yur, xll, xur
+    ncols=band.XSize
+    nrows=band.YSize
+    band = None
+    cellsize = geotransform[1]
+    yll = geotransform[3] - nrows * np.fabs(geotransform[5])
+    yur = geotransform[3]
+    xll = geotransform[0];
+    xur = xll + (ncols)*geotransform[1]
+    lat = np.fabs((yll+yur)/2.0)
+    Rast_Projection = dataset.GetProjectionRef()
+    dataset = None
+    print('Spatial Data for Raster File:')
+    print('   ncols = ' + str(ncols))
+    print('   nrows = ' + str(nrows))
+    print('   cellsize = ' + str(cellsize))
+    print('   yll = ' + str(yll))
+    print('   yur = ' + str(yur))
+    print('   xll = ' + str(xll))
+    print('   xur = ' + str(xur))
+    return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
 
 def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
     """
@@ -149,7 +195,7 @@ def FindClosestSEEDPoints(seed_gdf, curve_data_gdf):
 
     return (curve_data_gdf)
 
-def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output):
+def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output=True, COMID_Q_File=None, comid_q_df=None):
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
@@ -181,9 +227,11 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, COMID_Q_Fil
     -------
     None
     """
-
-    # Read the streamflow data into pandas
-    comid_q_df = pd.read_csv(COMID_Q_File)
+    if COMID_Q_File is not None:
+        # Read the streamflow data into pandas
+        comid_q_df = pd.read_csv(COMID_Q_File)
+    else:
+        pass
     
     # Assuming we want to rename the first two columns
     new_column_names = ['COMID', 'qout']
@@ -733,85 +781,16 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
 
 
 if __name__ == "__main__":
-       
-    # This forces the program to redo the SEED values
-    Redo_Seed_Point_File = False
-    Updated_DEM = False
-    Filtered_Results = False
-    Thin_Output = True
-       
-    Watershed_List = ['SC_TestCase','OH_TestCase','TX_TestCase','IN_TestCase','PA_TestCase']
-
-    for WatershedName in Watershed_List:
-
-        if Updated_DEM is False and Filtered_Results is False:
-
-            
-            OutFolder = os.path.join(WatershedName, "FIST_2")
-
-            if os.path.exists(OutFolder):
-                pass
-            else:
-                os.mkdir(OutFolder)
-
-            STRM_Raster_File = os.path.join(WatershedName,"STRM","STRM_Raster_Clean.tif")
-            DEM_Raster_File = os.path.join(WatershedName,"DEM","DEM.tif")
-            SEED_Point_File = os.path.join(OutFolder,"SEED_Points.txt")
-            OutProjection = os.path.join("EPSG:4269")
-            CurveParam_File = os.path.join(WatershedName,"VDT", "CurveFile.csv")
-        
-        if Updated_DEM is True and Filtered_Results is False:
-
-            updated_dem_text = "Modified_DEM"
-
-            OutFolder = os.path.join(WatershedName, f"FIST_{updated_dem_text}")
-
-            if os.path.exists(OutFolder):
-                pass
-            else:
-                os.mkdir(OutFolder)
-
-            STRM_Raster_File = os.path.join(WatershedName,"STRM","STRM_Raster_Clean.tif")
-            DEM_Raster_File = os.path.join(WatershedName,"DEM",f"{updated_dem_text}.tif")
-            SEED_Point_File = os.path.join(OutFolder,"SEED_Points.txt")
-            OutProjection = os.path.join("EPSG:4269")
-            CurveParam_File = os.path.join(WatershedName,f"VDT_{updated_dem_text}", "CurveFile.csv")
-
-        if Filtered_Results is True and Updated_DEM is False:
-            updated_filter_text = "filtered"
-
-            OutFolder = os.path.join(WatershedName, f"FIST_{updated_filter_text}")
-
-            if os.path.exists(OutFolder):
-                pass
-            else:
-                os.mkdir(OutFolder)
-
-            STRM_Raster_File = os.path.join(WatershedName,"STRM","STRM_Raster_Clean.tif")
-            DEM_Raster_File = os.path.join(WatershedName,"DEM",f"DEM.tif")
-            SEED_Point_File = os.path.join(OutFolder,f"SEED_Points_{updated_filter_text}.txt")
-            OutProjection = os.path.join("EPSG:4269")
-            CurveParam_File = os.path.join(WatershedName,f"VDT", f"CurveFile_{updated_filter_text}.csv")
-
-
-
-        scenarios = ['max', 'med', 'low']
-
-        print('\n\nStarting to Work on ' + WatershedName)
-
-        for scenario in scenarios:
-            COMID_Q_File = os.path.join(WatershedName, "FlowFile",f"COMID_Q_qout_{scenario}.txt")
-            OutGeoJSON_File = os.path.join(OutFolder,f"FIST_Input_{scenario}.geojson")
-            # Get the SEED Values by either estimating them or reading the existing data in 
-            if os.path.isfile(SEED_Point_File)==False or Redo_Seed_Point_File==True:
-                (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File )  #The Write_SEED_Data_To_File_FAST_UPDATED version uses less RAM
-            else:
-                (SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev) = GetSEED_Data_From_File(SEED_Point_File)
-            
-            #Run the Main Program to Create a GeoJSON output file
-            Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(WatershedName, CurveParam_File, COMID_Q_File, STRM_Raster_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev, Thin_Output)
-
     
 
-    
-    
+    CurveParam_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\VDT\Yellowstone_HWM_area_DEM_CurveFile_Bathy.csv"
+    STRM_Raster_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\STRM\Yellowstone_HWM_area_DEM_STRM_Raster_Clean.tif"
+    OutGeoJSON_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\FIST\Yellowstone_HWM_area_DEM_202206Flood.geojson"
+    OutProjection = "EPSG:4269"
+    StrmShp = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\STRM\Yellowstone_HWM_area_DEM_StrmShp.shp"
+    Stream_ID_Field = "LINKNO"
+    Downstream_ID_Field = "DSLINKNO"
+    SEED_Output_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\FIST\Yellowstone_HWM_area_DEM_Seed.shp"
+    Thin_Output=True 
+    COMID_Q_File = r"C:\Users\jlgut\OneDrive\Desktop\2022_Yellowstone_Flood\Yellowstone_flood_2022_max_streamflow_estimate_no_geoglows.csv"
+    Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, COMID_Q_File=COMID_Q_File)
