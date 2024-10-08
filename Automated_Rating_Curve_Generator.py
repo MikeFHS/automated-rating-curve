@@ -18,6 +18,8 @@ except:
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
+from scipy.signal import savgol_filter
+
 
 
 def format_array(da_array: np.ndarray, s_format: str):
@@ -480,6 +482,13 @@ def read_main_input_file(s_mif_name: str):
         d_bathymetry_trapzoid_height = 0.2
 
     d_bathymetry_trapzoid_height = float(d_bathymetry_trapzoid_height)
+
+    # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
+    global b_bathy_use_banks
+    b_bathy_use_banks = get_parameter_name(sl_lines, i_number_of_lines, 'Bathy_Use_Banks')
+    b_bathy_use_banks = bool(b_bathy_use_banks)
+    if b_bathy_use_banks == '':
+        b_bathy_use_banks = False
 
     # Find the path to the output bathymetry file
     global s_output_bathymetry_path
@@ -1085,7 +1094,7 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
     # Return to the calling function
     return i_cross_section_number
 
-def find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_z_target):
+def find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_z_target, i_lc_water_value):
     
     #Initially set the bank info to zeros
     i_bank_1_index = 0
@@ -1400,10 +1409,153 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
     # Return to the calling function
     return d_area, d_perimeter, d_hydraulic_radius, d_composite_n, d_top_width
 
+def find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+                                         ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main):
+    """
+    da_xs_profile1: ndarray
+        Elevations of the stream cross section on one side
+    da_xs_profile2: ndarray
+        Elevations of the stream cross section on the other side
+    xs1_n: int
+        Index of the cross section cells on one of the cross section
+    xs2_n: int
+        Index of the cross section cells on the other side of the cross section
+    d_distance_z: float
+        Incremental distance per cell parallel to the orientation of the cross section
 
-def Calculate_BankFull_Elevation(i_entry_cell: int, num_increments: int, d_distance_z: float, xs1_n: int, da_xs_profile1: np.ndarray, da_n_profile1: np.ndarray, ia_lc_xs1: np.ndarray, 
-                                 xs2_n: int, da_xs_profile2: np.ndarray, da_n_profile2: np.ndarray, ia_lc_xs2: np.ndarray):
+    """
+    # # find the bottom elevation that we will use to measure depth
+    # d_bottom_elevation = da_xs_profile1[0]
+    # d_depth = 0
+    # d_new_width_to_depth_ratio = 0
+    # d_width_to_depth_ratio = 1000000000
+    # # calculate the width-to-depth ratio until we get an inflection
+    # while d_new_width_to_depth_ratio <= d_width_to_depth_ratio:
+    #     # increase the depth of the channel by 1 cm increments
+    #     d_depth = d_depth + 0.01
+    #     d_wse = d_bottom_elevation + d_depth
+    #     # calculate the top-width of the channel at the specified depth
+    #     A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+    #     A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+    #     TW = T1 + T2
+    #     # calculate the width-to-depth ratio
+    #     d_new_width_to_depth_ratio = TW/d_depth
+
+    #     # Break out of the loop if the ratio is no longer decreasing
+    #     if d_new_width_to_depth_ratio > d_width_to_depth_ratio:
+    #         # back up one 1 cm of depth because that is where bankfull appears to be
+    #         d_depth = d_depth - 0.01
+    #         d_wse = d_bottom_elevation + d_depth
+    #         # calculate the top-width of the channel at the specified depth
+    #         A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+    #         A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+    #         break
+
+    #     # if the ratio is increasing continue the loop
+    #     d_width_to_depth_ratio = d_new_width_to_depth_ratio
+
+    # # find the bank indices
+    # i_bank_index1 = int(T1/d_distance_z)
+    # i_bank_index2 = int(T2/d_distance_z)
+
+    # Precompute sliced arrays
+    da_xs_profile1_sliced = da_xs_profile1[0:xs1_n]
+    da_xs_profile2_sliced = da_xs_profile2[0:xs2_n]
+    manning_n_raster1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
+    manning_n_raster2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
     
+    d_bottom_elevation = da_xs_profile1[0]
+    d_depth = 0
+    d_new_width_to_depth_ratio = 0
+    d_width_to_depth_ratio = float('inf')  # Start with a large value
+
+    # we will assume that if we get to a depth of 100 meters, something has gone wrong
+    while d_new_width_to_depth_ratio <= d_width_to_depth_ratio and d_depth <= 100:
+        d_depth += 0.01
+        d_wse = d_bottom_elevation + d_depth
+        
+        # Calculate stream geometry for both sides
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1_sliced, d_wse, d_distance_z, manning_n_raster1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2_sliced, d_wse, d_distance_z, manning_n_raster2)
+        
+        TW = T1 + T2
+        d_new_width_to_depth_ratio = TW / d_depth
+
+        if d_new_width_to_depth_ratio > d_width_to_depth_ratio:
+            # Recalculate the last valid depth
+            d_depth -= 0.01
+            d_wse = d_bottom_elevation + d_depth
+            A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1_sliced, d_wse, d_distance_z, manning_n_raster1)
+            A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2_sliced, d_wse, d_distance_z, manning_n_raster2)
+            break
+
+        d_width_to_depth_ratio = d_new_width_to_depth_ratio
+
+    if d_depth < 100:
+        i_bank_index1 = int(T1 / d_distance_z)
+        i_bank_index2 = int(T2 / d_distance_z)
+    # if we have made it to 100 on d_depth, something is wrong and the banks will be set at the stream cell
+    elif d_depth >= 100:
+        i_bank_index1 = 0
+        i_bank_index2 = 0
+
+    return (i_bank_index1, i_bank_index2)
+
+def find_bank_inflection_point(da_xs_profile: np.ndarray, i_cross_section_number: int, d_distance_z: float, window_length: int = 11, polyorder: int = 3):
+    """
+    Finds the cell containing the bank of the cross section, with smoothing applied.
+
+    Parameters
+    ----------
+    da_xs_profile: ndarray
+        Elevations of the stream cross section
+    i_cross_section_number: int
+        Index of the cross section cell
+    d_distance_z: float
+        Incremental distance per cell parallel to the orientation of the cross section
+    window_length: int, optional
+        The length of the filter window for smoothing (must be an odd number, default is 11)
+    polyorder: int, optional
+        The order of the polynomial used to fit the samples for smoothing (default is 3)
+
+    Returns
+    -------
+    i_cross_section_number: int
+        Updated cell index that defines the bank
+    """
+    # Apply smoothing to the cross-section data
+    da_xs_smooth = savgol_filter(da_xs_profile, window_length=window_length, polyorder=polyorder)
+    
+    # Loop on the smoothed cross-section cells
+    previous_delta_elevation = 0.0
+    total_width = 0.0
+    for entry in range(i_cross_section_number):
+        elevation_0 = da_xs_smooth[entry]
+        elevation_1 = da_xs_smooth[entry + 1]
+        # calculate the change in elevation
+        current_delta_elevation = elevation_1 - elevation_0
+        # If the change in elevation goes up or stays the same, we haven't found the bank yet
+        if current_delta_elevation >= previous_delta_elevation:
+            previous_delta_elevation = current_delta_elevation
+            total_width = total_width + d_distance_z
+        # If the change in elevation decreases, we may have found the bank
+        elif current_delta_elevation < previous_delta_elevation:
+            # Stop here and go one spot back because we've found the bank
+            return entry
+
+    # Return to the calling function
+    return 0
+
+
+def Calculate_BankFull_Elevation(i_entry_cell: int, num_increments: int, d_distance_z: float, dm_manning_n_raster: np.ndarray, i_lc_water_value: int,
+                                 xs1_n: int, da_xs_profile1: np.ndarray, da_n_profile1: np.ndarray, ia_lc_xs1: np.ndarray, ia_xc_r1_index_main: np.ndarray, ia_xc_c1_index_main: np.ndarray, 
+                                 xs2_n: int, da_xs_profile2: np.ndarray, da_n_profile2: np.ndarray, ia_lc_xs2: np.ndarray, ia_xc_r2_index_main: np.ndarray, ia_xc_c2_index_main: np.ndarray,):
+    """
+    
+    Find the stream banks and calculates the elevation at the banks of the stream using either ESA land cover or the inflection point 
+    of the width-to-depth ratio. Uses the elevation of the banks to estimate the channel bottom elevation
+    
+    """
     #Initially set the bank info to zeros
     i_bank_1_index = 0
     i_bank_2_index = 0
@@ -1411,19 +1563,39 @@ def Calculate_BankFull_Elevation(i_entry_cell: int, num_increments: int, d_dista
     bank_elev_1 = da_xs_profile1[0]
     bank_elev_2 = da_xs_profile2[0]
     
-    if xs1_n>=1:
+    if xs1_n>=1 and ia_lc_xs1[0]==i_lc_water_value:
         bank_elev_1 = da_xs_profile1[0]
         for i in range(1, xs1_n):
             if ia_lc_xs1[i]!=i_lc_water_value:
                 bank_elev_1 = da_xs_profile1[i]
                 i_bank_1_index = i-1
                 break
-    if xs2_n>=1:
+    if xs2_n>=1 and ia_lc_xs2[0]==i_lc_water_value:
         for i in range(1, xs2_n):
             if ia_lc_xs2[i]!=i_lc_water_value:
                 bank_elev_2 = da_xs_profile2[i]
                 i_bank_2_index = i-1
                 break
+    
+    # if the stream cell isn't in a LC cell with water use the width-depth ratio calculation to find the banks
+    if xs1_n>=1 and xs2_n>=1 and ia_lc_xs1[0]!=i_lc_water_value:
+        (i_bank_index1, i_bank_index2) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+                                                                              ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
+        bank_elev_1 = da_xs_profile1[i_bank_index1]
+        bank_elev_2 = da_xs_profile2[i_bank_index2]
+    
+    # if the stream cell isn't in a LC cell with water and the width-depth ratio calculation doesn't succeed, try using the bank inflection point
+    # if this doesn't succeed then the bank elevations are set at the value of the terrain at the stream cell (i.e., da_xs_profile1[0])
+    elif xs1_n>=1 and xs2_n>=1 and ia_lc_xs1[0]!=i_lc_water_value:
+        if i_bank_index1 == 0:
+            i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n)
+            bank_elev_1 = da_xs_profile1[i_bank_index1]
+        elif i_bank_index2 == 0:
+            i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n)
+            bank_elev_2 = da_xs_profile2[i_bank_index2]
+        else:
+            pass
+
     if bank_elev_1>da_xs_profile1[0] and bank_elev_2>da_xs_profile1[0]:
         #WaterEdgeElev = 0.5 * (bank_elev_1 + bank_elev_2)
         WaterEdgeElev = min(bank_elev_1, bank_elev_2)
@@ -1661,16 +1833,34 @@ def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2
 
 
 def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
-                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell):
+                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value):
+    """
     
+    """
     #First find the bank information
     #i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
     #i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
-    (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1)
+    (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
     i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+    
+    # If the banks can't be found using the LC, we use the DEM and the width-to-depth ratio approach
+    if i_total_bank_cells < 1:
+        (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+                                                                              ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
+        d_wse_from_dem = da_xs_profile1[0]
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+    
+    # If the banks can't be found using the LC or the width-to-depth ratio, let's try to use the bank inflection points). 
+    if i_total_bank_cells < 1:
+        i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n)
+        i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n)
+        d_wse_from_dem = da_xs_profile1[0]
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+    
+    # if we still don't have a depth, just set the total bank cells to one and ignore it
     if i_total_bank_cells < 1:
         i_total_bank_cells = 1
-    
+
     # Calculate the trapezoid dimensions
     d_total_bank_dist = i_total_bank_cells * d_distance_z
     d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
@@ -1697,7 +1887,8 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n
 
 
 def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
-                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell):
+                                                       ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
+                                                       dm_manning_n_raster, i_lc_water_value):
     
     #First find the bank information
     #The bank is now defined by the water mask in the land cover.  This returns the indice that is the water edge (last indice that is actually water)
@@ -1708,8 +1899,9 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
     
     #Calculate the bankfull elevation.  This function can use method by Knighton, 1984; Copeland et al., 2000,
     #  but it is usually best to use the land-cover raster to show where the waters edge is located.
-    (d_bankfull_elevation, i_bank_1_index, i_bank_2_index) = Calculate_BankFull_Elevation(i_entry_cell, 40, d_distance_z, xs1_n, da_xs_profile1[0:xs1_n], dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]], ia_lc_xs1[0:xs1_n], 
-                                                                                          xs2_n, da_xs_profile2[0:xs2_n], dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]], ia_lc_xs2[0:xs2_n])
+    (d_bankfull_elevation, i_bank_1_index, i_bank_2_index) = Calculate_BankFull_Elevation(i_entry_cell, 40, d_distance_z, dm_manning_n_raster, i_lc_water_value,
+                                                                                          xs1_n, da_xs_profile1[0:xs1_n], dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]], ia_lc_xs1[0:xs1_n], ia_xc_r1_index_main, ia_xc_c1_index_main, 
+                                                                                          xs2_n, da_xs_profile2[0:xs2_n], dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]], ia_lc_xs2[0:xs2_n], ia_xc_r2_index_main, ia_xc_c2_index_main,)
     
     i_total_bank_cells = i_bank_1_index + i_bank_2_index
     if i_total_bank_cells < 1:
@@ -2053,28 +2245,22 @@ if __name__ == "__main__":
                                                   i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
             xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
                                               i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
-        #print(ia_lc_xs1[0])
-        #print(ia_lc_xs2[0])
         
         # Burn bathymetry profile into cross-section profile
         # "Be the banks for your river" - Needtobreathe
-        
-        
+                
         #If you don't have a cross-section, then just skip this cell.
         if xs1_n<=0 and xs2_n<=0:
             continue
         
         #BATHYMETRY CALCULATION
-        #This method calculates bathymetry based on the water surface elevation.
-        (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
-                                                                                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell)
-        
-        
-        #(i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
-        #                                                                                                                ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell)
-
-
-
+        #This method calculates bathymetry based on the water surface elevation, if you want it to.
+        if b_bathy_use_banks is False and s_output_bathymetry_path != '':  
+            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
+                                                                                                                                                ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value)
+        elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
+            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
+                                                                                                                                            ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value)
 
 
         # Solve using the volume fill approach
@@ -2449,7 +2635,10 @@ if __name__ == "__main__":
                 "Col": 'int64',
     }
     o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
+    # Remove rows with NaN values
     o_out_file_df = o_out_file_df.dropna()
+    # Remove rows where any column has a negative value
+    o_out_file_df = o_out_file_df[~(o_out_file_df.lt(0).any(axis=1))]
     o_out_file_df.to_csv(s_output_vdt_database, index=False)
     print('Finished writing ' + str(s_output_vdt_database))
     
@@ -2468,7 +2657,10 @@ if __name__ == "__main__":
                              'vel_a': vel_a_curve_list,
                              'vel_b': vel_b_curve_list,}
         o_curve_file_df = pd.DataFrame(o_curve_file_dict)
+        # Remove rows with NaN values
         o_curve_file_df = o_curve_file_df.dropna()
+        # Remove rows where any column has a negative value
+        o_curve_file_df = o_curve_file_df[~(o_curve_file_df.lt(0).any(axis=1))]
         o_curve_file_df.to_csv(s_output_curve_file, index=False)
         print('Finished writing ' + str(s_output_curve_file))
     
