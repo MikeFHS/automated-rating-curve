@@ -311,7 +311,11 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
         curve_data_gdf = Thin_Curve_data(curve_data_gdf)
 
     # find the SEED locations
-    seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
+    if os.path.isfile(SEED_Output_File):
+        print("SEED file exists, we're using it...")
+        seed_gdf = gpd.read_file(SEED_Output_File)
+    else:
+        seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
     curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf)
 
     # output the GeoJSON file
@@ -776,7 +780,6 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf, Thin_GeoJSON)
 
     return
-
 
 
 
