@@ -828,10 +828,12 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         # Calculate the distance between the cell of interest and every cell with a similar stream id
         da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
         da_dz_list = da_dz_list / max(da_dz_list)
-
+        
         # Calculate the angle to the cells within the search box
         da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
-
+        
+        # METHOD 1 - Calculate the angle based on all of the stream cells in the search box and do distance weighting
+        '''
         # Account for the angle sign when aggregating the distance
         for x in range(len(ia_matching_row_indices)):
             if da_dz_list[x] > 0.0:
@@ -842,6 +844,18 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
                 else:
                     d_stream_direction = d_stream_direction + da_atanvals[x] * da_dz_list[x]
         d_stream_direction = d_stream_direction / sum(da_dz_list)
+        '''
+        
+        # METHOD 2 - Calculate the angle based on the streamcells that are the furthest in the search box
+        # Account for the angle sign when aggregating the distance
+        x = np.argmax(da_dz_list)
+        if da_atanvals[x] > math.pi:
+            d_stream_direction = (da_atanvals[x] - math.pi)
+        elif da_atanvals[x] < 0.0:
+            d_stream_direction = (da_atanvals[x] + math.pi)
+        else:
+            d_stream_direction = da_atanvals[x]
+        
         
         # Cross-Section Direction is just perpendicular to the Stream Direction
         d_xs_direction = d_stream_direction - math.pi / 2.0
@@ -1200,7 +1214,7 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
 
     # Set the incremental convergence targets
     l_dy_list = [1.0, 0.5, 0.1, 0.01]
-
+    
     # Loop over each convergence target
     for d_dy in l_dy_list:
         # Set the initial value
@@ -1226,13 +1240,14 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
     # P = B + 2.0*math.sqrt(H*H + y*y)
     # R = A / P
     # Qcalc = (1.0/n)*A*math.pow(R,(2/3)) * pow(slope,0.5)
+    # print(str(d_top_width) + ' ' + str(d_working_depth) + '  ' + str(d_flow_calculated) + ' vs ' + str(d_baseflow))
 
     return d_working_depth
 
 
 def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, i_bank_index: int, d_total_bank_dist: float, d_trap_base: float, d_distance_z: float, d_distance_h: float, d_y_bathy: float,
                                   d_y_depth: float, dm_output_bathymetry: np.ndarray, ia_xc_r_index_main: np.ndarray, ia_xc_c_index_main: np.ndarray, nrows: int, ncols: int, 
-                                  ia_lc_xs: np.ndarray, dm_land_use: np.ndarray, d_side_dist: float):
+                                  ia_lc_xs: np.ndarray, dm_land_use: np.ndarray, d_side_dist: float, dm_elevation: np.ndarray):
     """
     Adjusts the profile for the estimated bathymetry
 
@@ -1283,18 +1298,21 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
 
             # If the cell is in the flat part of the trapezoidal cross-section, set it to the bottom elevation of the trapezoid.
             elif d_dist_cell_to_bank >= d_distance_h and d_dist_cell_to_bank <= (d_trap_base + d_distance_h):
-                da_xs_profile[x] = d_y_bathy
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if d_y_bathy < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                    da_xs_profile[x] = d_y_bathy
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # If the cell is in the slope part of the trapezoid you need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank <= d_distance_h:
-                da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
             # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevaiton based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
-                da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if (d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                    da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
     return
 
 
@@ -1833,7 +1851,7 @@ def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2
 
 
 def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
-                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value):
+                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value, dm_elevation):
     """
     
     """
@@ -1876,8 +1894,8 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n
         #dm_output_bathymetry[ia_xc_r1_index_main[0], ia_xc_c1_index_main[0]] = d_y_bathy
 
         if i_total_bank_cells > 1:
-            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, 0.0)
-            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, 0.0)
+            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, 0.0, dm_elevation)
+            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, 0.0, dm_elevation)
 
     else:
         d_y_depth = 0.0
@@ -1888,7 +1906,7 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n
 
 def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
-                                                       dm_manning_n_raster, i_lc_water_value):
+                                                       dm_manning_n_raster, i_lc_water_value, dm_elevation):
     
     #First find the bank information
     #The bank is now defined by the water mask in the land cover.  This returns the indice that is the water edge (last indice that is actually water)
@@ -1944,8 +1962,8 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
 
         if i_total_bank_cells > 1:
             #We add 1 to the i_bank_index so that we can get to the actual bank of the river.
-            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, d_side1_dist)
-            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, d_side2_dist)
+            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, d_side1_dist, dm_elevation)
+            adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, d_side2_dist, dm_elevation)
 
     else:
         d_y_depth = 0.0
@@ -2257,10 +2275,12 @@ if __name__ == "__main__":
         #This method calculates bathymetry based on the water surface elevation, if you want it to.
         if b_bathy_use_banks is False and s_output_bathymetry_path != '':  
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
-                                                                                                                                                ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value)
+                                                                                                                                                ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value, dm_elevation)
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
-                                                                                                                                            ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value)
+                                                                                                                                 ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation)
+        #Make sure all the bathymetry points are above the DEM elevation
+        dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, 0, dm_output_bathymetry)
 
 
         # Solve using the volume fill approach
