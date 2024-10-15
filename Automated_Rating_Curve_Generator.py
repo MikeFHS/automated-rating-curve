@@ -825,6 +825,8 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
         ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
 
+        # METHOD 1 - Calculate the angle based on all of the stream cells in the search box and do distance weighting
+        '''
         # Calculate the distance between the cell of interest and every cell with a similar stream id
         da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
         da_dz_list = da_dz_list / max(da_dz_list)
@@ -832,8 +834,7 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         # Calculate the angle to the cells within the search box
         da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
         
-        # METHOD 1 - Calculate the angle based on all of the stream cells in the search box and do distance weighting
-        '''
+        
         # Account for the angle sign when aggregating the distance
         for x in range(len(ia_matching_row_indices)):
             if da_dz_list[x] > 0.0:
@@ -846,15 +847,127 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         d_stream_direction = d_stream_direction / sum(da_dz_list)
         '''
         
+        '''
         # METHOD 2 - Calculate the angle based on the streamcells that are the furthest in the search box
         # Account for the angle sign when aggregating the distance
+        # Calculate the distance between the cell of interest and every cell with a similar stream id
+        da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
+        
+        # Calculate the angle to the cells within the search box
+        #da_atanvals = np.arctan2( np.multiply(ia_matching_row_indices, d_dy), np.multiply(ia_matching_column_indices, d_dx) )
+        #da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
+        
+        #Finds the cell within the scan box that is the farthest away the stream cell of interest.
         x = np.argmax(da_dz_list)
-        if da_atanvals[x] > math.pi:
-            d_stream_direction = (da_atanvals[x] - math.pi)
-        elif da_atanvals[x] < 0.0:
-            d_stream_direction = (da_atanvals[x] + math.pi)
+        #print(x)
+        
+        da_atanvals_single = np.arctan2(ia_matching_row_indices[x], ia_matching_column_indices[x])
+        if da_atanvals_single >= math.pi:
+            d_stream_direction = (da_atanvals_single - math.pi)
+        elif da_atanvals_single < 0.0:
+            d_stream_direction = (da_atanvals_single + math.pi)
         else:
-            d_stream_direction = da_atanvals[x]
+            d_stream_direction = da_atanvals_single
+        '''
+        
+        
+        
+        # METHOD 3 - Calculate the angle to each stream cell around and then take the median
+        
+        # Calculate the angle to the cells within the search box
+        #da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
+        da_atanvals = np.arctan2( np.multiply(ia_matching_row_indices, d_dy), np.multiply(ia_matching_column_indices, d_dx) )
+        
+        # Calculate the distance between the cell of interest and every cell with a similar stream id
+        da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
+        zone = np.zeros(len(da_dz_list))
+        
+        for x in range(len(ia_matching_row_indices)):
+            if da_dz_list[x] <= 0.0:
+                da_atanvals[x] = np.nan
+            elif da_atanvals[x]>math.pi:
+                da_atanvals[x] = da_atanvals[x] - math.pi
+            elif da_atanvals[x]<0:
+                da_atanvals[x] = da_atanvals[x] + math.pi
+            
+            if da_atanvals[x] >= (3*math.pi/4):
+                zone[x]=4
+            elif da_atanvals[x] >= (2*math.pi/4):
+                zone[x]=3
+            elif da_atanvals[x] >= (1*math.pi/4):
+                zone[x]=2
+            else:
+                zone[x]=1
+        
+        n1 = int((zone==1).sum())
+        n2 = int((zone==2).sum())
+        n3 = int((zone==3).sum())
+        n4 = int((zone==4).sum())
+        max_n = max(n1, n2, n3, n4)
+        
+        a1=np.nan
+        a2=np.nan
+        a3=np.nan
+        a4=np.nan
+        da_atanvals_single = 0.0
+        
+        if n4 == max_n:
+            a4 = np.nanmean(da_atanvals[zone==4])
+            da_atanvals_single = a4
+            #if n1>0:
+            #    a1 = np.nanmean(da_atanvals[zone==1])
+            #    a1 = a1 + math.pi
+            #    da_atanvals_single = (a4*n4 + a1*n1) / (n4+n1)
+        elif n3 == max_n:
+            a3 = np.nanmean(da_atanvals[zone==3])
+            da_atanvals_single = a3
+            #if n2>0:
+            #    a2 = np.nanmean(da_atanvals[zone==2])
+            #    da_atanvals_single = (a3*n3 + a2*n2) / (n3+n2)
+        elif n2 == max_n:
+            a2 = np.nanmean(da_atanvals[zone==2])
+            da_atanvals_single = a2
+            #if n3>0:
+            #    a3 = np.nanmean(da_atanvals[zone==3])
+            #    da_atanvals_single = (a3*n3 + a2*n2) / (n3+n2)
+        elif n1 == max_n:
+            a1 = np.nanmean(da_atanvals[zone==1])
+            da_atanvals_single = a1
+            #if n4>0:
+            #    a4 = np.nanmean(da_atanvals[zone==4])
+            #    a4 = a4 - math.pi
+            #    da_atanvals_single = (a4*n4 + a1*n1) / (n4+n1)
+        
+        if da_atanvals_single<0.0:
+            da_atanvals_single = da_atanvals_single + math.pi
+        if da_atanvals_single!=np.nan and da_atanvals_single>=0.0 and da_atanvals_single<=math.pi:
+            da_atanvals_single = da_atanvals_single
+        else:
+            da_atanvals_single = 0.12345
+        
+        
+        d_stream_direction = da_atanvals_single
+        
+        
+        
+        '''
+        # Account for the angle sign when aggregating the distance
+        for x in range(len(ia_matching_row_indices)):
+            if da_dz_list[x] > 0.0:
+                if da_atanvals[x] > math.pi:
+                    da_atanvals[x] = da_atanvals[x] - math.pi
+                elif da_atanvals[x] < 0.0:
+                    da_atanvals[x] = da_atanvals[x] + math.pi
+                
+                danglediff = abs(da_atanvals_single-da_atanvals[x])
+                if danglediff > (math.pi/2):
+                    da_atanvals[x] = da_atanvals[x] - math.pi
+                    if da_atanvals[x]<0.0:
+                        da_atanvals[x] = da_atanvals[x] + 2*math.pi
+        #print(da_atanvals)
+        d_stream_direction = np.nanmedian(da_atanvals)
+        #print(d_stream_direction)
+        '''
         
         
         # Cross-Section Direction is just perpendicular to the Stream Direction
@@ -863,7 +976,13 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         if d_xs_direction < 0.0:
             # Check that the cross section direction is reasonable
             d_xs_direction = d_xs_direction + math.pi
-
+        
+        #print('r=' + str(ia_matching_row_indices[x]) + '  c=' + str(ia_matching_column_indices[x]) + '  a=' + str(d_stream_direction*180.0/math.pi))
+       
+    #if int(i_cell_value) == 760748000:
+        #print(da_atanvals)
+    #    print(str(d_stream_direction) + '  ' + str(d_xs_direction))
+    
     # Return to the calling function
     return d_stream_direction, d_xs_direction
 
@@ -909,8 +1028,19 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
 
     """
     
+    
+    '''
+    Assume there are 4 quadrants:
+            Q3 | Q4      r<0 c<0  |  r<0 c>0
+            Q2 | Q1      r>0 c<0  |  r>0 c>0
+    
+    These quadrants are inversed about the x-axis due to rows being positive in the downward direction
+    '''
+    
+    
     # Determine the best direction to perform calcualtions
-    if d_xs_direction >= math.pi / 4 and d_xs_direction <= 3 * math.pi / 4:
+    #  Row-Dominated
+    if d_xs_direction >= (math.pi / 4) and d_xs_direction <= (3 * math.pi / 4):
         # Calculate the distance in the x direction
         da_distance_x = np.arange(i_centerpoint) * d_dy * math.cos(d_xs_direction)
 
@@ -943,7 +1073,7 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
         # Distance between each increment
         d_distance_z = math.sqrt((d_dy * math.cos(d_xs_direction)) * (d_dy * math.cos(d_xs_direction)) + d_dy * d_dy)
 
-
+    # Col-Dominated
     else:
         # Calculate based on the column being the dominate direction
         # Calculate the distance in the y direction
@@ -952,20 +1082,26 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
         # Convert the distance to a number of indices
         ia_y_index_offset = da_distance_y / d_dy
         ia_y_index_offset = ia_y_index_offset.astype(int)
+        
+        column_pos_or_neg = 1 
+        if d_xs_direction >= (math.pi / 2): 
+            column_pos_or_neg = -1
 
         ia_xc_dr_index_main[np.arange(i_centerpoint)] = ia_y_index_offset
-        ia_xc_dc_index_main[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
+        ia_xc_dc_index_main[np.arange(i_centerpoint)] = np.arange(i_centerpoint) * column_pos_or_neg
 
         # Calculate the sign of the angle
-        ia_sign = np.ones(i_centerpoint)
-        ia_sign[da_distance_y < 0] = -1
+        ia_sign = np.ones(i_centerpoint)   #I think this can always just be positive one
+        #ia_sign[da_distance_y < 0] = -1
+        #ia_sign[da_distance_y > 0] = -1
+        #ia_sign = ia_sign * -1
 
         # Round using the angle direction
         ia_y_index_offset = np.round((da_distance_y / d_dy) + 0.5 * ia_sign, 0)
 
         # Set the values in as index locations
         ia_xc_dr_index_second[np.arange(i_centerpoint)] = ia_y_index_offset
-        ia_xc_dc_index_second[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
+        ia_xc_dc_index_second[np.arange(i_centerpoint)] = np.arange(i_centerpoint) * column_pos_or_neg
 
         # ddy is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
         da_ddy = np.fabs((da_distance_y / d_dy) - ia_y_index_offset)
@@ -1958,6 +2094,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
         da_xs_profile1[0] = d_y_bathy
         da_xs_profile2[0] = d_y_bathy
         dm_output_bathymetry[i_row_cell, i_column_cell] = d_y_bathy
+        
         #dm_output_bathymetry[ia_xc_r1_index_main[0], ia_xc_c1_index_main[0]] = d_y_bathy
 
         if i_total_bank_cells > 1:
@@ -2042,6 +2179,10 @@ if __name__ == "__main__":
     # Create output rasters
     dm_output_bathymetry = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
     
+    # This is used for debugging purposes with stream and cross-section angles.
+    #dm_output_streamangles = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
+    
+    
     if len(s_output_flood) > 1:
         dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2)).astype(int)
 
@@ -2091,7 +2232,9 @@ if __name__ == "__main__":
                 for s in range(-1, 2, 2):
                     l_angles_to_test.append(s * d * d_degree_interval)
 
-    print('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(l_angles_to_test))
+    print('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles (degrees) to evaluate= ' + str(l_angles_to_test))
+    l_angles_to_test = np.multiply(l_angles_to_test, math.pi / 180.0)
+    print('  Angles (radians) to evaluate= ' + str(l_angles_to_test))
     
     # Get the extents of the boundaries
     i_row_bottom = i_boundary_number
@@ -2149,6 +2292,7 @@ if __name__ == "__main__":
         
         # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
         d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, dx, dy)
+        #dm_output_streamangles[i_row_cell,i_column_cell] = d_xs_direction * 180.0 / math.pi
         
         # Get the Slope of each Stream Cell. Slope should be in m/m
         d_stream_slope = get_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
@@ -2239,13 +2383,13 @@ if __name__ == "__main__":
                 A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
                 A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
 
-                if T1 + T2 < d_t_test:
+                if (T1 + T2) < d_t_test:
                     d_t_test = T1 + T2
                     d_shortest_tw_angle = d_xs_angle_use
 
             # Now rerun everything with the shortest top-width angle
             d_xs_direction = d_shortest_tw_angle
-            (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_angle_use, 
+            (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, #THIS USES THE UPDATED CROSS-SECTION ANGLE!!!!!!!!!
                                                                                                i_row_cell, i_column_cell, i_center_point, dx, dy)
 
             ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main
@@ -2279,8 +2423,6 @@ if __name__ == "__main__":
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
                                                                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation)
-        #Make sure all the bathymetry points are above the DEM elevation
-        dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, 0, dm_output_bathymetry)
 
 
         # Solve using the volume fill approach
@@ -2685,8 +2827,14 @@ if __name__ == "__main__":
         print('Finished writing ' + str(s_output_curve_file))
     
     
+    
+    #write_output_raster('StreamAngles.tif', dm_output_streamangles[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
+    
+    
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
+        #Make sure all the bathymetry points are above the DEM elevation
+        dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, 0, dm_output_bathymetry)
         write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(s_output_flood) > 1:
