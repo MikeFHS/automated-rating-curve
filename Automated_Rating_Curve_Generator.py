@@ -2297,7 +2297,9 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
                     i_bank_2_index = 0
                     i_total_bank_cells = 1
     
-        d_y_bathy = da_xs_profile1[0] - d_y_depth
+        # set the new estimate of the elevation of the thalweg
+        d_y_bathy = d_bankfull_elevation - d_y_depth
+        
     
     else:
         d_y_depth = 0.0  # Set depth to zero if no method succeeds in finding valid banks
