@@ -2,8 +2,19 @@
 
 MOST RECENT UPDATE: 
 ```
-Merge pull request #6 from MikeFHS/fixing_geojson_generation
+Resolved issues with stream direction and cross-section sampling
 ```
+
+To use this repository, run the following:
+```bash
+git clone https://github.com/RickytheGuy/automated-rating-curve-byu.git
+cd automated-rating-curve-byu
+conda env create -f environment.yaml
+conda activate arc
+pip install .
+```
+
+Next, you may run `arc -h` to get help using ARC.
 
 ARC is an Python-based code that encompasses much of the functionality of the hydraulic modeling software AutoRoute. ARC inputs a series of raster datasets and outputs rating curves that describe the relationship between streamflow and water surface elevation.
 

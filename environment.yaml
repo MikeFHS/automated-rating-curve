@@ -1,4 +1,4 @@
-name: ARC
+name: arc
 channels:
   - conda-forge
 dependencies:

@@ -8,6 +8,7 @@ description = "BYU wrapper package for using ARC, by Mike Follum -> https://gith
 dynamic = ["version"]
 dependencies = [
   "matplotlib",
+  "numba",
   "pandas",
   "gdal",
   "tqdm",

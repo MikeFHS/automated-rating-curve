@@ -3,8 +3,8 @@ import logging
 from datetime import datetime
 
 from arc_byu import LOG
-from arc_byu.Automated_Rating_Curve_Generator import main
-
+from arc_byu.Automated_Rating_Curve_Generator import main, get_parameter_name
+from arc_byu.Curve2Flood import Curve2Flood_MainFunction
 class Arc():
     _mifn: str = ""
     
@@ -33,6 +33,40 @@ class Arc():
             LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
             
         main(MIF_Name, self.quiet)
+
+    def flood(self):
+        with open(self._mifn, 'r') as file:
+            lines = file.readlines()
+            num_lines = len(lines)
+            dem_file = get_parameter_name(lines, num_lines, 'DEM_File')
+            strm_file = get_parameter_name(lines, num_lines, 'Stream_File')
+            flow_file = get_parameter_name(lines, num_lines, 'COMID_Flow_File') or get_parameter_name(lines, num_lines, 'Flow_File')
+            vdt_database = get_parameter_name(lines, num_lines, 'Print_VDT_Database')
+            curve_file = get_parameter_name(lines, num_lines, 'Print_Curve_File')
+
+            q_fraction = float(get_parameter_name(lines, num_lines, 'Q_Limit') or 1.0)
+            tw_factor = float(get_parameter_name(lines, num_lines, 'TopWidthDistanceFactor') or 1.5)
+            flood_local = bool(get_parameter_name(lines, num_lines, 'Flood_Local'))
+            ar_bathy_file = get_parameter_name(lines, num_lines, 'BATHY_Out_File')
+            fs_bathy_file = get_parameter_name(lines, num_lines, 'FSOutBATHY')
+            flood_impact_file = ''
+            flood_map = get_parameter_name(lines, num_lines, 'OutFLD')
+
+        if not dem_file:
+            LOG.error('DEM file not found')
+            return
+        if not strm_file:
+            LOG.error('Stream file not found')
+            return
+        if not flow_file:
+            LOG.error('Flow file not found')
+            return
+        if not flood_map:
+            LOG.error('Flood map file not found')
+            return
+
+        Curve2Flood_MainFunction(dem_file, strm_file, '', flow_file, curve_file, vdt_database, flood_map, flood_impact_file, q_fraction, 200, tw_factor, flood_local, 0.1, '', ar_bathy_file, fs_bathy_file, self.quiet)
+
         
     def set_log_level(self, log_level: str):
         handler = LOG.handlers[0]
@@ -62,11 +96,19 @@ def _main():
     parser.add_argument('-l', '--log', type=str, help='Log Level', 
                         default='warn', choices=['debug', 'info', 'warn', 'error'])
     parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output progress bar and other non-error messages')
+    parser.add_argument('-f', '--flood', action='store_true', help='Run flood mapper')
     args = parser.parse_args()
     arc = Arc(args.mifn, args.quiet)
     arc.set_log_level(args.log)
     
-    arc.run()
+    if args.flood:
+        arc.flood()
+    else:
+        arc.run()
+
+    LOG.info('Finished')
+
+    
     
 if __name__ == "__main__":
     _main()
