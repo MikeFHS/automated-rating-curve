@@ -203,7 +203,7 @@ def Create_Folder(F):
         os.makedirs(F)
     return
 
-def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, Q_BF_Param, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File):
+def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, Q_BF_Param, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File, bathy_use_banks):
     """
     Creates an input text file for the Automated Rating Curve (ARC) tool
 
@@ -241,7 +241,9 @@ def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, 
         The path and file name of the output comma-delimited text file that contains data on the cross-section output by ARC.
     DEM_Cleaner_File:
         The path and file name of the text file containing streamflows that will be passed to the DEM cleaner program to clean the DEM 
-    
+    bathy_use_banks: bool
+        True/False argument on whether to run ARC bathymetry estimation using the bank elevations (True) or water surface elevation (False)
+
     Returns
     -------
     None
@@ -275,6 +277,7 @@ def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, 
     
     out_file.write('\n\n#Bathymetry Information')
     out_file.write('\n' + 'Bathy_Trap_H	0.20')
+    out_file.write('\n' + 'Bathy_Use_Banks' + '\t' + str(bathy_use_banks))
     out_file.write('\n' + 'AROutBATHY	' + ARC_BathyFile)
 
     out_file.write('\n\n#Cross Section Information')
@@ -718,7 +721,7 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
     #return B[1:nrows+1,1:ncols+1], ncols, nrows, cellsize, yll, yur, xll, xur
     return
 
-def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path):
+def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path, bathy_use_banks):
     """
     The main function that orchestrates the creation of ARC inputs
 
@@ -734,6 +737,8 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
         The name of the field containing the baseflow streamflow input into ARC that is in the flow_file_path file
     flow_file_path: str
         The path and file name of the csv file containing the maximum flow and baseflow that will be used to create ARC outputs
+    bathy_use_banks: bool
+        True/False argument on whether to run ARC bathymetry estimation using the bank elevations (True) or water surface elevation (False)
     Returns
     -------
     None
@@ -816,7 +821,7 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     #Create a Starting AutoRoute Input File
     ARC_FileName = os.path.join(ARC_Folder,'ARC_Input_File.txt')
     print('Creating ARC Input File: ' + ARC_FileName)
-    Create_ARC_Model_Input_File(ARC_FileName, DEM_File, id_field, max_flow_field, baseflow_field, STRM_File_Clean, LAND_File, flow_file_path, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File)
+    Create_ARC_Model_Input_File(ARC_FileName, DEM_File, id_field, max_flow_field, baseflow_field, STRM_File_Clean, LAND_File, flow_file_path, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File, bathy_use_banks)
     
     
     print('\n\n')
