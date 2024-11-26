@@ -14,12 +14,16 @@ import tqdm
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, OptimizeWarning
 from scipy.signal import savgol_filter
 from osgeo import gdal
 from numba import njit
+from numba.core.errors import TypingError
 
 from arc_byu import LOG
+
+warnings.filterwarnings("ignore", category=OptimizeWarning)
+gdal.UseExceptions()
 
 def format_array(da_array: np.ndarray, s_format: str):
     """
@@ -84,7 +88,6 @@ def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
 
 
 # Power function equation
-#@np.errstate(divide='ignore')
 @njit(cache=True)
 def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
     """
@@ -107,16 +110,13 @@ def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
     """
 
     # Calculate the power
-    if d_value == 0 and d_power < 0:
-        d_power_value = np.inf
-    else:
-        d_power_value = d_coefficient * np.power(d_value, d_power)
+    d_power_value = d_coefficient * (d_value ** d_power)
 
     # Return to the calling function
     return d_power_value
 
 
-def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndarray):
+def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndarray, init_guess: list = [1.0, 1.0]):
     """
     Performs a curve fit to a power function
 
@@ -137,19 +137,22 @@ def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndar
         Goodness of fit
 
     """
+    # Default values in case of failure
+    d_coefficient, d_power, d_R2 = -9999.9, -9999.9, -9999.9
 
     # Attempt to calculate the fit
     try:
-        (d_coefficient, d_power), dm_pcov = curve_fit(power_func, da_x_input, da_y_input)
-        dm_corr_matrix = np.corrcoef(da_y_input, power_func(da_x_input, d_coefficient, d_power))
-        d_corr = dm_corr_matrix[0, 1]
-        d_R2 = d_corr ** 2
-
-    except:
-        # Fit was not successful. Put in flag values to indicate failure
-        d_coefficient=-9999.9
-        d_power=-9999.9
-        d_R2 = -9999.9
+        (d_coefficient, d_power), dm_pcov = curve_fit(power_func, da_x_input, da_y_input, p0=init_guess)
+        # Calculate R², this is never used so don't bother
+        # da_y_pred = power_func(da_x_input, d_coefficient, d_power)
+        # mean_y = np.mean(da_y_input)
+        # ss_tot = np.dot(da_y_input - mean_y, da_y_input - mean_y)
+        # ss_res = np.dot(da_y_input - da_y_pred, da_y_input - da_y_pred)
+        # d_R2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else -9999.9
+    except TypingError as e:
+        LOG.error(e)
+    except RuntimeError as e:
+        pass
 
     # Return to the calling function
     return d_coefficient, d_power, d_R2
@@ -2164,7 +2167,73 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
     
     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
-    
+@njit(cache=True)
+def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use):
+    d_wse, d_q_sum = 0.0, 0.0
+    for i_depthincrement in range(1, range_end):
+        d_wse = start_wse + i_depthincrement * increment
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+
+        # Aggregate the geometric properties
+        d_a_sum = A1 + A2
+        d_p_sum = P1 + P2
+        d_t_sum = T1 + T2
+        d_q_sum = 0.0
+
+        # Estimate mannings n and flow
+        if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+            d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+            d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+        
+        # Perform check on the maximum flow
+        if d_q_sum > d_q_maximum:
+            break
+
+    return d_wse, d_q_sum
+
+@njit(cache=True)
+def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse):
+    i_start_elevation_index, i_last_elevation_index = 0, 0
+    for i_entry_elevation in range(i_number_of_increments + 1):
+        # Calculate the geometry
+        d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
+
+            
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+
+        # Aggregate the geometric properties
+        da_total_t[i_entry_elevation] = T1 + T2
+        da_total_a[i_entry_elevation] = A1 + A2
+        da_total_p[i_entry_elevation] = P1 + P2
+
+        # Check the properties are physically realistic. If so, estimate the flow with them.
+        if da_total_t[i_entry_elevation] <= 0.0 or da_total_a[i_entry_elevation] <= 0.0 or da_total_p[i_entry_elevation] <= 0.0:
+            da_total_t[i_entry_elevation] = 0.0
+            da_total_a[i_entry_elevation] = 0.0
+            da_total_p[i_entry_elevation] = 0.0
+            # this is the channel bottom elevation that we will use as depth = 0 when building the power functions
+            da_total_wse[i_entry_elevation] = d_wse
+            i_start_elevation_index = i_entry_elevation
+
+        else:
+            # Estimate mannings n
+            d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
+
+            # Check that the mannings n is physically realistic
+            if d_composite_n < 0.0001:
+                d_composite_n = 0.035
+
+            # Estimate total flows
+            da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
+                                            math.pow(d_slope_use, 0.5))
+            da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
+            da_total_wse[i_entry_elevation] = d_wse
+            i_last_elevation_index = i_entry_elevation
+
+    return i_start_elevation_index, i_last_elevation_index
+
 def main(MIF_Name: str, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
@@ -2288,12 +2357,17 @@ def main(MIF_Name: str, quiet: bool):
     i_number_of_increments = 15
     
     # Create the dictionary and lists that will be used to create our VDT database
-    o_out_file_dict = {}
+    o_out_file_dict: dict[str, list] = {}
     o_out_file_dict['COMID'] = []
     o_out_file_dict['Row'] = []
     o_out_file_dict['Col'] = []
     o_out_file_dict['Elev'] = []
     o_out_file_dict['QBaseflow'] = []
+    comid_dict_list = o_out_file_dict['COMID']
+    row_dict_list = o_out_file_dict['Row']
+    col_dict_list = o_out_file_dict['Col']
+    elev_dict_list = o_out_file_dict['Elev']
+    qbaseflow_dict_list = o_out_file_dict['QBaseflow']
     for i in range(1, i_number_of_increments+1):
         o_out_file_dict[f'q_{i}'] = []
         o_out_file_dict[f'v_{i}'] = []
@@ -2327,6 +2401,15 @@ def main(MIF_Name: str, quiet: bool):
         i_row_cell = ia_valued_row_indices[i_entry_cell]
         i_column_cell = ia_valued_column_indices[i_entry_cell]
         i_cell_comid = int(dm_stream[i_row_cell,i_column_cell])
+
+        # Get the Flow Rates Associated with the Stream Cell
+        try:
+            im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
+            im_flow_index = int(im_flow_index[0][0])
+            d_q_baseflow = QBaseFlow[im_flow_index]
+            d_q_maximum = QMax[im_flow_index]
+        except:
+            continue
         
         # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
         d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, dx, dy)
@@ -2341,7 +2424,7 @@ def main(MIF_Name: str, quiet: bool):
         # if slope is less than the threshold, reset it
         if d_slope_use < 0.0002:
             d_slope_use = 0.0002
-        
+    
         # Get the Flow Rates Associated with the Stream Cell
         try:
             im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
@@ -2547,95 +2630,28 @@ def main(MIF_Name: str, quiet: bool):
             d_inc_y = ((da_elevation_list_mm[i_ordinate_for_Qmax] - da_elevation_list_mm[0]) / 1000.0) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
             '''
-            
+            n_x_section_1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
+            n_x_section_2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
+
             # Find the wse associated with the Maximum flow using 0.5m increments
             d_maxflow_wse_initial = da_xs_profile1[0]
-            for i_depthincrement in range(1,101):
-                # Calculate the geometry
-                d_wse = da_xs_profile1[0] + i_depthincrement * d_depth_increment_big
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-
-                # Aggregate the geometric properties
-                d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
-
-                # Estimate mannings n and flow
-                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                
-                d_maxflow_wse_initial = d_wse
-                
-                # Perform check on the maximum flow
-                if d_q_sum > d_q_maximum:
-                    break
+            d_maxflow_wse_initial, d_q_sum = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
             
             # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
             d_maxflow_wse_initial = d_maxflow_wse_initial - 0.5
             if d_maxflow_wse_initial < da_xs_profile1[0]:
                 d_maxflow_wse_initial = da_xs_profile1[0]
             d_maxflow_wse_med = d_maxflow_wse_initial
-            
-            for i_depthincrement in range(1,101):
-                # Calculate the geometry
-                d_wse = d_maxflow_wse_initial + i_depthincrement * d_depth_increment_med
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+            d_maxflow_wse_med, d_q_sum = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
-                # Aggregate the geometric properties
-                d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
-
-                # Estimate mannings n and flow
-                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                
-                d_maxflow_wse_med = d_wse
-                
-                # Perform check on the maximum flow
-                if d_q_sum > d_q_maximum:
-                    break
-            
             # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
             d_maxflow_wse_med = d_maxflow_wse_med - 0.05
             if d_maxflow_wse_med < da_xs_profile1[0]:
                 d_maxflow_wse_med = da_xs_profile1[0]
             d_maxflow_wse_final = d_maxflow_wse_med
             
-            for i_depthincrement in range(1,51):
-                # Calculate the geometry
-                d_wse = d_maxflow_wse_med + i_depthincrement * d_depth_increment_small
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+            d_maxflow_wse_final, d_q_sum = find_wse(51, d_maxflow_wse_final, d_depth_increment_small, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
-                # Aggregate the geometric properties
-                d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
-
-                # Estimate mannings n and flow
-                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                
-                d_maxflow_wse_final = d_wse
-                
-                # Perform check on the maximum flow
-                if d_q_sum > d_q_maximum:
-                    break
-                '''
-                #This is the Edge of the Flood.  Value is 1 because that is the flood method used.
-                dm_out_flood[ia_xc_r1_index_main[np1], ia_xc_c1_index_main[np1]] = 1
-                dm_out_flood[ia_xc_r2_index_main[np2], ia_xc_c2_index_main[np2]] = 1
-                '''
-            
             #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
             if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
                 continue
@@ -2644,67 +2660,26 @@ def main(MIF_Name: str, quiet: bool):
             d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
 
-            for i_entry_elevation in range(i_number_of_increments + 1):
-                # Calculate the geometry
-                d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
-
-                    
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-
-                # Aggregate the geometric properties
-                da_total_t[i_entry_elevation] = T1 + T2
-                da_total_a[i_entry_elevation] = A1 + A2
-                da_total_p[i_entry_elevation] = P1 + P2
-
-                # Check the properties are physically realistic. If so, estimate the flow with them.
-                if da_total_t[i_entry_elevation] <= 0.0 or da_total_a[i_entry_elevation] <= 0.0 or da_total_p[i_entry_elevation] <= 0.0:
-                    da_total_t[i_entry_elevation] = 0.0
-                    da_total_a[i_entry_elevation] = 0.0
-                    da_total_p[i_entry_elevation] = 0.0
-                    # this is the channel bottom elevation that we will use as depth = 0 when building the power functions
-                    da_total_wse[i_entry_elevation] = d_wse
-                    i_start_elevation_index = i_entry_elevation
-
-                else:
-                    # Estimate mannings n
-                    d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
-
-                    # Check that the mannings n is physically realistic
-                    if d_composite_n < 0.0001:
-                        d_composite_n = 0.035
-
-                    # Estimate total flows
-                    da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
-                                                    math.pow(d_slope_use, 0.5))
-                    da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
-                    da_total_wse[i_entry_elevation] = d_wse
-                    i_last_elevation_index = i_entry_elevation
+            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse)
             
             # Process each of the elevations to the output file if feasbile values were produced
-            for i_entry_elevation in range(i_number_of_elevations - 1, 0, -1):
-                if i_entry_elevation == i_number_of_elevations-1:
-                    if sum(da_total_q[0:int(i_number_of_elevations / 2.0)]) <= 1e-16 or i_row_cell < 0 or i_column_cell < 0 or dm_elevation[i_row_cell, i_column_cell] <= 1e-16:  # Need at least half the increments filled in order to report results.
-                        break
-                    else:
-                        COMID_list = o_out_file_dict['COMID']
-                        Row_list = o_out_file_dict['Row']
-                        Col_list = o_out_file_dict['Col']
-                        Elev_list = o_out_file_dict['Elev']
-                        QBaseflow_list = o_out_file_dict['QBaseflow']
-                        COMID_list.append(int(i_cell_comid))
-                        Row_list.append(int(i_row_cell - i_boundary_number))
-                        Col_list.append(int(i_column_cell - i_boundary_number))
-                        Elev_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
-                        QBaseflow_list.append(round(d_q_baseflow, 3))
-                o_out_file_dict[f'q_{i_entry_elevation}'].append(round(da_total_q[i_entry_elevation], 3))
-                o_out_file_dict[f'v_{i_entry_elevation}'].append(round(da_total_v[i_entry_elevation], 3))
-                o_out_file_dict[f't_{i_entry_elevation}'].append(round(da_total_t[i_entry_elevation], 3))
-                o_out_file_dict[f'wse_{i_entry_elevation}'].append(round(da_total_wse[i_entry_elevation], 3))
-                #q_list.append(round(da_total_q[i_entry_elevation], 3))
-                # v_list.append(round(da_total_v[i_entry_elevation], 3))
-                # t_list.append(round(da_total_t[i_entry_elevation], 3))
-                # wse_list.append(round(da_total_wse[i_entry_elevation], 3))
+            da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
+            if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+                comid_dict_list.append(i_cell_comid)
+                row_dict_list.append(i_row_cell - i_boundary_number)
+                col_dict_list.append(i_column_cell - i_boundary_number)
+                elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                qbaseflow_dict_list.append(d_q_baseflow)
+
+                # Loop backward through the elevations
+                if s_output_curve_file:
+                    for i, i_entry_elevation in enumerate(range(1, i_number_of_elevations)):
+                        o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
+                        o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
+                        o_out_file_dict[f't_{i_entry_elevation}'].append(da_total_t[i_entry_elevation])
+                        o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
+
+            if i_number_of_elevations > 0:
                 i_outprint_yes = 1
         
         elif i_volume_fill_approach == 2:
@@ -2773,38 +2748,32 @@ def main(MIF_Name: str, quiet: bool):
                 '''
 
             # Process each of the elevations to the output file if feasbile values were produced
-            for i_entry_elevation in range(i_number_of_elevations - 1, 0, -1):
-                if i_entry_elevation == i_number_of_elevations - 1:
-                    if da_total_q[i_entry_elevation] < d_q_maximum or da_total_q[i_entry_elevation] > d_q_maximum * 3:
-                        break
-                    else:
-                        COMID_list = o_out_file_dict['COMID']
-                        Row_list = o_out_file_dict['Row']
-                        Col_list = o_out_file_dict['Col']
-                        Elev_list = o_out_file_dict['Elev']
-                        QBaseflow_list = o_out_file_dict['QBaseflow']
-                        COMID_list.append(int(i_cell_comid))
-                        Row_list.append(int(i_row_cell - i_boundary_number))
-                        Col_list.append(int(i_column_cell - i_boundary_number))
-                        Elev_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
-                        QBaseflow_list.append(round(d_q_baseflow, 3))
-                q_list = o_out_file_dict[f'q_{i_entry_elevation}']
-                v_list = o_out_file_dict[f'v_{i_entry_elevation}']
-                t_list = o_out_file_dict[f't_{i_entry_elevation}']
-                wse_list = o_out_file_dict[f'wse_{i_entry_elevation}']
-                q_list.append(round(da_total_q[i_entry_elevation], 3))
-                v_list.append(round(da_total_v[i_entry_elevation], 3))
-                t_list.append(round(da_total_t[i_entry_elevation], 3))
-                wse_list.append(round(da_total_wse[i_entry_elevation], 3))
+            da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
+            if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+                comid_dict_list.append(i_cell_comid)
+                row_dict_list.append(i_row_cell - i_boundary_number)
+                col_dict_list.append(i_column_cell - i_boundary_number)
+                elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                qbaseflow_dict_list.append(d_q_baseflow)
+
+                # Loop backward through the elevations
+                if s_output_curve_file:
+                    for i, i_entry_elevation in enumerate(range(1, i_number_of_elevations)):
+                        o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
+                        o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
+                        o_out_file_dict[f't_{i_entry_elevation}'].append(da_total_t[i_entry_elevation])
+                        o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
+            
+            if i_number_of_elevations > 0:
                 i_outprint_yes = 1
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
             # Not needed here, but [::-1] basically reverses the order of the array
-            (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_t[i_start_elevation_index:i_last_elevation_index + 1])
-            (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_v[i_start_elevation_index:i_last_elevation_index + 1])
+            (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_t[i_start_elevation_index:i_last_elevation_index + 1][1:], [12, 0.3])
+            (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_v[i_start_elevation_index:i_last_elevation_index + 1][1:], [1, 0.3])
             da_total_depth = da_total_wse - da_xs_profile1[0]
-            (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_depth[i_start_elevation_index:i_last_elevation_index + 1])
+            (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_depth[i_start_elevation_index:i_last_elevation_index + 1][1:], [0.2, 0.5])
             COMID_curve_list.append(int(i_cell_comid))
             Row_curve_list.append(int(i_row_cell - i_boundary_number))
             Col_curve_list.append(int(i_column_cell - i_boundary_number))
@@ -2819,11 +2788,11 @@ def main(MIF_Name: str, quiet: bool):
             vel_b_curve_list.append(round(d_v_b, 3))
 
         # Output the XS information, if you've chosen to do so
-        da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
-        dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
-        da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
-        dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
         if s_xs_output_file != '':
+            da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
+            dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
+            da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
+            dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
             o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
 
    
@@ -2833,6 +2802,15 @@ def main(MIF_Name: str, quiet: bool):
                 "Row": 'int64',
                 "Col": 'int64',
     }
+    for i in range(1, i_number_of_increments + 1):
+        o_out_file_dict[f'q_{i}'] = np.round(o_out_file_dict[f'q_{i}'], 3)
+        o_out_file_dict[f'v_{i}'] = np.round(o_out_file_dict[f'v_{i}'], 3)
+        o_out_file_dict[f't_{i}'] = np.round(o_out_file_dict[f't_{i}'], 3)
+        o_out_file_dict[f'wse_{i}'] = np.round(o_out_file_dict[f'wse_{i}'], 3)
+
+    o_out_file_dict['Elev'] = np.round(o_out_file_dict['Elev'], 3)
+    o_out_file_dict['QBaseflow'] = np.round(o_out_file_dict['QBaseflow'], 3)
+
     o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
     # Remove rows with NaN values
     o_out_file_df = o_out_file_df.dropna()
