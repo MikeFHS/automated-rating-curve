@@ -1,8 +1,8 @@
 # Automated Rating Curve (ARC) Generator
 
-MOST RECENT UPDATE: 
+MOST RECENT UPDATE (for ARC and Curve2Flood src code only): 
 ```
-Resolved issues with stream direction and cross-section sampling
+Merge pull request #12 from MikeFHS/bathy_changes (11/25/24)
 ```
 
 To use this repository, run the following:
