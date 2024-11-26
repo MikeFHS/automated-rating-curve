@@ -2,9 +2,9 @@ import argparse
 import logging
 from datetime import datetime
 
-from arc_byu import LOG
-from arc_byu.Automated_Rating_Curve_Generator import main, get_parameter_name
-from arc_byu.Curve2Flood import Curve2Flood_MainFunction
+from arc import LOG
+from arc.Automated_Rating_Curve_Generator import main, get_parameter_name
+from arc.Curve2Flood import Curve2Flood_MainFunction
 
 __all__ = ['Arc']
 

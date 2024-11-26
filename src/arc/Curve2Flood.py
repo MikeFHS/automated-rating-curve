@@ -22,7 +22,7 @@ import geopandas as gpd
 from shapely.geometry import shape
 from numba import njit
 
-from arc_byu import LOG
+from arc import LOG
 
 gdal.UseExceptions()
 

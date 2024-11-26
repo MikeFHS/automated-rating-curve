@@ -20,7 +20,7 @@ from osgeo import gdal
 from numba import njit
 from numba.core.errors import TypingError
 
-from arc_byu import LOG
+from arc import LOG
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 gdal.UseExceptions()
