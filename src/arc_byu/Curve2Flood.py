@@ -477,7 +477,7 @@ def Remove_Crop_Circles(flood_gdf, StrmShp_File, s_output_filename):
     #flood_gdf = gpd.sjoin(flood_gdf, strm_gdf, how="inner", op="intersects")
     flood_gdf = gpd.sjoin(flood_gdf, strm_gdf, how="inner", predicate="intersects")
 
-    shp_output_filename = f"{s_output_filename[:-4]}.shp"
+    shp_output_filename = f"{s_output_filename[:-4]}.gpkg"
 
     flood_gdf.to_file(shp_output_filename)
 
