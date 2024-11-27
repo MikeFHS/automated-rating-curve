@@ -3,8 +3,8 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arc_byu"
-description = "BYU wrapper package for using ARC, by Mike Follum -> https://github.com/MikeFHS/automated-rating-curve/tree/main"
+name = "arc"
+description = "Wrapper package for using ARC, by Mike Follum -> https://github.com/MikeFHS/automated-rating-curve/tree/main"
 dynamic = ["version"]
 dependencies = [
   "matplotlib",
@@ -34,4 +34,4 @@ classifiers = [
 ]
 
 [project.scripts]
-arc = "arc_byu.arc:_main"
+arc = "arc.arc:_main"
