@@ -43,13 +43,13 @@ class Arc():
             num_lines = len(lines)
             dem_file = get_parameter_name(lines, num_lines, 'DEM_File')
             strm_file = get_parameter_name(lines, num_lines, 'Stream_File')
-            flow_file = get_parameter_name(lines, num_lines, 'COMID_Flow_File') or get_parameter_name(lines, num_lines, 'Flow_File')
+            flow_file = get_parameter_name(lines, num_lines, 'COMID_Flow_File') or get_parameter_name(lines, num_lines, 'Comid_Flow_File') or get_parameter_name(lines, num_lines, 'Flow_File')
             vdt_database = get_parameter_name(lines, num_lines, 'Print_VDT_Database')
             curve_file = get_parameter_name(lines, num_lines, 'Print_Curve_File')
 
             q_fraction = float(get_parameter_name(lines, num_lines, 'Q_Limit') or 1.0)
             tw_factor = float(get_parameter_name(lines, num_lines, 'TopWidthDistanceFactor') or 1.5)
-            flood_local = bool(get_parameter_name(lines, num_lines, 'Flood_Local'))
+            flood_local = bool(get_parameter_name(lines, num_lines, 'Flood_Local')) or bool(get_parameter_name(lines, num_lines, 'LocalFloodOption'))
             ar_bathy_file = get_parameter_name(lines, num_lines, 'BATHY_Out_File')
             fs_bathy_file = get_parameter_name(lines, num_lines, 'FSOutBATHY')
             flood_impact_file = ''
