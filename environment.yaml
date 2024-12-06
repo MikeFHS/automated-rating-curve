@@ -1,8 +1,8 @@
-name: ARC
+name: arc
 channels:
   - conda-forge
 dependencies:
-  - python=3.12
+  - python
   - numpy
   - matplotlib
   - pandas

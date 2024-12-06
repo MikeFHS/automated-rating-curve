@@ -4,23 +4,26 @@ Written initially by Mike Follum with Follum Hydrologic Solutions, LLC.
 Program simply creates depth, velocity, and top-width information for each stream cell in a domain.
 
 """
-# built-in imports
-from datetime import datetime
-import math, time
-import os
-import sys
 
-# third-party imports
-try:
-    import gdal 
-except: 
-    from osgeo import gdal
+import sys
+import os
+import math
+import warnings
+
+import tqdm
 import numpy as np
 import pandas as pd
-from scipy.optimize import curve_fit
+from datetime import datetime
+from scipy.optimize import curve_fit, OptimizeWarning
 from scipy.signal import savgol_filter
+from osgeo import gdal
+from numba import njit
+from numba.core.errors import TypingError
 
+from arc import LOG
 
+warnings.filterwarnings("ignore", category=OptimizeWarning)
+gdal.UseExceptions()
 
 def format_array(da_array: np.ndarray, s_format: str):
     """
@@ -85,7 +88,8 @@ def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
 
 
 # Power function equation
-def power_func(d_value: float, d_coefficient: float, d_power: float):
+@njit(cache=True)
+def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
     """
     Define a general power function that can be used for fitting
 
@@ -106,13 +110,13 @@ def power_func(d_value: float, d_coefficient: float, d_power: float):
     """
 
     # Calculate the power
-    d_power_value = d_coefficient * np.power(d_value, d_power)
+    d_power_value = d_coefficient * (d_value ** d_power)
 
     # Return to the calling function
     return d_power_value
 
 
-def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndarray):
+def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndarray, init_guess: list = [1.0, 1.0]):
     """
     Performs a curve fit to a power function
 
@@ -133,19 +137,22 @@ def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndar
         Goodness of fit
 
     """
+    # Default values in case of failure
+    d_coefficient, d_power, d_R2 = -9999.9, -9999.9, -9999.9
 
     # Attempt to calculate the fit
     try:
-        (d_coefficient, d_power), dm_pcov = curve_fit(power_func, da_x_input, da_y_input)
-        dm_corr_matrix = np.corrcoef(da_y_input, power_func(da_x_input, d_coefficient, d_power))
-        d_corr = dm_corr_matrix[0, 1]
-        d_R2 = d_corr ** 2
-
-    except:
-        # Fit was not successful. Put in flag values to indicate failure
-        d_coefficient=-9999.9
-        d_power=-9999.9
-        d_R2 = -9999.9
+        (d_coefficient, d_power), dm_pcov = curve_fit(power_func, da_x_input, da_y_input, p0=init_guess)
+        # Calculate R², this is never used so don't bother
+        # da_y_pred = power_func(da_x_input, d_coefficient, d_power)
+        # mean_y = np.mean(da_y_input)
+        # ss_tot = np.dot(da_y_input - mean_y, da_y_input - mean_y)
+        # ss_res = np.dot(da_y_input - da_y_pred, da_y_input - da_y_pred)
+        # d_R2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else -9999.9
+    except TypingError as e:
+        LOG.error(e)
+    except RuntimeError as e:
+        pass
 
     # Return to the calling function
     return d_coefficient, d_power, d_R2
@@ -238,7 +245,7 @@ def read_raster_gdal(s_input_filename: str):
 
     # Check that the file exists to open
     if os.path.isfile(s_input_filename) == False:
-        print('Cannot Find Raster ' + s_input_filename)
+        LOG.info('Cannot Find Raster ' + s_input_filename)
 
     # Attempt to open the dataset
     try:
@@ -275,14 +282,14 @@ def read_raster_gdal(s_input_filename: str):
     o_dataset = None
 
     # Write metdata information to the console
-    print('Spatial Data for Raster File:')
-    print('   ncols = ' + str(i_number_of_columns))
-    print('   nrows = ' + str(i_number_of_rows))
-    print('   cellsize = ' + str(d_cell_size))
-    print('   yll = ' + str(d_y_lower_left))
-    print('   yur = ' + str(d_y_upper_right))
-    print('   xll = ' + str(d_x_lower_left))
-    print('   xur = ' + str(d_x_upper_right))
+    LOG.info('Spatial Data for Raster File:')
+    LOG.info('   ncols = ' + str(i_number_of_columns))
+    LOG.info('   nrows = ' + str(i_number_of_rows))
+    LOG.info('   cellsize = ' + str(d_cell_size))
+    LOG.info('   yll = ' + str(d_y_lower_left))
+    LOG.info('   yur = ' + str(d_y_upper_right))
+    LOG.info('   xll = ' + str(d_x_lower_left))
+    LOG.info('   xur = ' + str(d_x_upper_right))
 
     # Return dataset information to the calling function
     return dm_raster_array, i_number_of_columns, i_number_of_rows, d_cell_size, d_y_lower_left, d_y_upper_right, d_x_lower_left, d_x_upper_right, d_latitude, l_geotransform, s_raster_projection
@@ -329,10 +336,10 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
 
     # Log the value to the console
     if d_return_value != '':
-        print('  ' + s_target + ' is set to ' + d_return_value)
+        LOG.info('  ' + s_target + ' is set to ' + d_return_value)
 
     else:
-       print('  Could not find ' + s_target)
+       LOG.info('  Could not find ' + s_target)
 
     # Return value to the calling function
     return d_return_value
@@ -702,7 +709,7 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     # Return to the calling function
     return da_comid, da_base_flow, da_flow_maximum
 
-
+@njit(cache=True)
 def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
     """
     Calculates the stream slope using the following process:
@@ -751,7 +758,8 @@ def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, 
 
     # Find the slope if there are stream cells
     if len(ia_matching_row_indices) > 0:
-        da_matching_elevations = dm_elevation_box[ia_matching_row_indices, ia_matching_column_indices]
+        # da_matching_elevations = dm_elevation_box[ia_matching_row_indices, ia_matching_column_indices]
+        da_matching_elevations = dm_elevation_box.ravel()[ia_matching_row_indices * dm_elevation_box.shape[1] + ia_matching_column_indices]
         # The Gen_Slope_Dist is the row/col for the cell of interest within the subsample box
         # Distance between the cell of interest and every cell with a similar stream id
         dz_list = np.sqrt(np.square((ia_matching_row_indices - i_general_slope_distance) * d_dy) + np.square((ia_matching_column_indices - i_general_slope_distance) * d_dx))
@@ -770,7 +778,7 @@ def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, 
     # Return the slope to the calling function
     return d_stream_slope
 
-
+@njit(cache=True)
 def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.ndarray, d_dx: float, d_dy: float):
     """
     Finds the general direction of the stream following the process:
@@ -986,7 +994,7 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
     # Return to the calling function
     return d_stream_direction, d_xs_direction
 
-
+@njit(cache=True)
 def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
                         da_xc_second_fract: np.ndarray, d_xs_direction: np.ndarray, i_r_start: int, i_c_start: int, i_centerpoint: int, d_dx: float, d_dy: float):
     """
@@ -1045,11 +1053,10 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
         da_distance_x = np.arange(i_centerpoint) * d_dy * math.cos(d_xs_direction)
 
         # Convert the distance to a number of indices
-        ia_x_index_offset = da_distance_x / d_dx
-        ia_x_index_offset = ia_x_index_offset.astype(int)
+        ia_x_index_offset: int = da_distance_x // d_dx
 
-        ia_xc_dr_index_main[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
-        ia_xc_dc_index_main[np.arange(i_centerpoint)] = ia_x_index_offset
+        ia_xc_dr_index_main[0:i_centerpoint] = np.arange(i_centerpoint)
+        ia_xc_dc_index_main[0:i_centerpoint] = ia_x_index_offset
 
         # Calculate the sign of the angle
         ia_sign = np.ones(i_centerpoint)
@@ -1059,16 +1066,21 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
         ia_x_index_offset = np.round((da_distance_x / d_dx) + 0.5 * ia_sign, 0)
 
         # Set the values in as index locations
-        ia_xc_dr_index_second[np.arange(i_centerpoint)] = np.arange(i_centerpoint)
-        ia_xc_dc_index_second[np.arange(i_centerpoint)] = ia_x_index_offset
+        ia_xc_dr_index_second[0:i_centerpoint] = np.arange(i_centerpoint)
+        ia_xc_dc_index_second[0:i_centerpoint] = ia_x_index_offset
 
         # ddx is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
         da_ddx = np.fabs((da_distance_x / d_dx) - ia_x_index_offset)
-        da_xc_main_fract[np.arange(i_centerpoint)] = 1.0 - da_ddx
-        da_xc_second_fract[np.arange(i_centerpoint)] = da_ddx
+        da_xc_main_fract[0:i_centerpoint] = 1.0 - da_ddx
+        da_xc_second_fract[0:i_centerpoint] = da_ddx
         
-        da_xc_main_fract_int = np.round(da_xc_main_fract).astype(int)
-        da_xc_second_fract_int = np.subtract(1,da_xc_main_fract_int, dtype=int)
+        # da_xc_main_fract_int = np.rint(da_xc_main_fract).astype(int)
+        da_xc_main_fract_int = np.empty(da_xc_main_fract.shape, dtype=np.int64)
+        for i in range(da_xc_main_fract.size):
+            da_xc_main_fract_int[i] = int(np.round(da_xc_main_fract[i]))
+
+        # da_xc_second_fract_int = np.subtract(1,da_xc_main_fract_int, dtype=int)
+        da_xc_second_fract_int = 1 - da_xc_main_fract_int
 
         # Distance between each increment
         d_distance_z = math.sqrt((d_dy * math.cos(d_xs_direction)) * (d_dy * math.cos(d_xs_direction)) + d_dy * d_dy)
@@ -1080,15 +1092,14 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
         da_distance_y = np.arange(i_centerpoint) * d_dx * math.sin(d_xs_direction)
 
         # Convert the distance to a number of indices
-        ia_y_index_offset = da_distance_y / d_dy
-        ia_y_index_offset = ia_y_index_offset.astype(int)
+        ia_y_index_offset: int = da_distance_y // d_dy
         
         column_pos_or_neg = 1 
         if d_xs_direction >= (math.pi / 2): 
             column_pos_or_neg = -1
 
-        ia_xc_dr_index_main[np.arange(i_centerpoint)] = ia_y_index_offset
-        ia_xc_dc_index_main[np.arange(i_centerpoint)] = np.arange(i_centerpoint) * column_pos_or_neg
+        ia_xc_dr_index_main[0:i_centerpoint] = ia_y_index_offset
+        ia_xc_dc_index_main[0:i_centerpoint] = np.arange(i_centerpoint) * column_pos_or_neg
 
         # Calculate the sign of the angle
         ia_sign = np.ones(i_centerpoint)   #I think this can always just be positive one
@@ -1100,16 +1111,20 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
         ia_y_index_offset = np.round((da_distance_y / d_dy) + 0.5 * ia_sign, 0)
 
         # Set the values in as index locations
-        ia_xc_dr_index_second[np.arange(i_centerpoint)] = ia_y_index_offset
-        ia_xc_dc_index_second[np.arange(i_centerpoint)] = np.arange(i_centerpoint) * column_pos_or_neg
+        ia_xc_dr_index_second[0:i_centerpoint] = ia_y_index_offset
+        ia_xc_dc_index_second[0:i_centerpoint] = np.arange(i_centerpoint) * column_pos_or_neg
 
         # ddy is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
         da_ddy = np.fabs((da_distance_y / d_dy) - ia_y_index_offset)
-        da_xc_main_fract[np.arange(i_centerpoint)] = 1.0 - da_ddy
-        da_xc_second_fract[np.arange(i_centerpoint)] = da_ddy
+        da_xc_main_fract[0:i_centerpoint] = 1.0 - da_ddy
+        da_xc_second_fract[0:i_centerpoint] = da_ddy
         
-        da_xc_main_fract_int = np.round(da_xc_main_fract).astype(int)
-        da_xc_second_fract_int = np.subtract(1,da_xc_main_fract_int, dtype=int)
+        # da_xc_main_fract_int = np.round(da_xc_main_fract).astype(int)
+        da_xc_main_fract_int = np.empty(da_xc_main_fract.shape, dtype=np.int64)
+        for i in range(da_xc_main_fract.size):
+            da_xc_main_fract_int[i] = int(np.round(da_xc_main_fract[i]))
+        # da_xc_second_fract_int = np.subtract(1,da_xc_main_fract_int, dtype=int)
+        da_xc_second_fract_int = 1 - da_xc_main_fract_int
 
         # Distance between each increment
         d_distance_z = math.sqrt((d_dx * math.sin(d_xs_direction)) * (d_dx * math.sin(d_xs_direction)) + d_dx * d_dx)
@@ -1117,7 +1132,7 @@ def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_x
     # Return to the calling function
     return d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int
 
-
+@njit(cache=True)
 def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, i_row: int, i_column: int, dm_elevation: np.ndarray, i_center_point: int, ia_xc_row_index_main: np.ndarray,
                                   ia_xc_column_index_main: np.ndarray, ia_xc_row_index_second: np.ndarray, ia_xc_column_index_second: np.ndarray, da_xc_main_fract: np.ndarray, da_xc_main_fract_int: np.ndarray,
                                   da_xc_second_fract: np.ndarray, da_xc_second_fract_int: np.ndarray, i_row_bottom: int, i_row_top: int, i_column_bottom: int, i_column_top: int, ia_lc_xs: np.ndarray, dm_land_use: np.ndarray):
@@ -1201,19 +1216,43 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
 
     # Extract the indices and set into the profile
     try:
-        da_xs_profile[0:i_center_point] = dm_elevation[ia_xc_row_index_main[0:i_center_point], ia_xc_column_index_main[0:i_center_point]] * da_xc_main_fract[0:i_center_point] + dm_elevation[ia_xc_row_index_second[0:i_center_point],
-                                                   ia_xc_column_index_second[0:i_center_point]] * da_xc_second_fract[0:i_center_point]
+        # da_xs_profile[0:i_center_point] = dm_elevation[ia_xc_row_index_main[0:i_center_point], ia_xc_column_index_main[0:i_center_point]] * da_xc_main_fract[0:i_center_point] + dm_elevation[ia_xc_row_index_second[0:i_center_point],
+                                                #    ia_xc_column_index_second[0:i_center_point]] * da_xc_second_fract[0:i_center_point]
+        for i in range(i_center_point):
+            row_main = ia_xc_row_index_main[i]
+            col_main = ia_xc_column_index_main[i]
+            row_second = ia_xc_row_index_second[i]
+            col_second = ia_xc_column_index_second[i]
+            
+            # Calculate the profile value based on the indexed values and fractions
+            da_xs_profile[i] = (
+                dm_elevation[row_main, col_main] * da_xc_main_fract[i] +
+                dm_elevation[row_second, col_second] * da_xc_second_fract[i]
+            )
         
-        ia_lc_xs[0:i_center_point] = (dm_land_use[ia_xc_row_index_main[0:i_center_point], ia_xc_column_index_main[0:i_center_point]]*da_xc_main_fract_int[0:i_center_point] + 
-                                      dm_land_use[ia_xc_row_index_second[0:i_center_point], ia_xc_column_index_second[0:i_center_point]]*da_xc_second_fract_int[0:i_center_point]).astype(int)
+        # ia_lc_xs[0:i_center_point] = (dm_land_use[ia_xc_row_index_main[0:i_center_point], ia_xc_column_index_main[0:i_center_point]]*da_xc_main_fract_int[0:i_center_point] + 
+        #                               dm_land_use[ia_xc_row_index_second[0:i_center_point], ia_xc_column_index_second[0:i_center_point]]*da_xc_second_fract_int[0:i_center_point]).astype(int)
+        # Iterate through each index up to i_center_point to avoid advanced indexing
+        for i in range(i_center_point):
+            row_main = ia_xc_row_index_main[i]
+            col_main = ia_xc_column_index_main[i]
+            row_second = ia_xc_row_index_second[i]
+            col_second = ia_xc_column_index_second[i]
+            
+            # Calculate the land use value for each element and convert to int
+            ia_lc_xs[i] = int(
+                dm_land_use[row_main, col_main] * da_xc_main_fract_int[i] +
+                dm_land_use[row_second, col_second] * da_xc_second_fract_int[i]
+            )
+
     except:
         print('Error on Cell ' + str(i_entry_cell))
-    
+
     #print(ia_lc_xs[0])
     # Return the center point to the calling function
     return i_center_point
 
-
+@njit(cache=True)
 def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target: float):
     """
     Finds the cell containing the bank of the cross section
@@ -1244,6 +1283,7 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
     # Return to the calling function
     return i_cross_section_number
 
+@njit(cache=True)
 def find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_z_target, i_lc_water_value):
     
     #Initially set the bank info to zeros
@@ -1283,7 +1323,7 @@ def find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, i
     
     return d_wse_from_dem, i_bank_1_index, i_bank_2_index
 
-
+@njit(cache=True)
 def find_bank_by_lc(da_xs_profile: np.ndarray, ia_lc_xs: np.ndarray, i_cross_section_number: int, d_z_target: float):
     """
     Finds the cell containing the bank of the cross section using the Land Cover to help show where the river is located
@@ -1317,7 +1357,7 @@ def find_bank_by_lc(da_xs_profile: np.ndarray, ia_lc_xs: np.ndarray, i_cross_sec
     #This returns the indice that is the water edge (last indice that is actually water)
     return i_cross_section_number
 
-
+@njit(cache=True)
 def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_width: float, d_slope: float, d_mannings_n: float):
     """
     Estimates the depth iteratively by comparing the calculated flow to the baseflow
@@ -1380,7 +1420,7 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
 
     return d_working_depth
 
-
+@njit(cache=True)
 def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, i_bank_index: int, d_total_bank_dist: float, d_trap_base: float, d_distance_z: float, d_distance_h: float, d_y_bathy: float,
                                   d_y_depth: float, dm_output_bathymetry: np.ndarray, ia_xc_r_index_main: np.ndarray, ia_xc_c_index_main: np.ndarray, nrows: int, ncols: int, 
                                   ia_lc_xs: np.ndarray, dm_land_use: np.ndarray, d_side_dist: float, dm_elevation: np.ndarray):
@@ -1451,7 +1491,7 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
                     dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
     return
 
-
+@njit(cache=True)
 def calculate_hypotnuse(d_side_one: float, d_side_two: float):
     """
     Calculates the hypotenuse distance of a right triangle
@@ -1476,7 +1516,7 @@ def calculate_hypotnuse(d_side_one: float, d_side_two: float):
     # Return to the calling function
     return d_distance
 
-
+@njit(cache=True)
 def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distance_z: float, da_n_profile: np.ndarray):
     """
     Estimates the stream geometry
@@ -1530,10 +1570,10 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
         if np.any(da_y_depth[1:] <= 0):
             # A bad value exists. Calculate up to that value then break for the rest of hte values.
             # Get the index of the first bad vadlue
-            i_target_index = int(np.argwhere(da_y_depth[1:] <= 0)[0]) + 1
+            i_target_index: int = np.argwhere(da_y_depth[1:] <= 0)[0][0] + 1
 
             # Calculate the distance to use
-            d_dist_use = d_distance_z * da_y_depth[i_target_index - 1] / (abs(da_y_depth[i_target_index - 1]) + abs(da_y_depth[i_target_index]))
+            d_dist_use = d_distance_z * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
 
             # Calculate the geometric variables
             d_area = np.sum(da_area_good[:i_target_index - 1]) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
@@ -1552,7 +1592,10 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
             # Calculate teh geometric values
             d_area = np.sum(da_area_good[da_y_depth[1:] > 0])
             d_perimeter = np.sum(da_perimeter_i_good[da_y_depth[1:] > 0])
-            d_hydraulic_radius = d_area / d_perimeter
+            if d_perimeter == 0:
+                d_hydraulic_radius = np.inf
+            else:
+                d_hydraulic_radius = d_area / d_perimeter
 
             # Calculate the composite Mannings N
             d_composite_n = np.sum(da_composite_n_good)
@@ -1563,6 +1606,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
     # Return to the calling function
     return d_area, d_perimeter, d_hydraulic_radius, d_composite_n, d_top_width
 
+@njit(cache=True)
 def find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                          ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main):
     """
@@ -1615,13 +1659,28 @@ def find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, 
     # Precompute sliced arrays
     da_xs_profile1_sliced = da_xs_profile1[0:xs1_n]
     da_xs_profile2_sliced = da_xs_profile2[0:xs2_n]
-    manning_n_raster1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
-    manning_n_raster2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
+    # manning_n_raster1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
+    manning_n_raster1 = np.empty(xs1_n, dtype=dm_manning_n_raster.dtype)
+
+    # Use a loop to retrieve each element individually
+    for i in range(xs1_n):
+        row_idx = ia_xc_r1_index_main[i]
+        col_idx = ia_xc_c1_index_main[i]
+        manning_n_raster1[i] = dm_manning_n_raster[row_idx, col_idx]
+    # manning_n_raster2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
+
+    manning_n_raster2 = np.empty(xs2_n, dtype=dm_manning_n_raster.dtype)
+
+    # Use a loop to retrieve each element individually
+    for i in range(xs2_n):
+        row_idx = ia_xc_r2_index_main[i]
+        col_idx = ia_xc_c2_index_main[i]
+        manning_n_raster2[i] = dm_manning_n_raster[row_idx, col_idx]
     
     d_bottom_elevation = da_xs_profile1[0]
     d_depth = 0
     d_new_width_to_depth_ratio = 0
-    d_width_to_depth_ratio = float('inf')  # Start with a large value
+    d_width_to_depth_ratio = np.inf  # Start with a large value
 
     # we will assume that if we get to a depth of 25 meters, something has gone wrong
     while d_new_width_to_depth_ratio <= d_width_to_depth_ratio and d_depth <= 25:
@@ -1742,10 +1801,10 @@ def Calculate_BankFull_Elevation(i_entry_cell: int, num_increments: int, d_dista
     # if this doesn't succeed then the bank elevations are set at the value of the terrain at the stream cell (i.e., da_xs_profile1[0])
     elif xs1_n>=1 and xs2_n>=1 and ia_lc_xs1[0]!=i_lc_water_value:
         if i_bank_index1 == 0:
-            i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n)
+            i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
             bank_elev_1 = da_xs_profile1[i_bank_index1]
         elif i_bank_index2 == 0:
-            i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n)
+            i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
             bank_elev_2 = da_xs_profile2[i_bank_index2]
         else:
             pass
@@ -1871,7 +1930,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     # Return to the calling function
     return da_input_mannings
 
-
+@njit(cache=True)
 def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev, da_xs_profile_one, da_xs_profile_two, ia_xc_r1_index_main, ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, da_xs1_mannings, da_xs2_mannings,
                                          i_center_point, nrows, ncols, i_boundary_number):
     """
@@ -1970,6 +2029,7 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
     # Return to the calling function
     return i_low_point_index
 
+@njit(cache=True)
 def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2_n):
     #Creates a list of ever-increasing elevation points
     xn_max = max(xs_1_n, xs_2_n)
@@ -1986,41 +2046,41 @@ def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2
     return np.array(E_List*10)
 
 
-def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,
-                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value, dm_elevation):
+def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
+                                                           ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value, dm_elevation, dm_manning_n_raster):
     """
     Calculate bathymetry based on water surface elevations.
     """
-    # First find the bank information using land cover
+    #First find the bank information
+    #i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
+    #i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
     (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
     i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-    
+
     # Cycle through methods if i_total_bank_cells < 1 and d_y_depth >= 100
     function_used = "find_wse_and_banks_by_lc"
-
     # we will use this elevation to burn the bathymetry with
     d_wse_from_dem = da_xs_profile1[0]
     
+    # If the banks can't be found using the LC, we use the DEM and the width-to-depth ratio approach
     if i_total_bank_cells < 1:
         # Use width-to-depth ratio method if banks not found
         (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                                                               ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
+        d_wse_from_dem = da_xs_profile1[0]
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-        
         if i_total_bank_cells > 1:
             function_used = "find_bank_using_width_to_depth_ratio"
-
+    
+    # If the banks can't be found using the LC or the width-to-depth ratio, let's try to use the bank inflection points). 
     if i_total_bank_cells < 1:
-        # Use bank inflection point method if width-to-depth fails
-        i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n)
-        i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n)
+        i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
+        i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-        
         if i_total_bank_cells > 1:
             function_used = "find_bank_inflection_point"
     
     if i_total_bank_cells < 1:
-        # Default to setting bank cells to 1 if no method succeeds
         i_total_bank_cells = 1
 
     # Calculate the trapezoid dimensions
@@ -2029,12 +2089,12 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n
     d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
 
     if d_q_baseflow > 0.0:
-        # Calculate depth using baseflow
+         # Calculate depth using baseflow
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         d_y_bathy = d_wse_from_dem - d_y_depth
         da_xs_profile1[0] = d_y_bathy
         da_xs_profile2[0] = d_y_bathy
-        
+
         # if the depth we estimated was 
         if d_y_depth >= 25 and function_used == "find_wse_and_banks_by_lc":
             # If depth is too large, rerun the sequence of methods to refine it
@@ -2083,29 +2143,23 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n
             adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, 0.0, dm_elevation)
 
     else:
-        d_y_depth = 0.0  # Set depth to zero if no method succeeds in finding valid banks
+        # Set depth to zero if no method succeeds in finding valid banks
+        d_y_depth = 0.0
         d_y_bathy = da_xs_profile1[0] - d_y_depth
         i_bank_1_index = 0
         i_bank_2_index = 0
         i_total_bank_cells = 1
     
-    # da_xs_profile1[0] = d_y_bathy
-    # da_xs_profile2[0] = d_y_bathy
-    # dm_output_bathymetry[i_row_cell, i_column_cell] = d_y_bathy
-    
     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
-
-def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
+def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
                                                        dm_manning_n_raster, i_lc_water_value, dm_elevation):
-
     # Initially set the bank info to zeros and bank elevations to the current water surface elevation
     i_bank_1_index = 0
     i_bank_2_index = 0
     bank_elev_1 = da_xs_profile1[0]
     bank_elev_2 = da_xs_profile2[0]
-
     # Use land cover data to find the banks of the stream
     if xs1_n >= 1 and ia_lc_xs1[0] == i_lc_water_value:
         bank_elev_1 = da_xs_profile1[0]
@@ -2126,7 +2180,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
     i_total_bank_cells = i_bank_1_index + i_bank_2_index
     if i_total_bank_cells < 1:
         i_total_bank_cells = 1
-
+    
     # Use width-depth ratio calculation to find banks if land cover didn't work
     if xs1_n >= 1 and xs2_n >= 1 and ia_lc_xs1[0] != i_lc_water_value or (i_bank_1_index == 0 or i_bank_2_index == 0):
         (i_bank_index1, i_bank_index2) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
@@ -2137,7 +2191,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
         i_total_bank_cells = i_bank_1_index + i_bank_2_index
         if i_total_bank_cells < 1:
             i_total_bank_cells = 1
-
     # If no banks are found, try using the inflection point
     if xs1_n >= 1 and xs2_n >= 1 and ia_lc_xs1[0] != i_lc_water_value and (i_bank_1_index == 0 or i_bank_2_index == 0):
         i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
@@ -2148,7 +2201,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
         i_total_bank_cells = i_bank_1_index + i_bank_2_index
         if i_total_bank_cells < 1:
             i_total_bank_cells = 1
-
     # Calculate bankfull elevation
     if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
         d_bankfull_elevation = min(bank_elev_1, bank_elev_2)
@@ -2158,8 +2210,8 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
         d_bankfull_elevation = bank_elev_2
     else:
         d_bankfull_elevation = da_xs_profile1[0]
-
     # Outlier detection using Local Outlier Factor (LOF)
+
     if d_q_baseflow > 0.0:
         # Calculate the trapezoid dimensions
         # Get the sides between the bank elevation and the next index up
@@ -2187,7 +2239,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
         d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-
         # if the estimated depth is an outlier, let's try one of the other approaches to bathymetry estimation 
         if d_y_depth >= 25:  # If depth is classified as an outlier
             
@@ -2240,19 +2291,16 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
             d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
             d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
             d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-
             # If depth is still an outlier, try using the inflection point method
             if d_y_depth >= 25 or (i_bank_index1 == 0 or i_bank_index2 == 0):
                 i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
                 bank_elev_1 = da_xs_profile1[i_bank_1_index]
                 i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
                 bank_elev_2 = da_xs_profile2[i_bank_2_index]
-
                 # If we don't have any banks, we may need to try another approach to find the banks
                 i_total_bank_cells = i_bank_1_index + i_bank_2_index
                 if i_total_bank_cells < 1:
                     i_total_bank_cells = 1
-
                 # Calculate bankfull elevation
                 if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
                     d_bankfull_elevation = min(bank_elev_1, bank_elev_2)
@@ -2262,7 +2310,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
                     d_bankfull_elevation = bank_elev_2
                 else:
                     d_bankfull_elevation = da_xs_profile1[0]
-
                 # Calculate the trapezoid dimensions
                 # Get the sides between the bank elevation and the next index up
                 try:
@@ -2289,7 +2336,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
                 d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
                 d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
                 d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-
                 # If depth is still an outlier, we give up
                 if d_y_depth >= 25 or (i_bank_1_index == 0 or i_bank_2_index == 0):
                     d_y_depth = 0
@@ -2299,10 +2345,9 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
     
         # set the new estimate of the elevation of the thalweg
         d_y_bathy = d_bankfull_elevation - d_y_depth
-        
-    
     else:
-        d_y_depth = 0.0  # Set depth to zero if no method succeeds in finding valid banks
+        # Set depth to zero if no method succeeds in finding valid banks
+        d_y_depth = 0.0
         d_y_bathy = da_xs_profile1[0] - d_y_depth
         i_bank_1_index = 0
         i_bank_2_index = 0
@@ -2313,28 +2358,79 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da
         adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, d_side1_dist, dm_elevation)
         adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, d_side2_dist, dm_elevation)
 
-    
     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
 
-if __name__ == "__main__":
-    
-    starttime = datetime.now()
-    
-    print('Inputs to the Program is a Main Input File')
-    print('\nFor Example:')
-    print('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
-    
-    ### User-Defined Main Input File ###
-    if len(sys.argv) > 1:
-        MIF_Name = sys.argv[1]
-        print('Main Input File Given: ' + MIF_Name)
-    else:
-        #Read Main Input File
-        #MIF_Name = 'C:/Projects/2023_MultiModelFloodMapping/Yellowstone_GeoGLoWS/ARC_InputFiles/ARC_INPUT_PotterCreek.txt'
-        MIF_Name = 'C:/Projects/2023_BathyTest/AdH_Tests/Mound_City_ESA_DEMClean_Forecast_Bathy/ARC_InputFiles/ARC_Input_MoundCity_DEM_Bathy_Testing.txt'
-        print('Moving forward with Default MIF Name: ' + MIF_Name)
-    
+
+@njit(cache=True)
+def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use):
+    d_wse, d_q_sum = 0.0, 0.0
+    for i_depthincrement in range(1, range_end):
+        d_wse = start_wse + i_depthincrement * increment
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+
+        # Aggregate the geometric properties
+        d_a_sum = A1 + A2
+        d_p_sum = P1 + P2
+        d_t_sum = T1 + T2
+        d_q_sum = 0.0
+
+        # Estimate mannings n and flow
+        if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+            d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+            d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+        
+        # Perform check on the maximum flow
+        if d_q_sum > d_q_maximum:
+            break
+
+    return d_wse, d_q_sum
+
+@njit(cache=True)
+def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse):
+    i_start_elevation_index, i_last_elevation_index = 0, 0
+    for i_entry_elevation in range(i_number_of_increments + 1):
+        # Calculate the geometry
+        d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
+
+            
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+
+        # Aggregate the geometric properties
+        da_total_t[i_entry_elevation] = T1 + T2
+        da_total_a[i_entry_elevation] = A1 + A2
+        da_total_p[i_entry_elevation] = P1 + P2
+
+        # Check the properties are physically realistic. If so, estimate the flow with them.
+        if da_total_t[i_entry_elevation] <= 0.0 or da_total_a[i_entry_elevation] <= 0.0 or da_total_p[i_entry_elevation] <= 0.0:
+            da_total_t[i_entry_elevation] = 0.0
+            da_total_a[i_entry_elevation] = 0.0
+            da_total_p[i_entry_elevation] = 0.0
+            # this is the channel bottom elevation that we will use as depth = 0 when building the power functions
+            da_total_wse[i_entry_elevation] = d_wse
+            i_start_elevation_index = i_entry_elevation
+
+        else:
+            # Estimate mannings n
+            d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
+
+            # Check that the mannings n is physically realistic
+            if d_composite_n < 0.0001:
+                d_composite_n = 0.035
+
+            # Estimate total flows
+            da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
+                                            math.pow(d_slope_use, 0.5))
+            da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
+            da_total_wse[i_entry_elevation] = d_wse
+            i_last_elevation_index = i_entry_elevation
+
+    return i_start_elevation_index, i_last_elevation_index
+
+def main(MIF_Name: str, quiet: bool):
+    starttime = datetime.now()  
     ### Read Main Input File ###
     read_main_input_file(MIF_Name)
     
@@ -2346,13 +2442,16 @@ if __name__ == "__main__":
     STRM, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection = read_raster_gdal(s_input_stream_path)
     LC, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection = read_raster_gdal(s_input_land_use_path)
 
+
     if dnrows != snrows or dnrows != lnrows:
-        print('Rows do not Match!')
+        LOG.error('Rows do not Match!')
+        return
     else:
         nrows = dnrows
 
     if dncols != sncols or dncols != lncols:
-        print('Cols do not Match!')
+        LOG.error('Cols do not Match!')
+        return
     else:
         ncols = dncols
 
@@ -2371,7 +2470,6 @@ if __name__ == "__main__":
 
     dm_land_use = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
     dm_land_use[i_boundary_number:(nrows + i_boundary_number), i_boundary_number:(ncols + i_boundary_number)] = LC
-
 
     ##### Begin Calculations #####
     # Create working matrices
@@ -2409,8 +2507,8 @@ if __name__ == "__main__":
 
     # Get the cell dx and dy coordinates
     dx, dy, dproject = convert_cell_size(dcellsize, dyll, dyur)
-    print('Cellsize X = ' + str(dx))
-    print('Cellsize Y = ' + str(dy))
+    LOG.info('Cellsize X = ' + str(dx))
+    LOG.info('Cellsize Y = ' + str(dy))
     
     # Pull cross sections
     i_center_point = int((d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
@@ -2439,9 +2537,7 @@ if __name__ == "__main__":
                 for s in range(-1, 2, 2):
                     l_angles_to_test.append(s * d * d_degree_interval)
 
-    print('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles (degrees) to evaluate= ' + str(l_angles_to_test))
-    l_angles_to_test = np.multiply(l_angles_to_test, math.pi / 180.0)
-    print('  Angles (radians) to evaluate= ' + str(l_angles_to_test))
+    LOG.info('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(l_angles_to_test))
     
     # Get the extents of the boundaries
     i_row_bottom = i_boundary_number
@@ -2453,12 +2549,17 @@ if __name__ == "__main__":
     i_number_of_increments = 15
     
     # Create the dictionary and lists that will be used to create our VDT database
-    o_out_file_dict = {}
+    o_out_file_dict: dict[str, list] = {}
     o_out_file_dict['COMID'] = []
     o_out_file_dict['Row'] = []
     o_out_file_dict['Col'] = []
     o_out_file_dict['Elev'] = []
     o_out_file_dict['QBaseflow'] = []
+    comid_dict_list = o_out_file_dict['COMID']
+    row_dict_list = o_out_file_dict['Row']
+    col_dict_list = o_out_file_dict['Col']
+    elev_dict_list = o_out_file_dict['Elev']
+    qbaseflow_dict_list = o_out_file_dict['QBaseflow']
     for i in range(1, i_number_of_increments+1):
         o_out_file_dict[f'q_{i}'] = []
         o_out_file_dict[f'v_{i}'] = []
@@ -2481,21 +2582,26 @@ if __name__ == "__main__":
         vel_b_curve_list = []
 
     # Write the percentiles into the files
-    print('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
+    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
     da_percent_cells = np.array([1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99, 100, 110])
     da_percent_cells = (da_percent_cells * i_number_of_stream_cells / 100).astype(int)
     i_counter = 0
 
     ### Begin the stream cell solution loop ###
-    for i_entry_cell in range(i_number_of_stream_cells):
+    for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet):
         # Get the metadata for the loop
         i_row_cell = ia_valued_row_indices[i_entry_cell]
         i_column_cell = ia_valued_column_indices[i_entry_cell]
         i_cell_comid = int(dm_stream[i_row_cell,i_column_cell])
 
-        if i_entry_cell == da_percent_cells[i_counter]:
-            print('  ' + str(i_entry_cell) + ' => ' + str(int((da_percent_cells[i_counter] + 1) * 100 / i_number_of_stream_cells)) + ' percent of cells completed')
-            i_counter = i_counter + 1
+        # Get the Flow Rates Associated with the Stream Cell
+        try:
+            im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
+            im_flow_index = int(im_flow_index[0][0])
+            d_q_baseflow = QBaseFlow[im_flow_index]
+            d_q_maximum = QMax[im_flow_index]
+        except:
+            continue
         
         # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
         d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, dx, dy)
@@ -2510,7 +2616,7 @@ if __name__ == "__main__":
         # if slope is less than the threshold, reset it
         if d_slope_use < 0.0002:
             d_slope_use = 0.0002
-        
+    
         # Get the Flow Rates Associated with the Stream Cell
         try:
             im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
@@ -2625,10 +2731,10 @@ if __name__ == "__main__":
         #BATHYMETRY CALCULATION
         #This method calculates bathymetry based on the water surface elevation, if you want it to.
         if b_bathy_use_banks is False and s_output_bathymetry_path != '':  
-            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_Water_Surface_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
-                                                                                                                                                ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value, dm_elevation)
+            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
+                                                                                                                                                ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value, dm_elevation, dm_manning_n_raster)
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
-            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
+            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
                                                                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation)
 
 
@@ -2649,7 +2755,7 @@ if __name__ == "__main__":
                 continue
     
             if i_number_of_elevations >= ep:
-                print('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+                LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
                 continue
         
         # Calculate the volumes
@@ -2716,95 +2822,28 @@ if __name__ == "__main__":
             d_inc_y = ((da_elevation_list_mm[i_ordinate_for_Qmax] - da_elevation_list_mm[0]) / 1000.0) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
             '''
-            
+            n_x_section_1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
+            n_x_section_2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
+
             # Find the wse associated with the Maximum flow using 0.5m increments
             d_maxflow_wse_initial = da_xs_profile1[0]
-            for i_depthincrement in range(1,101):
-                # Calculate the geometry
-                d_wse = da_xs_profile1[0] + i_depthincrement * d_depth_increment_big
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-
-                # Aggregate the geometric properties
-                d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
-
-                # Estimate mannings n and flow
-                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                
-                d_maxflow_wse_initial = d_wse
-                
-                # Perform check on the maximum flow
-                if d_q_sum > d_q_maximum:
-                    break
+            d_maxflow_wse_initial, d_q_sum = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
             
             # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
             d_maxflow_wse_initial = d_maxflow_wse_initial - 0.5
             if d_maxflow_wse_initial < da_xs_profile1[0]:
                 d_maxflow_wse_initial = da_xs_profile1[0]
             d_maxflow_wse_med = d_maxflow_wse_initial
-            
-            for i_depthincrement in range(1,101):
-                # Calculate the geometry
-                d_wse = d_maxflow_wse_initial + i_depthincrement * d_depth_increment_med
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+            d_maxflow_wse_med, d_q_sum = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
-                # Aggregate the geometric properties
-                d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
-
-                # Estimate mannings n and flow
-                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                
-                d_maxflow_wse_med = d_wse
-                
-                # Perform check on the maximum flow
-                if d_q_sum > d_q_maximum:
-                    break
-            
             # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
             d_maxflow_wse_med = d_maxflow_wse_med - 0.05
             if d_maxflow_wse_med < da_xs_profile1[0]:
                 d_maxflow_wse_med = da_xs_profile1[0]
             d_maxflow_wse_final = d_maxflow_wse_med
             
-            for i_depthincrement in range(1,51):
-                # Calculate the geometry
-                d_wse = d_maxflow_wse_med + i_depthincrement * d_depth_increment_small
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+            d_maxflow_wse_final, d_q_sum = find_wse(51, d_maxflow_wse_final, d_depth_increment_small, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
-                # Aggregate the geometric properties
-                d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
-
-                # Estimate mannings n and flow
-                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                
-                d_maxflow_wse_final = d_wse
-                
-                # Perform check on the maximum flow
-                if d_q_sum > d_q_maximum:
-                    break
-                '''
-                #This is the Edge of the Flood.  Value is 1 because that is the flood method used.
-                dm_out_flood[ia_xc_r1_index_main[np1], ia_xc_c1_index_main[np1]] = 1
-                dm_out_flood[ia_xc_r2_index_main[np2], ia_xc_c2_index_main[np2]] = 1
-                '''
-            
             #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
             if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
                 continue
@@ -2813,67 +2852,26 @@ if __name__ == "__main__":
             d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
 
-            for i_entry_elevation in range(i_number_of_increments + 1):
-                # Calculate the geometry
-                d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
-
-                    
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-
-                # Aggregate the geometric properties
-                da_total_t[i_entry_elevation] = T1 + T2
-                da_total_a[i_entry_elevation] = A1 + A2
-                da_total_p[i_entry_elevation] = P1 + P2
-
-                # Check the properties are physically realistic. If so, estimate the flow with them.
-                if da_total_t[i_entry_elevation] <= 0.0 or da_total_a[i_entry_elevation] <= 0.0 or da_total_p[i_entry_elevation] <= 0.0:
-                    da_total_t[i_entry_elevation] = 0.0
-                    da_total_a[i_entry_elevation] = 0.0
-                    da_total_p[i_entry_elevation] = 0.0
-                    # this is the channel bottom elevation that we will use as depth = 0 when building the power functions
-                    da_total_wse[i_entry_elevation] = d_wse
-                    i_start_elevation_index = i_entry_elevation
-
-                else:
-                    # Estimate mannings n
-                    d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
-
-                    # Check that the mannings n is physically realistic
-                    if d_composite_n < 0.0001:
-                        d_composite_n = 0.035
-
-                    # Estimate total flows
-                    da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
-                                                    math.pow(d_slope_use, 0.5))
-                    da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
-                    da_total_wse[i_entry_elevation] = d_wse
-                    i_last_elevation_index = i_entry_elevation
+            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse)
             
             # Process each of the elevations to the output file if feasbile values were produced
-            for i_entry_elevation in range(i_number_of_elevations - 1, 0, -1):
-                if i_entry_elevation == i_number_of_elevations-1:
-                    if sum(da_total_q[0:int(i_number_of_elevations / 2.0)]) <= 1e-16 or i_row_cell < 0 or i_column_cell < 0 or dm_elevation[i_row_cell, i_column_cell] <= 1e-16:  # Need at least half the increments filled in order to report results.
-                        break
-                    else:
-                        COMID_list = o_out_file_dict['COMID']
-                        Row_list = o_out_file_dict['Row']
-                        Col_list = o_out_file_dict['Col']
-                        Elev_list = o_out_file_dict['Elev']
-                        QBaseflow_list = o_out_file_dict['QBaseflow']
-                        COMID_list.append(int(i_cell_comid))
-                        Row_list.append(int(i_row_cell - i_boundary_number))
-                        Col_list.append(int(i_column_cell - i_boundary_number))
-                        Elev_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
-                        QBaseflow_list.append(round(d_q_baseflow, 3))
-                q_list = o_out_file_dict[f'q_{i_entry_elevation}']
-                v_list = o_out_file_dict[f'v_{i_entry_elevation}']
-                t_list = o_out_file_dict[f't_{i_entry_elevation}']
-                wse_list = o_out_file_dict[f'wse_{i_entry_elevation}']
-                q_list.append(round(da_total_q[i_entry_elevation], 3))
-                v_list.append(round(da_total_v[i_entry_elevation], 3))
-                t_list.append(round(da_total_t[i_entry_elevation], 3))
-                wse_list.append(round(da_total_wse[i_entry_elevation], 3))
+            da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
+            if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+                comid_dict_list.append(i_cell_comid)
+                row_dict_list.append(i_row_cell - i_boundary_number)
+                col_dict_list.append(i_column_cell - i_boundary_number)
+                elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                qbaseflow_dict_list.append(d_q_baseflow)
+
+                # Loop backward through the elevations
+                if s_output_curve_file:
+                    for i, i_entry_elevation in enumerate(range(1, i_number_of_elevations)):
+                        o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
+                        o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
+                        o_out_file_dict[f't_{i_entry_elevation}'].append(da_total_t[i_entry_elevation])
+                        o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
+
+            if i_number_of_elevations > 0:
                 i_outprint_yes = 1
         
         elif i_volume_fill_approach == 2:
@@ -2896,7 +2894,7 @@ if __name__ == "__main__":
             
             # Check that the number of elevations is reasonable
             if i_number_of_elevations >= ep:
-                print('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+                LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
 
             for i_entry_elevation in range(1, i_number_of_elevations):
                 # Calculate the geometry
@@ -2943,38 +2941,32 @@ if __name__ == "__main__":
                 '''
 
             # Process each of the elevations to the output file if feasbile values were produced
-            for i_entry_elevation in range(i_number_of_elevations - 1, 0, -1):
-                if i_entry_elevation == i_number_of_elevations - 1:
-                    if da_total_q[i_entry_elevation] < d_q_maximum or da_total_q[i_entry_elevation] > d_q_maximum * 3:
-                        break
-                    else:
-                        COMID_list = o_out_file_dict['COMID']
-                        Row_list = o_out_file_dict['Row']
-                        Col_list = o_out_file_dict['Col']
-                        Elev_list = o_out_file_dict['Elev']
-                        QBaseflow_list = o_out_file_dict['QBaseflow']
-                        COMID_list.append(int(i_cell_comid))
-                        Row_list.append(int(i_row_cell - i_boundary_number))
-                        Col_list.append(int(i_column_cell - i_boundary_number))
-                        Elev_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
-                        QBaseflow_list.append(round(d_q_baseflow, 3))
-                q_list = o_out_file_dict[f'q_{i_entry_elevation}']
-                v_list = o_out_file_dict[f'v_{i_entry_elevation}']
-                t_list = o_out_file_dict[f't_{i_entry_elevation}']
-                wse_list = o_out_file_dict[f'wse_{i_entry_elevation}']
-                q_list.append(round(da_total_q[i_entry_elevation], 3))
-                v_list.append(round(da_total_v[i_entry_elevation], 3))
-                t_list.append(round(da_total_t[i_entry_elevation], 3))
-                wse_list.append(round(da_total_wse[i_entry_elevation], 3))
+            da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
+            if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+                comid_dict_list.append(i_cell_comid)
+                row_dict_list.append(i_row_cell - i_boundary_number)
+                col_dict_list.append(i_column_cell - i_boundary_number)
+                elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                qbaseflow_dict_list.append(d_q_baseflow)
+
+                # Loop backward through the elevations
+                if s_output_curve_file:
+                    for i, i_entry_elevation in enumerate(range(1, i_number_of_elevations)):
+                        o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
+                        o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
+                        o_out_file_dict[f't_{i_entry_elevation}'].append(da_total_t[i_entry_elevation])
+                        o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
+            
+            if i_number_of_elevations > 0:
                 i_outprint_yes = 1
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
             # Not needed here, but [::-1] basically reverses the order of the array
-            (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_t[i_start_elevation_index:i_last_elevation_index + 1])
-            (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_v[i_start_elevation_index:i_last_elevation_index + 1])
+            (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_t[i_start_elevation_index:i_last_elevation_index + 1][1:], [12, 0.3])
+            (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_v[i_start_elevation_index:i_last_elevation_index + 1][1:], [1, 0.3])
             da_total_depth = da_total_wse - da_xs_profile1[0]
-            (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1], da_total_depth[i_start_elevation_index:i_last_elevation_index + 1])
+            (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_depth[i_start_elevation_index:i_last_elevation_index + 1][1:], [0.2, 0.5])
             COMID_curve_list.append(int(i_cell_comid))
             Row_curve_list.append(int(i_row_cell - i_boundary_number))
             Col_curve_list.append(int(i_column_cell - i_boundary_number))
@@ -2989,11 +2981,11 @@ if __name__ == "__main__":
             vel_b_curve_list.append(round(d_v_b, 3))
 
         # Output the XS information, if you've chosen to do so
-        da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
-        dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
-        da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
-        dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
         if s_xs_output_file != '':
+            da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
+            dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
+            da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
+            dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
             o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
 
    
@@ -3003,13 +2995,22 @@ if __name__ == "__main__":
                 "Row": 'int64',
                 "Col": 'int64',
     }
+    for i in range(1, i_number_of_increments + 1):
+        o_out_file_dict[f'q_{i}'] = np.round(o_out_file_dict[f'q_{i}'], 3)
+        o_out_file_dict[f'v_{i}'] = np.round(o_out_file_dict[f'v_{i}'], 3)
+        o_out_file_dict[f't_{i}'] = np.round(o_out_file_dict[f't_{i}'], 3)
+        o_out_file_dict[f'wse_{i}'] = np.round(o_out_file_dict[f'wse_{i}'], 3)
+
+    o_out_file_dict['Elev'] = np.round(o_out_file_dict['Elev'], 3)
+    o_out_file_dict['QBaseflow'] = np.round(o_out_file_dict['QBaseflow'], 3)
+
     o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
     # Remove rows with NaN values
     o_out_file_df = o_out_file_df.dropna()
     # Remove rows where any column has a negative value
     o_out_file_df = o_out_file_df[~(o_out_file_df.lt(0).any(axis=1))]
     o_out_file_df.to_csv(s_output_vdt_database, index=False)
-    print('Finished writing ' + str(s_output_vdt_database))
+    LOG.info('Finished writing ' + str(s_output_vdt_database))
     
     # Write the output Curve file
     if len(s_output_curve_file)>0:
@@ -3031,7 +3032,11 @@ if __name__ == "__main__":
         # Remove rows where any column has a negative value
         o_curve_file_df = o_curve_file_df[~(o_curve_file_df.lt(0).any(axis=1))]
         o_curve_file_df.to_csv(s_output_curve_file, index=False)
-        print('Finished writing ' + str(s_output_curve_file))
+        LOG.info('Finished writing ' + str(s_output_curve_file))
+    
+    
+    
+    #write_output_raster('StreamAngles.tif', dm_output_streamangles[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
     
     
     
@@ -3052,6 +3057,22 @@ if __name__ == "__main__":
     i_sim_time_s = int(d_sim_time.seconds)
 
     if i_sim_time_s < 60:
-        print('Simulation Took ' + str(i_sim_time_s) + ' seconds')
+        LOG.info('Simulation Took ' + str(i_sim_time_s) + ' seconds')
     else:
-        print('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
+        LOG.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
+        
+if __name__ == "__main__":
+    LOG.info('Inputs to the Program is a Main Input File')
+    LOG.info('\nFor Example:')
+    LOG.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
+    
+    ### User-Defined Main Input File ###
+    if len(sys.argv) > 1:
+        MIF_Name = sys.argv[1]
+        LOG.info('Main Input File Given: ' + MIF_Name)
+    else:
+        #Read Main Input File
+        MIF_Name = '/Users/ricky/Documents/data_dir/mifns/USGS_1_n40w111_20240130_buff__mifn.txt'
+        LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
+        
+    main(MIF_Name, False)

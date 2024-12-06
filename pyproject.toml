@@ -1,0 +1,37 @@
+ [build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arc"
+description = "Wrapper package for using ARC, by Mike Follum -> https://github.com/MikeFHS/automated-rating-curve/tree/main"
+dynamic = ["version"]
+dependencies = [
+  "matplotlib",
+  "numba",
+  "pandas",
+  "gdal",
+  "tqdm",
+  "scipy",
+]
+requires-python = ">= 3.10"
+authors = [
+    {name = "Louis 'Ricky' Rosas", email = "lrr43@byu.edu"},
+]
+maintainers = [
+    {name = "Louis 'Ricky' Rosas", email = "lrr43@byu.edu"},
+]
+license = { text = "BSD-3-Clause" }
+readme = "README.md"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.scripts]
+arc = "arc.arc:_main"
