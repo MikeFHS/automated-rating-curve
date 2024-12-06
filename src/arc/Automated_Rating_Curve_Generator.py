@@ -493,8 +493,9 @@ def read_main_input_file(s_mif_name: str):
     # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
     global b_bathy_use_banks
     b_bathy_use_banks = get_parameter_name(sl_lines, i_number_of_lines, 'Bathy_Use_Banks')
-    b_bathy_use_banks = bool(b_bathy_use_banks)
-    if b_bathy_use_banks == '':
+    if "True" in b_bathy_use_banks:
+        b_bathy_use_banks = True
+    if "False" in b_bathy_use_banks or b_bathy_use_banks == '':
         b_bathy_use_banks = False
 
     # Find the path to the output bathymetry file
@@ -1231,7 +1232,7 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
             )
         
         # ia_lc_xs[0:i_center_point] = (dm_land_use[ia_xc_row_index_main[0:i_center_point], ia_xc_column_index_main[0:i_center_point]]*da_xc_main_fract_int[0:i_center_point] + 
-        #                               dm_land_use[ia_xc_row_index_second[0:i_center_point], ia_xc_column_index_second[0:i_center_point]]*da_xc_second_fract_int[0:i_center_point]).astype(int)
+                                    #   dm_land_use[ia_xc_row_index_second[0:i_center_point], ia_xc_column_index_second[0:i_center_point]]*da_xc_second_fract_int[0:i_center_point]).astype(int)
         # Iterate through each index up to i_center_point to avoid advanced indexing
         for i in range(i_center_point):
             row_main = ia_xc_row_index_main[i]
@@ -1457,7 +1458,7 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
     None. Values are updated in the output bathymetry matrix
 
     """
-    
+
     # If banks are calculated, make an adjustment to the trapezoidal bathymetry
     if i_bank_index > 0:
         # Loop over the bank width offset indices
@@ -1478,7 +1479,7 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
                     da_xs_profile[x] = d_y_bathy
                     dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
 
-            # If the cell is in the slope part of the trapezoid you need to find the elevaiton based on the slope of the trapezoid side.
+            # If the cell is in the slope part of the trapezoid you need to find the elevation based on the slope of the trapezoid side.
             elif d_dist_cell_to_bank <= d_distance_h:
                 if (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
                     da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
@@ -2067,7 +2068,7 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_p
         # Use width-to-depth ratio method if banks not found
         (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                                                               ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-        d_wse_from_dem = da_xs_profile1[0]
+        # d_wse_from_dem = da_xs_profile1[0]
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
             function_used = "find_bank_using_width_to_depth_ratio"
@@ -2089,12 +2090,9 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_p
     d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
 
     if d_q_baseflow > 0.0:
-         # Calculate depth using baseflow
+        # Calculate depth using baseflow
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         d_y_bathy = d_wse_from_dem - d_y_depth
-        da_xs_profile1[0] = d_y_bathy
-        da_xs_profile2[0] = d_y_bathy
-
         # if the depth we estimated was 
         if d_y_depth >= 25 and function_used == "find_wse_and_banks_by_lc":
             # If depth is too large, rerun the sequence of methods to refine it
@@ -2138,6 +2136,9 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_p
                 i_total_bank_cells = 1
 
         if i_total_bank_cells > 1:
+            # This is our estimate of the depth of the thalweg
+            d_y_bathy = da_xs_profile1[0] - d_y_depth
+
             # Adjust the profile for bathymetry
             adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, 0.0, dm_elevation)
             adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, 0.0, dm_elevation)
@@ -2348,7 +2349,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
     else:
         # Set depth to zero if no method succeeds in finding valid banks
         d_y_depth = 0.0
-        d_y_bathy = da_xs_profile1[0] - d_y_depth
+        # d_y_bathy = da_xs_profile1[0] - d_y_depth
         i_bank_1_index = 0
         i_bank_2_index = 0
         i_total_bank_cells = 1
@@ -2390,7 +2391,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 @njit(cache=True)
 def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse):
     i_start_elevation_index, i_last_elevation_index = 0, 0
-    for i_entry_elevation in range(i_number_of_increments + 1):
+    for i_entry_elevation in range(i_number_of_increments):
         # Calculate the geometry
         d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
 
@@ -2429,6 +2430,22 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
 
     return i_start_elevation_index, i_last_elevation_index
 
+def modify_array(arr, b_modified_dem):
+    """
+    Checks and modifies the DEM if there are negative elevations in it by adding 100 to all elevations.
+    Also will subtract 100 from all non-zero values if the DEM has been previously modified.
+    """
+    # Check if the array contains any negative value
+    if np.any(arr < 0) and b_modified_dem is False:
+        # Add 100 to the entire array
+        arr += 100
+        b_modified_dem = True
+    elif b_modified_dem is True:
+        # Subtract 100 only from elements that are not zero
+        arr[arr != 0] -= 100
+
+    return arr, b_modified_dem
+
 def main(MIF_Name: str, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
@@ -2441,6 +2458,12 @@ def main(MIF_Name: str, quiet: bool):
     DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection = read_raster_gdal(s_input_dem_path)
     STRM, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection = read_raster_gdal(s_input_stream_path)
     LC, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection = read_raster_gdal(s_input_land_use_path)
+
+
+
+    # if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
+    b_modified_dem = False
+    DEM, b_modified_dem = modify_array(DEM, b_modified_dem)
 
 
     if dnrows != snrows or dnrows != lnrows:
@@ -2470,6 +2493,7 @@ def main(MIF_Name: str, quiet: bool):
 
     dm_land_use = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
     dm_land_use[i_boundary_number:(nrows + i_boundary_number), i_boundary_number:(ncols + i_boundary_number)] = LC
+    
 
     ##### Begin Calculations #####
     # Create working matrices
@@ -2538,7 +2562,10 @@ def main(MIF_Name: str, quiet: bool):
                     l_angles_to_test.append(s * d * d_degree_interval)
 
     LOG.info('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(l_angles_to_test))
-    
+    l_angles_to_test = np.multiply(l_angles_to_test, math.pi / 180.0)
+    LOG.info('  Angles (radians) to evaluate= ' + str(l_angles_to_test))
+
+
     # Get the extents of the boundaries
     i_row_bottom = i_boundary_number
     i_row_top = nrows + i_boundary_number-1
@@ -2588,7 +2615,9 @@ def main(MIF_Name: str, quiet: bool):
     i_counter = 0
 
     ### Begin the stream cell solution loop ###
-    for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet):
+    pbar = tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet)
+    for i_entry_cell in pbar:
+        
         # Get the metadata for the loop
         i_row_cell = ia_valued_row_indices[i_entry_cell]
         i_column_cell = ia_valued_column_indices[i_entry_cell]
@@ -2860,7 +2889,10 @@ def main(MIF_Name: str, quiet: bool):
                 comid_dict_list.append(i_cell_comid)
                 row_dict_list.append(i_row_cell - i_boundary_number)
                 col_dict_list.append(i_column_cell - i_boundary_number)
-                elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                if b_modified_dem is True:
+                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
+                elif b_modified_dem is False:
+                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
                 qbaseflow_dict_list.append(d_q_baseflow)
 
                 # Loop backward through the elevations
@@ -2869,13 +2901,15 @@ def main(MIF_Name: str, quiet: bool):
                         o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
                         o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
                         o_out_file_dict[f't_{i_entry_elevation}'].append(da_total_t[i_entry_elevation])
-                        o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
+                        if b_modified_dem is True:
+                            o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation]-100)
+                        elif b_modified_dem is False:
+                            o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
 
             if i_number_of_elevations > 0:
                 i_outprint_yes = 1
         
         elif i_volume_fill_approach == 2:
-            print()
             # This was trying to set a max elevation difference between the ordinates
             l_add_list = []
             i_add_level = 250
@@ -2946,7 +2980,10 @@ def main(MIF_Name: str, quiet: bool):
                 comid_dict_list.append(i_cell_comid)
                 row_dict_list.append(i_row_cell - i_boundary_number)
                 col_dict_list.append(i_column_cell - i_boundary_number)
-                elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                if b_modified_dem is True:
+                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
+                elif b_modified_dem is False:
+                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
                 qbaseflow_dict_list.append(d_q_baseflow)
 
                 # Loop backward through the elevations
@@ -2955,7 +2992,10 @@ def main(MIF_Name: str, quiet: bool):
                         o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
                         o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
                         o_out_file_dict[f't_{i_entry_elevation}'].append(da_total_t[i_entry_elevation])
-                        o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
+                        if b_modified_dem is True:
+                            o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation]-100)
+                        elif b_modified_dem is False:
+                            o_out_file_dict[f'wse_{i_entry_elevation}'].append(da_total_wse[i_entry_elevation])
             
             if i_number_of_elevations > 0:
                 i_outprint_yes = 1
@@ -2970,8 +3010,12 @@ def main(MIF_Name: str, quiet: bool):
             COMID_curve_list.append(int(i_cell_comid))
             Row_curve_list.append(int(i_row_cell - i_boundary_number))
             Col_curve_list.append(int(i_column_cell - i_boundary_number))
-            BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
-            DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
+            if b_modified_dem is True:
+                BaseElev_curve_list.append(round(da_xs_profile1[0], 3)-100)
+                DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3)-100)
+            elif b_modified_dem is False:
+                BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
+                DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
             QMax_curve_list.append(round(da_total_q[i_last_elevation_index], 3))
             depth_a_curve_list.append(round(d_d_a, 3))
             depth_b_curve_list.append(round(d_d_b, 3))
@@ -2982,11 +3026,15 @@ def main(MIF_Name: str, quiet: bool):
 
         # Output the XS information, if you've chosen to do so
         if s_xs_output_file != '':
-            da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
+            if b_modified_dem is False:
+                da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n]-100)
+                da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]-100) 
+            elif b_modified_dem is False:
+                da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
+                da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
             dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
-            da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
-            dm_manning_n_raster2 = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2}\n")
+            dm_manning_n_raster2_str = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2_str}\n")
 
    
     # Write the output VDT Database file
@@ -3039,14 +3087,12 @@ def main(MIF_Name: str, quiet: bool):
     #write_output_raster('StreamAngles.tif', dm_output_streamangles[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
     
     
-    
-    #write_output_raster('StreamAngles.tif', dm_output_streamangles[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
-    
-    
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
         #Make sure all the bathymetry points are above the DEM elevation
         dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, 0, dm_output_bathymetry)
+        # remove the increase in elevation, if negative elevations were present
+        dm_output_bathymetry, b_modified_dem = modify_array(dm_output_bathymetry, b_modified_dem)
         write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(s_output_flood) > 1:
