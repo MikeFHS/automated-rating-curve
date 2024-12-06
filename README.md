@@ -1,4 +1,21 @@
 # Automated Rating Curve (ARC) Generator
+
+MOST RECENT UPDATE (for ARC and Curve2Flood src code only): 
+```
+Merge pull request #12 from MikeFHS/bathy_changes (11/25/24)
+```
+
+To use this repository, run the following:
+```bash
+git clone https://github.com/RickytheGuy/automated-rating-curve-byu.git
+cd automated-rating-curve-byu
+conda env create -f environment.yaml
+conda activate arc
+pip install .
+```
+
+Next, you may run `arc -h` to get help using ARC.
+
 ARC is an Python-based code that encompasses much of the functionality of the hydraulic modeling software AutoRoute. ARC inputs a series of raster datasets and outputs rating curves that describe the relationship between streamflow and water surface elevation.
 
 The resulting rating curves can be paired with a flood inundation mapping software to produce flood inundation maps.
