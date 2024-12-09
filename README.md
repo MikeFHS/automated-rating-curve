@@ -23,15 +23,10 @@ git clone https://github.com/MikeFHS/automated-rating-curve
 4. Navigate to the location where you cloned the ARC repository.
 ```bash
 cd automated-rating-curve
-conda env create -f environment.yaml
-conda activate arc
-pip install .
 ```
 5. Create the Conda environment using the following command.
 ```bash
 conda env create -f environment.yaml
-conda activate arc
-pip install .
 ```
 6. Activate the Conda environment using the following command.
 ```bash
