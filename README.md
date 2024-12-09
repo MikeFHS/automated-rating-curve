@@ -18,29 +18,30 @@ Below are step-by-step instructions for setting up the ARC tool.
 ```bash
 git clone https://github.com/MikeFHS/automated-rating-curve
 ```
-4. Open the "Anaconda Prompt" on PC or remain in your terminal in Mac or Linux, and create you Conda environment.
-   - Navigate to the location where you cloned the ARC repository.
+3. Open the "Anaconda Prompt" on PC or remain in your terminal in Mac or Linux, and create you Conda environment.
+
+4. Navigate to the location where you cloned the ARC repository.
 ```bash
 cd automated-rating-curve
 conda env create -f environment.yaml
 conda activate arc
 pip install .
 ```
-  - Create the Conda environment using the following command.
+5. Create the Conda environment using the following command.
 ```bash
 conda env create -f environment.yaml
 conda activate arc
 pip install .
 ```
-  - Activate the Conda environment using the following command.
+6. Activate the Conda environment using the following command.
 ```bash
 conda activate arc
 ```
-5. Install ARC within your Conda environment by navigating to the local ARC instance on your machine from within "Anaconda Prompt" on PC or terminal in Mac or Linux machine, and run the following command.
+7. Install ARC within your Conda environment by navigating to the local ARC instance on your machine from within "Anaconda Prompt" on PC or terminal in Mac or Linux machine, and run the following command.
 ```bash
 pip install .
 ```
-6. Your ARC environment should be ready to roll!
+8. Your ARC environment should be ready to roll!
 
 You may run `arc -h` to get help using ARC.
 
