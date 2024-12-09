@@ -825,9 +825,7 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     
     
     print('\n\n')
-    print('Next Step is to Run Automated_Rating_Curve_Generator.py by copying the following into the Command Prompt:')
-    print('python Automated_Rating_Curve_Generator.py ' + str(os.path.join(ARC_Folder, 'ARC_Input_File.txt')))
-    
+    print('Inputs created. You are now ready to run ARC!')    
     return
 
 if __name__ == "__main__":
