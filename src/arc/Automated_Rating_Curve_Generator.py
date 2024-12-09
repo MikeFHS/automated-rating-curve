@@ -495,7 +495,7 @@ def read_main_input_file(s_mif_name: str):
     b_bathy_use_banks = get_parameter_name(sl_lines, i_number_of_lines, 'Bathy_Use_Banks')
     if "True" in b_bathy_use_banks:
         b_bathy_use_banks = True
-    if "False" in b_bathy_use_banks or b_bathy_use_banks == '':
+    elif "False" in b_bathy_use_banks or b_bathy_use_banks == '':
         b_bathy_use_banks = False
 
     # Find the path to the output bathymetry file
