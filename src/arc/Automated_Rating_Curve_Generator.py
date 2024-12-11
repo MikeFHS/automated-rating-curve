@@ -2506,7 +2506,13 @@ def main(MIF_Name: str, quiet: bool):
     da_total_wse = np.zeros(ep, dtype=float)
 
     # Create output rasters
-    dm_output_bathymetry = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
+    # dm_output_bathymetry = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
+    # Create an array with NaN values instead of zeros
+    dm_output_bathymetry = np.full(
+        (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), 
+        np.nan, 
+        dtype=np.float32  # Optional: Specify dtype if needed
+    )
     
     # This is used for debugging purposes with stream and cross-section angles.
     #dm_output_streamangles = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
@@ -3055,8 +3061,11 @@ def main(MIF_Name: str, quiet: bool):
     o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
     # Remove rows with NaN values
     o_out_file_df = o_out_file_df.dropna()
-    # Remove rows where any column has a negative value
-    o_out_file_df = o_out_file_df[~(o_out_file_df.lt(0).any(axis=1))]
+    # # Remove rows where any column has a negative value except wse or elevation
+    # Select columns NOT starting with 'wse' or 'Elev'
+    cols_to_check = [col for col in o_out_file_df.columns if not (col.startswith('wse') or col.startswith('Elev'))]
+    # Remove rows where any of the selected columns have a negative value
+    o_out_file_df = o_out_file_df.loc[~(o_out_file_df[cols_to_check] < 0).any(axis=1)]
     o_out_file_df.to_csv(s_output_vdt_database, index=False)
     LOG.info('Finished writing ' + str(s_output_vdt_database))
     
@@ -3077,8 +3086,8 @@ def main(MIF_Name: str, quiet: bool):
         o_curve_file_df = pd.DataFrame(o_curve_file_dict)
         # Remove rows with NaN values
         o_curve_file_df = o_curve_file_df.dropna()
-        # Remove rows where any column has a negative value
-        o_curve_file_df = o_curve_file_df[~(o_curve_file_df.lt(0).any(axis=1))]
+        # # Remove rows where any column has negative a coefficient value
+        o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
         o_curve_file_df.to_csv(s_output_curve_file, index=False)
         LOG.info('Finished writing ' + str(s_output_curve_file))
     
