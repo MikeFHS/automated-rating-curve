@@ -1707,14 +1707,14 @@ def find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, 
         d_width_to_depth_ratio = d_new_width_to_depth_ratio
 
     if d_depth < 25:
-        i_bank_index1 = int(T1 / d_distance_z)
-        i_bank_index2 = int(T2 / d_distance_z)
+        i_bank_1_index = int(T1 / d_distance_z)
+        i_bank_2_index = int(T2 / d_distance_z)
     # if we have made it to 25 on d_depth, something is wrong and the banks will be set at the stream cell
     elif d_depth >= 25:
-        i_bank_index1 = 0
-        i_bank_index2 = 0
+        i_bank_1_index = 0
+        i_bank_2_index = 0
 
-    return (i_bank_index1, i_bank_index2)
+    return (i_bank_1_index, i_bank_2_index)
 
 def find_bank_inflection_point(da_xs_profile: np.ndarray, i_cross_section_number: int, d_distance_z: float, window_length: int = 11, polyorder: int = 3):
     """
@@ -1794,20 +1794,20 @@ def Calculate_BankFull_Elevation(i_entry_cell: int, num_increments: int, d_dista
     
     # if the stream cell isn't in a LC cell with water use the width-depth ratio calculation to find the banks
     if xs1_n>=1 and xs2_n>=1 and ia_lc_xs1[0]!=i_lc_water_value:
-        (i_bank_index1, i_bank_index2) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+        (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                                                               ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-        bank_elev_1 = da_xs_profile1[i_bank_index1]
-        bank_elev_2 = da_xs_profile2[i_bank_index2]
+        bank_elev_1 = da_xs_profile1[i_bank_1_index]
+        bank_elev_2 = da_xs_profile2[i_bank_2_index]
     
     # if the stream cell isn't in a LC cell with water and the width-depth ratio calculation doesn't succeed, try using the bank inflection point
     # if this doesn't succeed then the bank elevations are set at the value of the terrain at the stream cell (i.e., da_xs_profile1[0])
     elif xs1_n>=1 and xs2_n>=1 and ia_lc_xs1[0]!=i_lc_water_value:
-        if i_bank_index1 == 0:
+        if i_bank_1_index == 0:
             i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
-            bank_elev_1 = da_xs_profile1[i_bank_index1]
-        elif i_bank_index2 == 0:
+            bank_elev_1 = da_xs_profile1[i_bank_1_index]
+        elif i_bank_2_index == 0:
             i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
-            bank_elev_2 = da_xs_profile2[i_bank_index2]
+            bank_elev_2 = da_xs_profile2[i_bank_2_index]
         else:
             pass
 
@@ -2180,6 +2180,7 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_p
 def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
                                                        dm_manning_n_raster, i_lc_water_value, dm_elevation):
+    
     # set the function used to none before we start running things
     function_used = None
     
@@ -2189,6 +2190,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
     bank_elev_1 = da_xs_profile1[0]
     bank_elev_2 = da_xs_profile2[0]
     d_y_depth = 0.0
+
     # Use land cover data to find the banks of the stream
     if xs1_n >= 1 and ia_lc_xs1[0] == i_lc_water_value:
         bank_elev_1 = da_xs_profile1[0]
@@ -2217,10 +2219,10 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
     
     # Use width-depth ratio calculation to find banks if land cover didn't work
     if i_total_bank_cells <= 1:
-        (i_bank_index1, i_bank_index2) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+        (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                                                               ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-        bank_elev_1 = da_xs_profile1[i_bank_index1]
-        bank_elev_2 = da_xs_profile2[i_bank_index2]
+        bank_elev_1 = da_xs_profile1[i_bank_1_index]
+        bank_elev_2 = da_xs_profile2[i_bank_2_index]
         # If we don't have any banks, we may need to try another approach to find the banks
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells <= 1:
@@ -2254,9 +2256,10 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
         d_bankfull_elevation = bank_elev_2
     else:
         d_bankfull_elevation = da_xs_profile1[0]
-    # Outlier detection using Local Outlier Factor (LOF)
 
+    # Now let's estimate the depth of the bathymetry and re-run if we need to
     if d_q_baseflow > 0.0 and function_used != None:
+        
         # Calculate the trapezoid dimensions
         # Get the sides between the bank elevation and the next index up
         try:
@@ -2285,10 +2288,10 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         # print(f"depth 1 = {d_y_depth} m")
         # if the estimated depth is an outlier, let's try one of the other approaches to bathymetry estimation 
-        if d_y_depth >= 50 and function_used == "find_wse_and_banks_by_lc":  # If depth is classified as an outlier
+        if d_y_depth >= 25  and function_used == "find_wse_and_banks_by_lc":  # If depth is classified as an outlier
             
             # Recalculate using width-to-depth ratio if depth is an outlier
-            (i_bank_index1, i_bank_index2) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+            (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                                                                   ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
             
             # If we don't have any banks, we may need to try another approach to find the banks
@@ -2301,8 +2304,8 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 # print(f"4. Total banks cells = {i_total_bank_cells}")
             
             # find the elevation of the banks
-            bank_elev_1 = da_xs_profile1[i_bank_index1]
-            bank_elev_2 = da_xs_profile2[i_bank_index2]
+            bank_elev_1 = da_xs_profile1[i_bank_1_index]
+            bank_elev_2 = da_xs_profile2[i_bank_2_index]
             
             # Calculate bankfull elevation
             if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
@@ -2342,7 +2345,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
             d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
             # print(f"depth 2 = {d_y_depth} m")
             # If depth is still an outlier, try using the inflection point method
-            if d_y_depth >= 50:
+            if d_y_depth >= 25:
                 i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
                 bank_elev_1 = da_xs_profile1[i_bank_1_index]
                 i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
@@ -2392,7 +2395,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
                 # print(f"depth 2 = {d_y_depth} m")
                 # If depth is still an outlier, we give up
-                if d_y_depth >= 50 or i_total_bank_cells <= 1:
+                if d_y_depth >= 25 or i_total_bank_cells <= 1:
                     d_y_depth = 0
                     d_y_bathy = da_xs_profile1[0]
                     i_bank_1_index = 0
@@ -2401,7 +2404,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                     # print(f"depth 3 = {d_y_depth} m")
 
         # If depth is still an outlier, try using the inflection point method
-        elif d_y_depth >= 50 and function_used == "find_bank_using_width_to_depth_ratio":
+        elif d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
             i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
             bank_elev_1 = da_xs_profile1[i_bank_1_index]
             i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
@@ -2451,7 +2454,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
             d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
             # print(f"depth 2 = {d_y_depth} m")
             # If depth is still an outlier, we give up
-            if d_y_depth >= 50 or i_total_bank_cells <= 1:
+            if d_y_depth >= 25 or i_total_bank_cells <= 1:
                 d_y_depth = 0
                 d_y_bathy = da_xs_profile1[0]
                 i_bank_1_index = 0
@@ -2460,7 +2463,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 # print(f"depth 3 = {d_y_depth} m")
                 
         # If depth is still an outlier after using the inflection point method, we give up
-        elif d_y_depth >= 50 and function_used == "find_bank_inflection_point":
+        elif d_y_depth >= 25 and function_used == "find_bank_inflection_point":
             d_y_depth = 0
             d_y_bathy = da_xs_profile1[0]
             i_bank_1_index = 0
