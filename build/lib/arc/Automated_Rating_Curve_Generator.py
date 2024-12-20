@@ -2256,12 +2256,8 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
         d_bankfull_elevation = bank_elev_2
     else:
         d_bankfull_elevation = da_xs_profile1[0]
-    # Outlier detection using Local Outlier Factor (LOF)
-    if function_used is None:
-        print("None of the functions worked")
-    else:
-        pass
 
+    # Now let's estimate the depth of the bathymetry and re-run if we need to
     if d_q_baseflow > 0.0 and function_used != None:
         
         # Calculate the trapezoid dimensions
