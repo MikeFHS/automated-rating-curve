@@ -13,12 +13,22 @@ dependencies = [
   "gdal",
   "tqdm",
   "scipy",
+  "geopandas",
+  "networkx",
+  "shapely",
+  "geojson"
 ]
 requires-python = ">= 3.10"
 authors = [
+    {name = "Mike Follum", email = "mike@follumhydro.com"},
+    {name = "Joseph Gutenson", email = "joseph@follumhydro.com"},
+    {name = "Drew Loney", email = "drew@follumhydro.com"},
     {name = "Louis 'Ricky' Rosas", email = "lrr43@byu.edu"},
 ]
 maintainers = [
+    {name = "Mike Follum", email = "mike@follumhydro.com"},
+    {name = "Joseph Gutenson", email = "joseph@follumhydro.com"},
+    {name = "Drew Loney", email = "drew@follumhydro.com"},
     {name = "Louis 'Ricky' Rosas", email = "lrr43@byu.edu"},
 ]
 license = { text = "BSD-3-Clause" }
@@ -35,3 +45,4 @@ classifiers = [
 
 [project.scripts]
 arc = "arc.arc:_main"
+run-curve-to-geojson = "arc.Curves_To_GeoJSON:main"

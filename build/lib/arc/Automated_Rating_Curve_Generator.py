@@ -523,13 +523,14 @@ def read_main_input_file(s_mif_name: str):
     if i_lc_water_value =='': 
         #Value is defaulted to the water value in the ESA land cover dataset
         i_lc_water_value = 80
-       
-    global b_FindBanksBasedOnFlatWater
-    b_FindBanksBasedOnFlatWater = get_parameter_name(sl_lines, i_number_of_lines, 'FindBanksBasedOnFlatWater')
-    if "True" in b_FindBanksBasedOnFlatWater:
-        b_FindBanksBasedOnFlatWater = True
-    elif "False" in b_FindBanksBasedOnFlatWater or b_FindBanksBasedOnFlatWater == '':
-        b_FindBanksBasedOnFlatWater = False
+    
+    #Default is to find the banks of the river based on flat water in the DEM.  However, you can also find the banks using the water surface (please also set i_lc_water_value)
+    global b_FindBanksBasedOnLandCover
+    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines, i_number_of_lines, 'FindBanksBasedOnLandCover')
+    if "True" in b_FindBanksBasedOnLandCover:
+        b_FindBanksBasedOnLandCover = True
+    elif "False" in b_FindBanksBasedOnLandCover or b_FindBanksBasedOnLandCover == '':
+        b_FindBanksBasedOnLandCover = False
 
 def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float):
     """
@@ -2057,7 +2058,7 @@ def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2
 
 def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
                                                            ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value,
-                                                           dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnFlatWater):
+                                                           dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover):
     """
     Calculate bathymetry based on water surface elevations.
     """
@@ -2068,11 +2069,14 @@ def Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_p
     d_wse_from_dem = da_xs_profile1[0]
     
     #First find the bank information
-    if b_FindBanksBasedOnFlatWater==True:
+    if b_FindBanksBasedOnLandCover==True:
+        #This finds the banks of the river using land cover data.
+        #In the Main Input File must set "FindBanksBasedOnLandCover" and "LC_Water_Value"
+        (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
+    else:
+        #Default is to determine bank locations based on the flat water within the DEM
         i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
         i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
-    else:
-        (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
     i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
 
     # Cycle through methods if i_total_bank_cells < 1 and d_y_depth >= 100
@@ -2898,11 +2902,12 @@ def main(MIF_Name: str, quiet: bool):
             continue
         
         #BATHYMETRY CALCULATION
-        #This method calculates bathymetry based on the water surface elevation, if you want it to.
-        if b_bathy_use_banks is False and s_output_bathymetry_path != '':  
+        #This method calculates bathymetry based on the water surface elevation or LandCover ("FindBanksBasedOnLandCover" and "LC_Water_Value").
+        if b_bathy_use_banks is False and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_Water_Surface_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
                                                                                                                                                 ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value,
-                                                                                                                                                dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnFlatWater)
+                                                                                                                                                dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover)
+        #This method calculates the banks based on the Riverbank
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
                                                                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation)

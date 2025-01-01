@@ -1,4 +1,5 @@
 # built-in imports
+import argparse
 import os, sys
 import json
 from io import StringIO
@@ -227,6 +228,17 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     -------
     None
     """
+    print(CurveParam_File)
+    print(COMID_Q_File)
+    print(STRM_Raster_File)
+    print(OutGeoJSON_File)
+    print(OutProjection)
+    print(StrmShp)
+    print(Stream_ID_Field)
+    print(Downstream_ID_Field)
+    print(SEED_Output_File)
+    print(Thin_Output)
+
     if COMID_Q_File is not None:
         # Read the streamflow data into pandas
         comid_q_df = pd.read_csv(COMID_Q_File)
@@ -781,19 +793,59 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
 
     return
 
+def main():
+    parser = argparse.ArgumentParser(description="Generate GeoJSON from rating curves and stream vector data.")
+    parser.add_argument("--curve_param_file", type=str, required=True, help="Path to ARC curve parameter file (CSV).")
+    parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to stream raster file (TIFF).")
+    parser.add_argument("--out_geojson_file", type=str, required=True, help="Output GeoJSON file path.")
+    parser.add_argument("--out_projection", type=str, required=True, help="Output projection (e.g., EPSG:4269).")
+    parser.add_argument("--thin_geojson", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
+    parser.add_argument("--strm_shp", type=str, required=True, help="Path to stream shapefile.")
+    parser.add_argument("--stream_id_field", type=str, required=True, help="Field in shapefile with unique stream identifiers.")
+    parser.add_argument("--downstream_id_field", type=str, required=True, help="Field in shapefile with downstream identifiers.")
+    parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations shapefile.")
+    parser.add_argument("--thin_output", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
+    parser.add_argument("--comid_q_file", type=str, required=True, help="Path to file with streamflow estimates (CSV).")
 
+    args = parser.parse_args()
+
+    # Call the main function with parsed arguments
+    Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(
+        CurveParam_File=args.curve_param_file,
+        STRM_Raster_File=args.strm_raster_file,
+        OutGeoJSON_File=args.out_geojson_file,
+        OutProjection=args.out_projection,
+        StrmShp=args.strm_shp,
+        Stream_ID_Field=args.stream_id_field,
+        Downstream_ID_Field=args.downstream_id_field,
+        SEED_Output_File=args.seed_output_file,
+        Thin_Output=args.thin_output,
+        COMID_Q_File=args.comid_q_file,
+    )
+
+    # Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, 
+    #                                                 STRM_Raster_File, 
+    #                                                 OutGeoJSON_File, 
+    #                                                 OutProjection, 
+    #                                                 StrmShp, 
+    #                                                 Stream_ID_Field, 
+    #                                                 Downstream_ID_Field, 
+    #                                                 SEED_Output_File, 
+    #                                                 Thin_Output=True, 
+    #                                                 COMID_Q_File=None, 
+    #                                                 comid_q_df=None):
+
+    # Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, 
+    #                                                 COMID_Q_File, 
+    #                                                 STRM_Raster_File, 
+    #                                                 OutGeoJSON_File, 
+    #                                                 OutProjection, 
+    #                                                 StrmShp, 
+    #                                                 Stream_ID_Field, 
+    #                                                 Downstream_ID_Field, 
+    #                                                 SEED_Output_File, 
+    #                                                 Thin_Output)
 
 if __name__ == "__main__":
     
-
-    CurveParam_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\VDT\Yellowstone_HWM_area_DEM_CurveFile_Bathy.csv"
-    STRM_Raster_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\STRM\Yellowstone_HWM_area_DEM_STRM_Raster_Clean.tif"
-    OutGeoJSON_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\FIST\Yellowstone_HWM_area_DEM_202206Flood.geojson"
-    OutProjection = "EPSG:4269"
-    StrmShp = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\STRM\Yellowstone_HWM_area_DEM_StrmShp.shp"
-    Stream_ID_Field = "LINKNO"
-    Downstream_ID_Field = "DSLINKNO"
-    SEED_Output_File = r"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Global_Forecast\FIST\Yellowstone_HWM_area_DEM_Seed.shp"
-    Thin_Output=True 
-    COMID_Q_File = r"C:\Users\jlgut\OneDrive\Desktop\2022_Yellowstone_Flood\Yellowstone_flood_2022_max_streamflow_estimate_no_geoglows.csv"
-    Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, COMID_Q_File=COMID_Q_File)
+    main()
