@@ -45,4 +45,5 @@ classifiers = [
 
 [project.scripts]
 arc = "arc.arc:_main"
-run-curve-to-geojson = "arc.Curves_To_GeoJSON:main"
+curve-to-geojson-stream-vector = "arc.Curves_To_GeoJSON:main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector"
+write-seed-stream-raster = "arc.Curves_To_GeoJSON:main_write_seed"

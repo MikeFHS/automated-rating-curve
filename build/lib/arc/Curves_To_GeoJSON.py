@@ -403,7 +403,7 @@ def Thin_Curve_data(curve_data_gdf):
 
     return (curve_data_gdf)
 
-def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File):
+def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_File, SEED_Point_File):
     """
     Uses the stream raster and digital elevation model (DEM) raster to define the potential SEED points or the uppermost headwaters of an ARC domain.
 
@@ -434,7 +434,7 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File):
         A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
     """
     print('\nReading Data from Raster: ' + STRM_Raster_File)
-    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat) = Read_Raster_GDAL(STRM_Raster_File)
+    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection) = Read_Raster_GDAL(STRM_Raster_File)
     dx = abs(xll-xur) / (ncols)
     dy = abs(yll-yur) / (nrows)
     print(str(dx) + '  ' + str(dy) + '  ' + str(cellsize))
@@ -453,7 +453,7 @@ def Write_SEED_Data_To_File(STRM_Raster_File, DEM_Raster_File, SEED_Point_File):
     S = None
     
     print('\nReading Data from Raster: ' + DEM_Raster_File)
-    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat) = Read_Raster_GDAL(DEM_Raster_File)
+    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, geotransform, Rast_Projection) = Read_Raster_GDAL(DEM_Raster_File)
     #E = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the STRM Raster Array
     #E[1:(nrows+1), 1:(ncols+1)] = DEM
     #E = E.astype(float)
@@ -789,11 +789,26 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     curve_data_gdf = FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, OutProjection)
 
     # output the GeoJSON file
-    Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf, Thin_GeoJSON)
+    Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
 
     return
 
-def main():
+def main_write_seed():
+    parser = argparse.ArgumentParser(description="Write SEED data to a file using stream and DEM raster files.")
+    parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to the stream raster file (TIFF).")
+    parser.add_argument("--dem_raster_file", type=str, required=True, help="Path to the DEM raster file (TIFF).")
+    parser.add_argument("--seed_point_file", type=str, required=True, help="Path to the output SEED points file.")
+
+    args = parser.parse_args()
+
+    # Call the Write_SEED_Data_To_File function with parsed arguments
+    Write_SEED_Data_To_File_Using_Stream_Raster(
+        STRM_Raster_File=args.strm_raster_file,
+        DEM_Raster_File=args.dem_raster_file,
+        SEED_Point_File=args.seed_point_file
+    )
+
+def main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector():
     parser = argparse.ArgumentParser(description="Generate GeoJSON from rating curves and stream vector data.")
     parser.add_argument("--curve_param_file", type=str, required=True, help="Path to ARC curve parameter file (CSV).")
     parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to stream raster file (TIFF).")
@@ -823,29 +838,48 @@ def main():
         COMID_Q_File=args.comid_q_file,
     )
 
-    # Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, 
-    #                                                 STRM_Raster_File, 
-    #                                                 OutGeoJSON_File, 
-    #                                                 OutProjection, 
-    #                                                 StrmShp, 
-    #                                                 Stream_ID_Field, 
-    #                                                 Downstream_ID_Field, 
-    #                                                 SEED_Output_File, 
-    #                                                 Thin_Output=True, 
-    #                                                 COMID_Q_File=None, 
-    #                                                 comid_q_df=None):
-
-    # Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, 
-    #                                                 COMID_Q_File, 
-    #                                                 STRM_Raster_File, 
-    #                                                 OutGeoJSON_File, 
-    #                                                 OutProjection, 
-    #                                                 StrmShp, 
-    #                                                 Stream_ID_Field, 
-    #                                                 Downstream_ID_Field, 
-    #                                                 SEED_Output_File, 
-    #                                                 Thin_Output)
-
+# Add this to make both functions callable
 if __name__ == "__main__":
-    
-    main()
+    parser = argparse.ArgumentParser(description="ARC Utilities")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Subparser for Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
+    curve_to_geojson_parser = subparsers.add_parser("curve-to-geojson-stream-vector", help="Run curve to GeoJSON program")
+    curve_to_geojson_parser.add_argument("--curve_param_file", type=str, required=True, help="Path to ARC curve parameter file (CSV).")
+    curve_to_geojson_parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to stream raster file (TIFF).")
+    curve_to_geojson_parser.add_argument("--out_geojson_file", type=str, required=True, help="Output GeoJSON file path.")
+    curve_to_geojson_parser.add_argument("--out_projection", type=str, required=True, help="Output projection (e.g., EPSG:4269).")
+    curve_to_geojson_parser.add_argument("--strm_shp", type=str, required=True, help="Path to stream shapefile.")
+    curve_to_geojson_parser.add_argument("--stream_id_field", type=str, required=True, help="Field in shapefile with unique stream identifiers.")
+    curve_to_geojson_parser.add_argument("--downstream_id_field", type=str, required=True, help="Field in shapefile with downstream identifiers.")
+    curve_to_geojson_parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations shapefile.")
+    curve_to_geojson_parser.add_argument("--thin_output", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
+    curve_to_geojson_parser.add_argument("--comid_q_file", type=str, help="Path to file with streamflow estimates (optional).")
+
+    # Subparser for Write_SEED_Data_To_File
+    write_seed_parser = subparsers.add_parser("write-seed-stream-raster", help="Write SEED data to a file")
+    write_seed_parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to the stream raster file (TIFF).")
+    write_seed_parser.add_argument("--dem_raster_file", type=str, required=True, help="Path to the DEM raster file (TIFF).")
+    write_seed_parser.add_argument("--seed_point_file", type=str, required=True, help="Path to the output SEED points file.")
+
+    args = parser.parse_args()
+
+    if args.command == "curve-to-geojson-stream-vector":
+        Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(
+            CurveParam_File=args.curve_param_file,
+            STRM_Raster_File=args.strm_raster_file,
+            OutGeoJSON_File=args.out_geojson_file,
+            OutProjection=args.out_projection,
+            StrmShp=args.strm_shp,
+            Stream_ID_Field=args.stream_id_field,
+            Downstream_ID_Field=args.downstream_id_field,
+            SEED_Output_File=args.seed_output_file,
+            Thin_Output=args.thin_output,
+            COMID_Q_File=args.comid_q_file,
+        )
+    elif args.command == "write-seed-stream-raster":
+        Write_SEED_Data_To_File_Using_Stream_Raster(
+            STRM_Raster_File=args.strm_raster_file,
+            DEM_Raster_File=args.dem_raster_file,
+            SEED_Point_File=args.seed_point_file
+        )
