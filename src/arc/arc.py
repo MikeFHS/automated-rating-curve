@@ -70,7 +70,6 @@ class Arc():
             return
 
         Curve2Flood_MainFunction(dem_file, strm_file, '', flow_file, curve_file, vdt_database, flood_map, flood_impact_file, q_fraction, 200, tw_factor, flood_local, 0.1, '', ar_bathy_file, fs_bathy_file, self.quiet)
-
         
     def set_log_level(self, log_level: str):
         handler = LOG.handlers[0]

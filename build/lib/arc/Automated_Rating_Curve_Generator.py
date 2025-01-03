@@ -523,7 +523,6 @@ def read_main_input_file(s_mif_name: str):
     if i_lc_water_value =='': 
         #Value is defaulted to the water value in the ESA land cover dataset
         i_lc_water_value = 80
-    
 
     # These are the number of increments of water surface elevation that we will use to construct the VDT database and the curve file
     global i_number_of_increments
