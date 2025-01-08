@@ -3418,6 +3418,9 @@ def main(MIF_Name: str, quiet: bool):
         # Merge the regression_df into reach_average_curvefile_df based on COMID
         reach_average_curvefile_df = reach_average_curvefile_df.merge(regression_df, on="COMID", how="left")
 
+        # Drop all rows with any NaN values
+        reach_average_curvefile_df = reach_average_curvefile_df.dropna()
+
         # Write the output file
         reach_average_curvefile_df.to_csv(s_output_curve_file, index=False)
         LOG.info('Finished writing ' + str(s_output_curve_file))
