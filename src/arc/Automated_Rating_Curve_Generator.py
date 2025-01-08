@@ -523,7 +523,6 @@ def read_main_input_file(s_mif_name: str):
     if i_lc_water_value =='': 
         #Value is defaulted to the water value in the ESA land cover dataset
         i_lc_water_value = 80
-    
 
     # These are the number of increments of water surface elevation that we will use to construct the VDT database and the curve file
     global i_number_of_increments
@@ -539,6 +538,14 @@ def read_main_input_file(s_mif_name: str):
         b_FindBanksBasedOnLandCover = True
     elif "False" in b_FindBanksBasedOnLandCover or b_FindBanksBasedOnLandCover == '':
         b_FindBanksBasedOnLandCover = False
+    
+    # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
+    global b_reach_average_curve_file
+    b_reach_average_curve_file = get_parameter_name(sl_lines, i_number_of_lines, 'Reach_Average_Curve_File')
+    if "True" in b_reach_average_curve_file:
+        b_reach_average_curve_file = True
+    elif "False" in b_reach_average_curve_file or b_reach_average_curve_file == '':
+        b_reach_average_curve_file = False
 
 def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float):
     """
@@ -2721,6 +2728,15 @@ def main(MIF_Name: str, quiet: bool):
     # This is now a model input
     # These are the number of increments of water surface elevation that we will use to construct the VDT database and the 
     #i_number_of_increments = 15
+
+    # Here we will capture a list of all stream cell values that will be used if we build a reach average curve file
+    if len(s_output_curve_file)>0 and b_reach_average_curve_file is True:
+        All_COMID_curve_list = []
+        All_Row_curve_list = []
+        All_Col_curve_list = []
+        All_BaseElev_curve_list = []
+        All_DEM_Elev_curve_list = []
+        All_QMax_curve_list = []
     
     # Create the dictionary and lists that will be used to create our VDT database
     o_out_file_dict: dict[str, list] = {}
@@ -2799,7 +2815,8 @@ def main(MIF_Name: str, quiet: bool):
             d_q_baseflow = QBaseFlow[im_flow_index]
             d_q_maximum = QMax[im_flow_index]
         except:
-            continue
+            d_q_baseflow = 0
+            d_q_maximum = 0
     
         # Get the Cross-Section Ordinates
         (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, i_row_cell, 
@@ -2899,9 +2916,18 @@ def main(MIF_Name: str, quiet: bool):
         # Burn bathymetry profile into cross-section profile
         # "Be the banks for your river" - Needtobreathe
                 
-        #If you don't have a cross-section, then just skip this cell.
+        #If you don't have a cross-section, skip it or fill in empty values for the reach average processing
         if xs1_n<=0 and xs2_n<=0:
-            continue
+            if b_reach_average_curve_file is True:
+                All_COMID_curve_list.append(i_cell_comid)
+                All_Row_curve_list.append(i_row_cell)
+                All_Col_curve_list.append(i_column_cell)
+                All_BaseElev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                All_DEM_Elev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                All_QMax_curve_list.append(d_q_maximum)
+                continue
+            else:
+                continue
 
         # pull the landcover data prior to making the streams cells all water 
         xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
@@ -2929,6 +2955,8 @@ def main(MIF_Name: str, quiet: bool):
         i_volume_fill_approach = 1
 
 
+
+
         # Get a list of elevations within the cross-section profile that we need to evaluate
         if i_volume_fill_approach==2:
             da_elevation_list_mm = np.unique(np.concatenate((da_xs_profile1[0:xs1_n] * 1000, da_xs_profile2[0:xs2_n] * 1000)).astype(int))
@@ -2939,11 +2967,29 @@ def main(MIF_Name: str, quiet: bool):
         
             i_number_of_elevations = len(da_elevation_list_mm)
             if i_number_of_elevations <= 0:
-                continue
+                if b_reach_average_curve_file is True:
+                    All_COMID_curve_list.append(i_cell_comid)
+                    All_Row_curve_list.append(i_row_cell)
+                    All_Col_curve_list.append(i_column_cell)
+                    All_BaseElev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                    All_DEM_Elev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                    All_QMax_curve_list.append(d_q_maximum)
+                    continue
+                else:
+                    continue
     
             if i_number_of_elevations >= ep:
                 LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
-                continue
+                if b_reach_average_curve_file is True:
+                    All_COMID_curve_list.append(i_cell_comid)
+                    All_Row_curve_list.append(i_row_cell)
+                    All_Col_curve_list.append(i_column_cell)
+                    All_BaseElev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                    All_DEM_Elev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
+                    All_QMax_curve_list.append(d_q_maximum)
+                    continue
+                else:
+                    continue
         
         # Calculate the volumes
         """
@@ -3033,21 +3079,35 @@ def main(MIF_Name: str, quiet: bool):
 
             #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
             if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
-                continue
+                if b_reach_average_curve_file is True:
+                    All_COMID_curve_list.append(i_cell_comid)
+                    All_Row_curve_list.append(i_row_cell)
+                    All_Col_curve_list.append(i_column_cell)
+                    All_BaseElev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+                    All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+                    All_QMax_curve_list.append(d_q_maximum)
+                    continue
+                else:
+                    continue
             
             # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
             d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
 
             i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum)
-            
+
             #This prevents the way-over simulated cells.  These are outliers.
             if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
-                #print(d_q_baseflow)
-                #print(i_start_elevation_index)
-                #print(da_total_q[i_start_elevation_index+1])
-                i_outprint_yes = 0
-                continue
+                if b_reach_average_curve_file is True:
+                    All_COMID_curve_list.append(i_cell_comid)
+                    All_Row_curve_list.append(i_row_cell)
+                    All_Col_curve_list.append(i_column_cell)
+                    All_BaseElev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+                    All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+                    All_QMax_curve_list.append(d_q_maximum)
+                    continue
+                else:
+                    continue
 
             if d_q_baseflow>0.001 and da_total_q[i_start_elevation_index+1] >= d_q_baseflow:
                 da_total_q[i_start_elevation_index+1] = d_q_baseflow-0.001
@@ -3169,6 +3229,19 @@ def main(MIF_Name: str, quiet: bool):
             
             if i_number_of_elevations > 0:
                 i_outprint_yes = 1
+        
+        # Gather up all the values for the stream cell if we are going to build a reach average curve file
+        if b_reach_average_curve_file is True:
+            All_COMID_curve_list.append(int(i_cell_comid))
+            All_Row_curve_list.append(int(i_row_cell - i_boundary_number))
+            All_Col_curve_list.append(int(i_column_cell - i_boundary_number))
+            if b_modified_dem is True:
+                All_BaseElev_curve_list.append(round(da_xs_profile1[0], 3)-100)
+                All_DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3)-100)
+            elif b_modified_dem is False:
+                All_BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
+                All_DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
+                All_QMax_curve_list.append(round(da_total_q[i_last_elevation_index], 3))
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
@@ -3227,33 +3300,151 @@ def main(MIF_Name: str, quiet: bool):
     o_out_file_df = o_out_file_df.dropna()
     # # Remove rows where any column has a negative value except wse or elevation
     # Select columns NOT starting with 'wse' or 'Elev'
-    cols_to_check = [col for col in o_out_file_df.columns if not (col.startswith('wse') or col.startswith('Elev'))]
+    cols_to_check = [col for col in o_out_file_df.columns if not (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
     # Remove rows where any of the selected columns have a negative value
     o_out_file_df = o_out_file_df.loc[~(o_out_file_df[cols_to_check] < 0).any(axis=1)]
     o_out_file_df.to_csv(s_output_vdt_database, index=False)
     LOG.info('Finished writing ' + str(s_output_vdt_database))
-    
-    # Write the output Curve file
-    if len(s_output_curve_file)>0:
-        o_curve_file_dict = {'COMID': COMID_curve_list,
-                             'Row': Row_curve_list,
-                             'Col': Col_curve_list,
-                             'BaseElev': BaseElev_curve_list,
-                             'DEM_Elev': DEM_Elev_curve_list,
-                             'QMax': QMax_curve_list,
-                             'depth_a': depth_a_curve_list,
-                             'depth_b': depth_b_curve_list,
-                             'tw_a': tw_a_curve_list,
-                             'tw_b': tw_b_curve_list,
-                             'vel_a': vel_a_curve_list,
-                             'vel_b': vel_b_curve_list,}
-        o_curve_file_df = pd.DataFrame(o_curve_file_dict)
-        # Remove rows with NaN values
-        o_curve_file_df = o_curve_file_df.dropna()
-        # # Remove rows where any column has negative a coefficient value
-        o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
-        o_curve_file_df.to_csv(s_output_curve_file, index=False)
+
+    # Here we'll generate reach-based coefficients for all stream cells, if the flag is triggered
+    if b_reach_average_curve_file is True:
+        # Creating a dictionary to map column names to the lists
+        data = {
+            "COMID": All_COMID_curve_list,
+            "Row": All_Row_curve_list,
+            "Col": All_Col_curve_list,
+            "BaseElev":  [round(num, 3) for num in All_BaseElev_curve_list],
+            "DEM_Elev": [round(num, 3) for num in All_DEM_Elev_curve_list],
+            "QMax": All_QMax_curve_list,
+        }
+
+        # Creating the DataFrame
+        reach_average_curvefile_df = pd.DataFrame(data)
+
+        # Dynamically select columns, starting with prefixes
+        q_prefixes = [col for col in o_out_file_df.columns if col.startswith("q_")]
+        t_prefixes = [col for col in o_out_file_df.columns if col.startswith("t_")]
+        v_prefixes = [col for col in o_out_file_df.columns if col.startswith("v_")]
+        wse_prefixes = [col for col in o_out_file_df.columns if col.startswith("wse_")]
+
+        # Initialize lists to store regression coefficients
+        comid_list = []
+        d_t_a_list, d_t_b_list = [], []
+        d_v_a_list, d_v_b_list = [], []
+        d_d_a_list, d_d_b_list = [], []
+
+        # Extract all unique COMID values
+        unique_comids = o_out_file_df["COMID"].unique()
+
+        # Process each unique COMID
+        for comid in unique_comids:
+            group = o_out_file_df[o_out_file_df["COMID"] == comid]
+            
+            # Create a MultiIndex from the current group's Row and Col for precise matching
+            group_index = pd.MultiIndex.from_arrays([group["Row"].values, group["Col"].values], names=["Row", "Col"])
+
+            # Filter reach_average_curvefile_df using COMID and matching Row-Col pairs
+            matching_reach = reach_average_curvefile_df[
+                (reach_average_curvefile_df["COMID"] == comid) &
+                (pd.MultiIndex.from_frame(reach_average_curvefile_df[["Row", "Col"]]).isin(group_index))
+            ]
+
+            matching_reach = matching_reach.drop_duplicates(subset=["Row", "Col", "COMID"])
+
+            if matching_reach.empty:
+                LOG.warning(f"No matching BaseElev values found for COMID {comid}. Skipping...")
+                continue
+
+            # Get the BaseElev values for subtraction
+            base_elev_values = matching_reach.set_index(["Row", "Col"])["BaseElev"]
+
+            # Combine WSE_ values and subtract BaseElev
+            depth_combined_values_list = []
+            for prefix in wse_prefixes:
+                # Match rows using Row and Col from the group
+                wse_values = group.set_index(["Row", "Col"])[prefix]
+                depth_values = wse_values - base_elev_values
+                depth_combined_values_list.extend(depth_values.values)
+            d_combined_values = np.array(depth_combined_values_list)
+
+            # Combine Q_ values
+            q_combined_values_list = []
+            for prefix in q_prefixes:
+                q_combined_values_list.extend(group[prefix].values)
+            q_combined_values = np.array(q_combined_values_list)
+
+            # Combine T_ values
+            t_combined_values_list = []
+            for prefix in t_prefixes:
+                t_combined_values_list.extend(group[prefix].values)
+            t_combined_values = np.array(t_combined_values_list)
+
+            # Combine V_ values
+            v_combined_values_list = []
+            for prefix in v_prefixes:
+                v_combined_values_list.extend(group[prefix].values)
+            v_combined_values = np.array(v_combined_values_list)
+
+            # Calculate regression coefficients
+            try:
+                (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(q_combined_values, t_combined_values, [12, 0.3])
+                (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(q_combined_values, v_combined_values, [1, 0.3])
+                (d_d_a, d_d_b, d_d_R2) = linear_regression_power_function(q_combined_values, d_combined_values, [0.2, 0.5])
+            except Exception as e:
+                # Handle cases where regression fails (e.g., insufficient data)
+                LOG.warning(f"Regression failed for COMID {comid}: {e}")
+                d_t_a, d_t_b, d_v_a, d_v_b, d_d_a, d_d_b = np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+
+            # Append results to lists
+            comid_list.append(comid)
+            d_t_a_list.append(round(d_t_a, 3) if not np.isnan(d_t_a) else np.nan)
+            d_t_b_list.append(round(d_t_b, 3) if not np.isnan(d_t_b) else np.nan)
+            d_v_a_list.append(round(d_v_a, 3) if not np.isnan(d_v_a) else np.nan)
+            d_v_b_list.append(round(d_v_b, 3) if not np.isnan(d_v_b) else np.nan)
+            d_d_a_list.append(round(d_d_a, 3) if not np.isnan(d_d_a) else np.nan)
+            d_d_b_list.append(round(d_d_b, 3) if not np.isnan(d_d_b) else np.nan)
+
+        # Create a DataFrame with regression coefficients
+        regression_df = pd.DataFrame({
+            "COMID": comid_list,
+            "depth_a": d_d_a_list,
+            "depth_b": d_d_b_list,
+            "tw_a": d_t_a_list,
+            "tw_b": d_t_b_list,
+            "vel_a": d_v_a_list,
+            "vel_b": d_v_b_list,
+        })
+
+        # Merge the regression_df into reach_average_curvefile_df based on COMID
+        reach_average_curvefile_df = reach_average_curvefile_df.merge(regression_df, on="COMID", how="left")
+
+        # Write the output file
+        reach_average_curvefile_df.to_csv(s_output_curve_file, index=False)
         LOG.info('Finished writing ' + str(s_output_curve_file))
+
+    else:
+    
+        # Write the output Curve file
+        if len(s_output_curve_file)>0:
+            o_curve_file_dict = {'COMID': COMID_curve_list,
+                                'Row': Row_curve_list,
+                                'Col': Col_curve_list,
+                                'BaseElev': BaseElev_curve_list,
+                                'DEM_Elev': DEM_Elev_curve_list,
+                                'QMax': QMax_curve_list,
+                                'depth_a': depth_a_curve_list,
+                                'depth_b': depth_b_curve_list,
+                                'tw_a': tw_a_curve_list,
+                                'tw_b': tw_b_curve_list,
+                                'vel_a': vel_a_curve_list,
+                                'vel_b': vel_b_curve_list,}
+            o_curve_file_df = pd.DataFrame(o_curve_file_dict)
+            # Remove rows with NaN values
+            o_curve_file_df = o_curve_file_df.dropna()
+            # # Remove rows where any column has negative a coefficient value
+            o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
+            o_curve_file_df.to_csv(s_output_curve_file, index=False)
+            LOG.info('Finished writing ' + str(s_output_curve_file))
     
     
     
