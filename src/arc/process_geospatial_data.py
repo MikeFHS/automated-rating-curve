@@ -12,6 +12,15 @@ import numpy as np
 import netCDF4
 import geopandas as gpd
 
+import fiona
+from shapely.geometry import shape
+from shapely.geometry import Point, LineString, MultiLineString, MultiPoint
+from shapely.ops import transform
+from pyproj import Transformer
+
+from numba import njit
+import json
+
 def Process_AutoRoute_Geospatial_Data_for_testing(test_case, id_field, flow_field, baseflow_field, medium_flow_field, low_flow_field, dem_cleaner, use_clean_dem):
     #Input Dataset
     if use_clean_dem is False:
@@ -828,7 +837,380 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     print('Inputs created. You are now ready to run ARC!')    
     return
 
+def Calculate_Stream_Angles_From_Shapefile_for_each_LineSegment(streams_shapefile, COMID_str, STRM_ANGLE_str, output_angles_txt):
+    # Load the shapefile
+    gdf = gpd.read_file(streams_shapefile)
+
+    # Function to calculate angle between start and end points
+    def calculate_angle_rad(start_point, end_point):
+        x1, y1 = start_point
+        x2, y2 = end_point
+
+        # Compute differences
+        delta_x = x2 - x1
+        delta_y = y2 - y1
+
+        # Compute angle in radians and convert to degrees
+        angle_rad = np.arctan2(delta_y, delta_x)
+        return angle_rad
+
+    # Function to extract start and end points of a LineString or MultiLineString
+    def get_endpoints(geometry):
+        if isinstance(geometry, LineString):
+            coords = list(geometry.coords)
+            return coords[0], coords[-1]  # Start and end points
+        elif isinstance(geometry, MultiLineString):
+            # Get start and end of the first and last LineString in the MultiLineString
+            first_line = geometry.geoms[0]
+            last_line = geometry.geoms[-1]
+            return list(first_line.coords)[0], list(last_line.coords)[-1]
+        else:
+            return None, None  # For non-line geometries
+
+    # Add start and end points to the GeoDataFrame
+    gdf["start_point"], gdf["end_point"] = zip(*gdf.geometry.apply(get_endpoints))
+
+    # Optional: Convert to Point geometries for easy visualization/analysis
+    gdf["start_point_geom"] = gdf["start_point"].apply(lambda x: Point(x) if x else None)
+    gdf["end_point_geom"] = gdf["end_point"].apply(lambda x: Point(x) if x else None)
+
+    # Calculate angles
+    gdf[STRM_ANGLE_str] = gdf.apply(
+        lambda row: calculate_angle_rad(row["start_point"], row["end_point"]) if row["start_point"] and row["end_point"] else None,
+        axis=1,
+    )
+
+    # Save to a new shapefile if needed
+    #output_path = "path/to/output_with_endpoints.shp"
+    #gdf.to_file(output_path)
+
+    # Print the GeoDataFrame with start and end points
+    print(gdf[[COMID_str, "geometry", STRM_ANGLE_str, "start_point", "end_point"]])
+
+    #Print Stream Angles for each stream reach
+    export_df = gdf[[COMID_str, STRM_ANGLE_str]]
+    export_df[COMID_str] = export_df[COMID_str].astype(int)
+    export_df.to_csv(output_angles_txt, sep="\t", index=False, header=True)
+    return
+
+
+
+def Create_GeoJSON_Points(x_values, y_values, z_values, EPSG_number_str, output_file):
+    # Create GeoJSON feature collection with CRS
+    geojson_data = {
+    "type": "FeatureCollection",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": f"urn:ogc:def:crs:EPSG::{EPSG_number_str}"
+        }
+    },
+    "features": []
+    }
+
+    # Populate features
+    for x, y, z in zip(x_values, y_values, z_values):
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [float(x), float(y), float(z)]
+            },
+            "properties": {}  # Add any additional properties here if needed
+        }
+        geojson_data["features"].append(feature)
+    
+    # Write GeoJSON to a file
+    with open(output_file, "w") as f:
+        json.dump(geojson_data, f, indent=2)
+    
+    print(f"GeoJSON file created with CRS EPSG:{EPSG_number_str}: {output_file}")
+
+# This code was a grand idea to find stream angles by using the shapefile.  It never worked well.
+def Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, COMID_str, strm_angle_raster_deg, crs_for_angle_calculation):
+    
+    #Get Coordinate Information from the DEM Raster
+    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, dem_geotransform, dem_projection) = Get_Raster_Details(dem_filename)
+    
+    #Read Stream Raster (and create the Stream Raster if needed)
+    if os.path.exists(strm_raster):
+        print('Opening ' + str(strm_raster))
+    else:
+        print('Creating ' + str(strm_raster))
+        outputBounds = [minx, miny, maxx, maxy]  #https://gdal.org/api/python/osgeo.gdal.html
+        Create_ARC_StrmRaster(streams_shapefile, strm_raster, outputBounds, ncols, nrows, COMID_str)
+    (S, strm_ncols, strm_nrows, strm_cellsize, strm_yll, strm_yur, strm_xll, strm_xur, strm_lat, strm_geotransform, strm_projection) = Read_Raster_GDAL(strm_raster)
+
+    #Create a 2d array for the Angle Values
+    A = np.zeros((nrows,ncols))
+
+    # Find where the stream cells are located
+    indices = np.where(S > 0)
+    num_strm_cells = len(indices[0])
+    print(f"Number of Stream Cells: {num_strm_cells}")
+
+    # Compute X and Y coordinates of the stream cells
+    R = indices[0]
+    C = indices[1]
+    Y = maxy + 0.5 * dy + indices[0] * dy   #Typically for rows I would subtract, but I think dy is negative
+    X = minx + 0.5 * dx + indices[1] * dx
+
+    # Convert to list of tuples
+    points_to_evaluate = list(zip(X, Y))
+
+    # Load the shapefile
+    print(f"Loading {streams_shapefile}")
+    gdf = gpd.read_file(streams_shapefile)
+
+    # Function to find closest above and below vertices
+    def find_closest_above_below_using_hypotnuse(x_use, y_use, VX, VY):
+        distances = (x_use - VX) ** 2 + (y_use - VY) ** 2
+
+        #closest_index = np.argsort(distances)[:2]  # Index of the closest 2 vertices
+        closest_index = np.argpartition(distances, 2)[:2]
+
+        # Compute vector components
+        delta_x = VX[closest_index[0]] - VX[closest_index[1]]
+        delta_y = VY[closest_index[0]] - VY[closest_index[1]]
+
+        # Calculate angle in radians and convert to degrees
+        angle_rad = np.arctan2(delta_y, delta_x)
+        angle_deg = np.degrees(angle_rad)
+        # Normalize angle to [0, 360)
+        return (VX[closest_index[0]],VY[closest_index[0]]), (VX[closest_index[1]],VY[closest_index[1]]), angle_deg % 360
+    
+    # Function to find closest above and below vertices
+    @njit
+    def find_closest_above_below_using_hypotnuse_njit(x_use, y_use, VX, VY, num_angles):
+        """
+        Find the closest points using hypotenuse and calculate the mean angle.
+
+        Args:
+            x_use (float): X coordinate of the reference point.
+            y_use (float): Y coordinate of the reference point.
+            VX (np.ndarray): Array of X coordinates of points.
+            VY (np.ndarray): Array of Y coordinates of points.
+            num_angles (int): Number of closest points to consider.
+
+        Returns:
+            float: Mean angle in degrees.
+        """
+        # Calculate squared distances (avoiding sqrt for efficiency)
+        distances = (x_use - VX) ** 2 + (y_use - VY) ** 2
+
+        # Use np.argpartition to efficiently find the indices of the closest points
+        closest_indices = np.argpartition(distances, num_angles)[:num_angles]
+
+        # Calculate angles for the closest points
+        angles = np.arctan2(VY[closest_indices] - y_use, VX[closest_indices] - x_use)
+
+        # Compute the mean angle using the circular mean
+        mean_angle = np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))
+
+        # Convert mean angle to degrees
+        mean_angle_degrees = np.degrees(mean_angle)
+
+        return mean_angle_degrees
+    
+    @njit
+    def find_closest_above_below_using_hypotnuse_njit_v2(x_use, y_use, VX, VY, num_angles):
+        """
+        Find the closest points using hypotenuse and calculate the mean angle.
+
+        Args:
+            x_use (float): X coordinate of the reference point.
+            y_use (float): Y coordinate of the reference point.
+            VX (np.ndarray): Array of X coordinates of points.
+            VY (np.ndarray): Array of Y coordinates of points.
+            num_angles (int): Number of closest points to consider.
+
+        Returns:
+            float: Mean angle in degrees.
+        """
+        # Calculate squared distances
+        distances = (x_use - VX) ** 2 + (y_use - VY) ** 2
+
+        # Find the indices of the closest points manually
+        closest_indices = np.empty(num_angles, dtype=np.int64)
+        for i in range(num_angles):
+            min_index = np.argmin(distances)  # Find index of the smallest distance
+            closest_indices[i] = min_index
+            distances[min_index] = np.inf  # Exclude this index for the next iteration
+
+        # Calculate angles to the closest points
+        angles = np.empty(num_angles-1, dtype=np.float64)
+        for i in range(1,num_angles):
+            dx = VX[closest_indices[i]] - x_use
+            dy = VY[closest_indices[i]] - y_use
+            angles[i-1] = np.arctan2(dy, dx)
+
+        # Compute the mean angle using circular mean
+        sin_sum = 0.0
+        cos_sum = 0.0
+        for angle in angles:
+            sin_sum += np.sin(angle)
+            cos_sum += np.cos(angle)
+        mean_angle = np.arctan2(sin_sum / num_angles, cos_sum / num_angles)
+
+        # Convert mean angle to degrees
+        mean_angle_degrees = np.degrees(mean_angle)
+
+        return mean_angle_degrees
+
+
+    def extract_vertices_and_nodes(geometry):
+        """
+        Extract all vertex and node coordinates from a Shapely geometry object.
+
+        Args:
+            geometry (shapely.geometry): Geometry object (LineString, Polygon, etc.).
+
+        Returns:
+            tuple: A tuple containing two lists:
+                - vertices: List of (x, y) tuples for all vertices.
+                - nodes: List of (x, y) tuples for start and end points (nodes).
+        """
+        vertices = []
+        nodes = []
+        
+        if geometry.geom_type == "LineString":
+            coords = list(geometry.coords)
+            vertices.extend(coords)
+            nodes.extend([coords[0], coords[-1]])  # Start and end nodes
+        elif geometry.geom_type == "Polygon":
+            coords = list(geometry.exterior.coords)
+            vertices.extend(coords)
+            nodes.extend([coords[0], coords[-1]])  # Start and end nodes of the exterior
+        elif geometry.geom_type in ["MultiLineString", "MultiPolygon"]:
+            for part in geometry.geoms:
+                part_vertices, part_nodes = extract_vertices_and_nodes(part)
+                vertices.extend(part_vertices)
+                nodes.extend(part_nodes)
+        return vertices, nodes
+    
+    current_crs = gdf.crs
+    transformer = Transformer.from_crs(current_crs, crs_for_angle_calculation, always_xy=True)
+
+    # Initialize lists for all vertices and nodes
+    all_vertices = []
+    all_nodes = []
+
+    def reproject_geometry(geometry, transformer):
+        """
+        Reproject a Shapely geometry into the target CRS.
+
+        Args:
+            geometry (shapely.geometry): Geometry to reproject.
+            transformer (pyproj.Transformer): Transformer object for CRS conversion.
+
+        Returns:
+            shapely.geometry: Reprojected geometry.
+        """
+        return transform(transformer.transform, geometry)
+
+    # Open the shapefile using Fiona
+    with fiona.open(streams_shapefile, "r") as src:
+        for feature in src:
+            geometry = shape(feature["geometry"])  # Convert GeoJSON to Shapely geometry
+            if geometry:  # Ensure geometry is valid
+                # Reproject geometry into EPSG:26912
+                #reprojected_geometry = reproject_geometry(geometry, transformer)
+                #vertices, nodes = extract_vertices_and_nodes(reprojected_geometry)
+                vertices, nodes = extract_vertices_and_nodes(geometry)
+                all_vertices.extend(vertices)
+                all_nodes.extend(nodes)
+
+    # Remove duplicate nodes for uniqueness
+    unique_nodes = list(set(all_nodes))
+
+    # Separate x and y coordinates for vertices and nodes
+    vertex_x_coords = [v[0] for v in all_vertices]
+    vertex_y_coords = [v[1] for v in all_vertices]
+    vertex_x_coords_int = [int(round(v[0])) for v in all_vertices]
+    vertex_y_coords_int = [int(round(v[1])) for v in all_vertices]
+
+    node_x_coords = [n[0] for n in unique_nodes]
+    node_y_coords = [n[1] for n in unique_nodes]
+    node_x_coords_int = [int(round(n[0])) for n in unique_nodes]
+    node_y_coords_int = [int(round(n[1])) for n in unique_nodes]
+
+    # List of tuples for vertices
+    vertex_coordinates = list(zip(vertex_x_coords, vertex_y_coords))
+    vertex_coordinates_int = list(zip(vertex_x_coords_int, vertex_y_coords_int))
+
+    # List of tuples for unique nodes
+    node_coordinates = list(zip(node_x_coords, node_y_coords))
+    node_coordinates_int = list(zip(node_x_coords_int, node_y_coords_int))
+
+    #Combine vertex and nodes, remove duplicates
+    combined_coordinates = list(set(vertex_coordinates + node_coordinates))
+    combined_coordinates_int = list(set(vertex_coordinates_int + node_coordinates_int))
+    unique_combined_coordinates = list(set(combined_coordinates))
+    unique_combined_coordinates_int = list(set(combined_coordinates_int))
+
+    print(unique_combined_coordinates_int [:10])
+    VX, VY = np.array(unique_combined_coordinates).T
+
+    '''
+    x_values = []
+    y_values = []
+    z_values = []
+    for i in range(1000):
+        x_use, y_use = transformer.transform(X[i], Y[i])
+        x_values.append(x_use)
+        y_values.append(y_use)
+        z_values.append(i)
+    output_file = r"C:\PROGRAMS_Git\automated_rating_curve_generator\Streampoints.geojson"
+    Create_GeoJSON_Points(x_values, y_values, z_values, '26912', output_file)
+    '''
+
+
+
+    #streams_shapefile
+    # Evaluate each stream cell location against the shapefile vertices
+    print('Vertice number: ' + str(len(VX)))
+    print("Evaluating each stream cell location against the shapefile vertices...")
+
+    num_adjacent_angles_to_evaluate = 5
+
+    for i in range(num_strm_cells):
+        #x_use, y_use = transformer.transform(X[i], Y[i])
+        #below, above, angle1 = find_closest_above_below_using_hypotnuse(x_use, y_use, VX, VY)
+        #below, above, angle = find_closest_above_below_using_hypotnuse_njit(x_use, y_use, VX, VY)
+        #angle = find_closest_above_below_using_hypotnuse_njit(X[i], Y[i], VX, VY, num_adjacent_angles_to_evaluate)
+        angle = find_closest_above_below_using_hypotnuse_njit_v2(X[i], Y[i], VX, VY, num_adjacent_angles_to_evaluate)
+
+        A[R[i]][C[i]] = round(angle)
+
+        # Calculate and print percentage completion every 5%
+        if i % (num_strm_cells // 20) == 0 or i == num_strm_cells - 1:  # Adjust 20 for smaller intervals
+            percentage = (i + 1) / num_strm_cells * 100
+            print(f"Progress: {percentage:.1f}% complete")
+    
+
+    #Write Stream Angle Raster in DEGREES!!!
+    Write_Output_Raster(strm_angle_raster_deg, A, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)  
+    return 
+
 if __name__ == "__main__":
+
+    #These codes were developed to try and find stream angles based on the shapefile.  They never worked well.
+    '''
+    #Creating Stream Angle Raster
+    streams_shapefile = r"C:\Projects\2024_GRB\FHS_FloodForecastingSystem\StrmShp\streams_703_GRB_4269_Above_Fontenelle.shp"
+    dem_filename = r"C:\Projects\2024_GRB\FHS_FloodForecastingSystem\DEM\GRB_DEM.tif"
+    strm_raster = r"C:\Projects\2024_GRB\FHS_FloodForecastingSystem\Bathy_Test_FloodSpreader_FABDEM_WseBathy_NotClean\STRM\GRB_DEM_STRM_Raster_Clean.tif"
+    strm_angle_raster_deg = r"C:\PROGRAMS_Git\automated_rating_curve_generator\GRB_STRM_Angle.tif"
+    crs_for_angle_calculation = "EPSG:26912"
+    Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, "LINKNO", strm_angle_raster_deg, crs_for_angle_calculation)
+
+    #Stream Angle Processing
+    streams_shapefile = r"C:\PROGRAMS_Git\gap-crossing\Shapefile\NGA_Streams_12N.shp"
+    output_angles_txt = r"C:\PROGRAMS_Git\automated_rating_curve_generator\StrmAngles.txt"
+    Calculate_Stream_Angles_From_Shapefile_for_each_LineSegment(streams_shapefile, "LINKNO", "strm_angle_rad", output_angles_txt)
+    '''
+
+
 
     dem_cleaner = False
     use_clean_dem = True
