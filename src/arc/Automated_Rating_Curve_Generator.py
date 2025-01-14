@@ -2688,16 +2688,12 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
 def modify_array(arr, b_modified_dem):
     """
     Checks and modifies the DEM if there are negative elevations in it by adding 100 to all elevations.
-    Also will subtract 100 from all non-zero values if the DEM has been previously modified.
     """
     # Check if the array contains any negative value
     if np.any(arr < 0) and b_modified_dem is False:
         # Add 100 to the entire array
         arr += 100
         b_modified_dem = True
-    elif b_modified_dem is True:
-        # Subtract 100 only from elements that are not zero
-        arr[arr != 0] -= 100
 
     return arr, b_modified_dem
 
@@ -3352,7 +3348,7 @@ def main(MIF_Name: str, quiet: bool):
             elif b_modified_dem is False:
                 All_BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
                 All_DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
-                All_QMax_curve_list.append(round(da_total_q[i_last_elevation_index], 3))
+            All_QMax_curve_list.append(round(d_q_maximum, 3))
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
@@ -3570,7 +3566,8 @@ def main(MIF_Name: str, quiet: bool):
         #Make sure all the bathymetry points are above the DEM elevation
         dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, np.nan, dm_output_bathymetry)
         # remove the increase in elevation, if negative elevations were present
-        dm_output_bathymetry, b_modified_dem = modify_array(dm_output_bathymetry, b_modified_dem)
+        if b_modified_dem is True:
+            dm_output_bathymetry = dm_output_bathymetry - 100
         write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(s_output_flood) > 1:
