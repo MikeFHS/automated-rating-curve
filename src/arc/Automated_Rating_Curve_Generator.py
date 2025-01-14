@@ -803,6 +803,87 @@ def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, 
     return d_stream_slope
 
 @njit(cache=True)
+def linear_regression_plus_angle_njit(x, y):
+    """
+    Perform linear regression to find the slope and intercept of the best-fit line.
+
+    Args:
+        x (np.ndarray): Independent variable.
+        y (np.ndarray): Dependent variable.
+
+    Returns:
+        tuple: (slope, intercept) of the best-fit line.
+    """
+    n = len(x)
+    
+    # Compute means of x and y
+    x_mean = np.sum(x) / n
+    y_mean = np.sum(y) / n
+
+    # Compute the numerator and denominator for the slope
+    numerator = 0.0
+    denominator = 0.0
+    for i in range(n):
+        numerator += (x[i] - x_mean) * (y[i] - y_mean)
+        denominator += (x[i] - x_mean) ** 2
+
+    #If this occurs it means the line is straight up
+    if denominator<=0.000001:
+        return -1, -1, np.pi
+    #If this occurs it means the line is flat
+    if abs(numerator)<=0.000001:
+        return -1, -1, 0.0
+
+    # Calculate slope (m) and intercept (b)
+    slope = numerator / denominator
+    intercept = y_mean - slope * x_mean
+
+    # Convert slope to angle in radians (normalized to be between 0 and 2pi)
+    d_stream_direction = np.arctan(slope) % (2 * np.pi)
+
+    return slope, intercept, d_stream_direction
+
+@njit(cache=True)
+def polyfit_linear_plus_angle(x, y):
+    """
+    Perform linear regression (degree 1 polynomial fitting) with Numba.
+    
+    Args:
+        x (np.ndarray): Array of x values.
+        y (np.ndarray): Array of y values.
+        
+    Returns:
+        (float, float): Slope and intercept of the best-fit line.
+    """
+    n = len(x)
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    
+    # Compute slope (m) and intercept (b)
+    numerator = np.sum((x - x_mean) * (y - y_mean))
+    denominator = np.sum((x - x_mean) ** 2)
+
+    
+    #If this occurs it means the line is straight up
+    if denominator<=0.000001 or abs(numerator)<=0.000001:
+        DX = np.max(x) - np.min(x)
+        DY = np.max(y) - np.min(y)
+        # Even though the regression cant find the slope, it is dominated in the X direction, meaning angle of zero
+        if DX>DY:
+            return -1, -1, 0
+        #The change in Y direction is dominant, meaning a stream angle of pi
+        else:
+            return -1, -1, np.pi/2.0
+
+    slope = numerator / denominator
+    intercept = y_mean - slope * x_mean
+
+    # Convert slope to angle in radians (normalized to be between 0 and 2pi)
+    d_stream_direction = np.arctan(slope) % (2 * np.pi)
+    
+    return slope, intercept, d_stream_direction
+
+@njit(cache=True)
 def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.ndarray, d_dx: float, d_dy: float):
     """
     Finds the general direction of the stream following the process:
@@ -853,12 +934,13 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
 
     # Find the direction if there are stream cells
     if len(ia_matching_row_indices) > 1:  #Need at least a few cells to determine direction
+
+        # METHOD 1 - Calculate the angle based on all of the stream cells in the search box and do distance weighting
+        '''
         # Adjust the cell indices with the general direction distance
         ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
         ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
 
-        # METHOD 1 - Calculate the angle based on all of the stream cells in the search box and do distance weighting
-        '''
         # Calculate the distance between the cell of interest and every cell with a similar stream id
         da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
         da_dz_list = da_dz_list / max(da_dz_list)
@@ -879,8 +961,12 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         d_stream_direction = d_stream_direction / sum(da_dz_list)
         '''
         
-        '''
         # METHOD 2 - Calculate the angle based on the streamcells that are the furthest in the search box
+        '''
+        # Adjust the cell indices with the general direction distance
+        ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
+        ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
+
         # Account for the angle sign when aggregating the distance
         # Calculate the distance between the cell of interest and every cell with a similar stream id
         da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
@@ -905,7 +991,11 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         
         
         # METHOD 3 - Calculate the angle to each stream cell around and then take the median
-        
+        '''
+        # Adjust the cell indices with the general direction distance
+        ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
+        ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
+
         # Calculate the angle to the cells within the search box
         #da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
         da_atanvals = np.arctan2( np.multiply(ia_matching_row_indices, d_dy), np.multiply(ia_matching_column_indices, d_dx) )
@@ -977,8 +1067,22 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         else:
             da_atanvals_single = 0.12345
         
-        
         d_stream_direction = da_atanvals_single
+        '''
+
+
+
+        # METHOD 4 - Using precalculated angles, find which one best serves the data points in the box
+
+        # Use numpy.polyfit for linear regression, but does not work with njit
+        #    Because the ia_matching_row_indices came from a np.where() function, no need to multiply by -1 due to rows increasing downward, it is a mute point due to the np.where()
+        #slope, intercept = np.polyfit(ia_matching_column_indices, ia_matching_row_indices, 1)  # Degree 1 for linear
+        #d_stream_direction = np.arctan(slope) % (2 * np.pi)   # Convert slope to angle in radians (normalized to be between 0 and 2pi)
+
+        # Uses njit compatable functions
+        #    Because rows increase in the downward direction, readjust so the rows to be positive in the upward direction
+        #slope, intercept, d_stream_direction = linear_regression_plus_angle_njit(ia_matching_column_indices, ia_matching_row_indices)
+        slope, intercept, d_stream_direction = polyfit_linear_plus_angle(ia_matching_column_indices, ia_matching_row_indices)
         
         
         
@@ -2092,20 +2196,27 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
     d_wse_from_dem = da_xs_profile1[0]
     
     #First find the bank information
-    if b_FindBanksBasedOnLandCover==True or i_landcover_for_bathy == i_lc_water_value:
+    if b_FindBanksBasedOnLandCover==True:   # and i_landcover_for_bathy == i_lc_water_value:
+        print('Stupid LC Banks')
         #This finds the banks of the river using land cover data.
         #In the Main Input File must set "FindBanksBasedOnLandCover" and "LC_Water_Value"
         (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+        if i_total_bank_cells > 1:
+            function_used = "find_wse_and_banks_by_lc"
     else:
         #Default is to determine bank locations based on the flat water within the DEM
         i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
         i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
-    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-    #i_total_bank_cells = i_bank_1_index + i_bank_2_index
-
-    # Cycle through methods if i_total_bank_cells < 1 and d_y_depth >= 100
-    if i_total_bank_cells > 1:
-        function_used = "find_wse_and_banks_by_lc"
+        #For Testing Purposes
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+        if i_total_bank_cells > 1:
+            function_used = "find_wse_and_banks_by_flat_water"
+        #if i_total_bank_cells<=10:
+        #    print(i_total_bank_cells)
+        #    print(d_dem_low_point_elev + 0.1)
+        #    print(da_xs_profile1)
+        #    print(da_xs_profile1)
     
     # If the banks can't be found using the Flat WSE / LC, we use the DEM and the width-to-depth ratio approach
     if i_total_bank_cells <= 1:
