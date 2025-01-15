@@ -2327,7 +2327,7 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
 
 def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
-                                                       dm_manning_n_raster, i_lc_water_value, dm_elevation, i_landcover_for_bathy):
+                                                       dm_manning_n_raster, i_lc_water_value, dm_elevation, b_FindBanksBasedOnLandCover, i_landcover_for_bathy):
     
     # set the function used to none before we start running things
     function_used = None
@@ -3068,9 +3068,6 @@ def main(MIF_Name: str, quiet: bool):
 
         # Solve using the volume fill approach
         i_volume_fill_approach = 1
-
-
-
 
         # Get a list of elevations within the cross-section profile that we need to evaluate
         if i_volume_fill_approach==2:
