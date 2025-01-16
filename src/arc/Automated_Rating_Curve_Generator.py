@@ -2366,9 +2366,15 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
         #Default is to determine bank locations based on the flat water within the DEM
         i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
         i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
+        # set the bank elevations
+        bank_elev_1 = da_xs_profile1[i_bank_1_index]
+        bank_elev_2 = da_xs_profile2[i_bank_2_index]
         #For Testing Purposes
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
+            print("Joseph, find_wse_and_banks_by_flat_water worked")
+            print(bank_elev_1)
+            print(bank_elev_2)
             function_used = "find_wse_and_banks_by_flat_water"
 
 
