@@ -1381,7 +1381,7 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
     return i_center_point
 
 @njit(cache=True)
-def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target: float):
+def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target: float, elevation_wanted: str):
     """
     Finds the cell containing the bank of the cross section
 
@@ -1393,6 +1393,8 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
         Index of the cross section cell
     d_z_target: float
         Target elevation that defines the bank
+    elevation_wanter: str
+        Determines if the elevation is the bank elevation or the water surface elevation
 
     Returns
     -------
@@ -1405,7 +1407,10 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
     for entry in range(1, i_cross_section_number):
         # Check if the profile elevation matches the target elevation
         if da_xs_profile[entry] >= d_z_target:
-            return entry - 1
+            if elevation_wanted is "WSE":
+                return entry - 1
+            elif elevation_wanted is "banks":
+                return entry
             
 
     # Return to the calling function
@@ -2205,8 +2210,8 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
             function_used = "find_wse_and_banks_by_lc"
     else:
         #Default is to determine bank locations based on the flat water within the DEM
-        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
-        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
+        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1, "WSE")
+        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1, "WSE")
         #For Testing Purposes
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
@@ -2364,17 +2369,14 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
             function_used = "find_wse_and_banks_by_lc"
     else:
         #Default is to determine bank locations based on the flat water within the DEM
-        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
-        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
+        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1, "banks")
+        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1, "banks")
         # set the bank elevations
         bank_elev_1 = da_xs_profile1[i_bank_1_index]
         bank_elev_2 = da_xs_profile2[i_bank_2_index]
         #For Testing Purposes
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
-            print("Joseph, find_wse_and_banks_by_flat_water worked")
-            print(bank_elev_1)
-            print(bank_elev_2)
             function_used = "find_wse_and_banks_by_flat_water"
 
 
