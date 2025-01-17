@@ -546,6 +546,8 @@ def read_main_input_file(s_mif_name: str):
         b_reach_average_curve_file = True
     elif "False" in b_reach_average_curve_file or b_reach_average_curve_file == '':
         b_reach_average_curve_file = False
+    if len(s_output_curve_file)<1:
+        b_reach_average_curve_file = False   #Has to be false because there is no curve file to be used.
 
 def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float):
     """
@@ -874,9 +876,6 @@ def polyfit_linear_plus_angle(x, y):
         #The change in Y direction is dominant, meaning a stream angle of pi
         else:
             return -1, -1, np.pi/2.0
-    #If this occurs it means the line is flat
-    #if abs(numerator)<=0.000001:
-    #    return -1, -1, 0.0
 
     slope = numerator / denominator
     intercept = y_mean - slope * x_mean
@@ -2200,7 +2199,6 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
     
     #First find the bank information
     if b_FindBanksBasedOnLandCover==True:   # and i_landcover_for_bathy == i_lc_water_value:
-        print('Stupid LC Banks')
         #This finds the banks of the river using land cover data.
         #In the Main Input File must set "FindBanksBasedOnLandCover" and "LC_Water_Value"
         (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
@@ -2270,7 +2268,7 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         d_y_bathy = d_wse_from_dem - d_y_depth
         # if the depth we estimated was 
-        if d_y_depth >= 25 and function_used == "find_wse_and_banks_by_lc":
+        if d_y_depth >= 25 and (function_used == "find_wse_and_banks_by_lc" or function_used == "find_wse_and_banks_by_flat_water"):
             # If depth is too large, rerun the sequence of methods to refine it
             if i_total_bank_cells <= 1:
                 (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
@@ -2297,8 +2295,6 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
                     d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
                     d_y_bathy = d_wse_from_dem - d_y_depth
                     function_used = "find_bank_inflection_point"
-                    print(f"5. Joseph this is {function_used}")
-                    print(f"6. Joseph this is {i_total_bank_cells}")
                     # if we get to this point, we don't have a good way for the bathymetry to be estimated, so we will leave it alone
                     if d_y_depth >= 25 and function_used == "find_bank_inflection_point":
                         d_y_depth = 0.0
@@ -2345,28 +2341,39 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
     bank_elev_2 = da_xs_profile2[0]
     d_y_depth = 0.0
 
-    # Use land cover data to find the banks of the stream
-    if xs1_n >= 1 and i_landcover_for_bathy == i_lc_water_value:
-        bank_elev_1 = da_xs_profile1[0]
-        for i in range(1, xs1_n):
-            if ia_lc_xs1[i] != i_lc_water_value:
-                bank_elev_1 = da_xs_profile1[i]
-                i_bank_1_index = i - 1
-                break
-    if xs2_n >= 1 and i_landcover_for_bathy == i_lc_water_value:
-        bank_elev_2 = da_xs_profile2[0]
-        for i in range(1, xs2_n):
-            if ia_lc_xs2[i] != i_lc_water_value:
-                bank_elev_2 = da_xs_profile2[i]
-                i_bank_2_index = i - 1
-                break
+    #First find the bank information
+    if b_FindBanksBasedOnLandCover==True:   # and i_landcover_for_bathy == i_lc_water_value:
+        # Use land cover data to find the banks of the stream
+        if xs1_n >= 1 and i_landcover_for_bathy == i_lc_water_value:
+            bank_elev_1 = da_xs_profile1[0]
+            for i in range(1, xs1_n):
+                if ia_lc_xs1[i] != i_lc_water_value:
+                    bank_elev_1 = da_xs_profile1[i]
+                    i_bank_1_index = i - 1
+                    break
+        if xs2_n >= 1 and i_landcover_for_bathy == i_lc_water_value:
+            bank_elev_2 = da_xs_profile2[0]
+            for i in range(1, xs2_n):
+                if ia_lc_xs2[i] != i_lc_water_value:
+                    bank_elev_2 = da_xs_profile2[i]
+                    i_bank_2_index = i - 1
+                    break
+        # If we don't have any banks, we may need to try another approach to find the banks
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1 
+        if i_total_bank_cells <= 1:
+            i_total_bank_cells = 1
+        elif i_total_bank_cells > 1:
+            function_used = "find_wse_and_banks_by_lc"
+    else:
+        #Default is to determine bank locations based on the flat water within the DEM
+        i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1)
+        i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1)
+        #For Testing Purposes
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+        if i_total_bank_cells > 1:
+            function_used = "find_wse_and_banks_by_flat_water"
 
-    # If we don't have any banks, we may need to try another approach to find the banks
-    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1 
-    if i_total_bank_cells <= 1:
-        i_total_bank_cells = 1
-    elif i_total_bank_cells > 1:
-        function_used = "find_wse_and_banks_by_lc"
+
     
     # Use width-depth ratio calculation to find banks if land cover didn't work
     if i_total_bank_cells <= 1:
@@ -2434,7 +2441,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         # if the estimated depth is an outlier, let's try one of the other approaches to bathymetry estimation 
-        if d_y_depth >= 25  and function_used == "find_wse_and_banks_by_lc":  # If depth is classified as an outlier
+        if d_y_depth >= 25  and (function_used == "find_wse_and_banks_by_lc" or function_used == "find_wse_and_banks_by_flat_water"):  # If depth is classified as an outlier
             
             # Recalculate using width-to-depth ratio if depth is an outlier
             (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
@@ -2691,16 +2698,12 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
 def modify_array(arr, b_modified_dem):
     """
     Checks and modifies the DEM if there are negative elevations in it by adding 100 to all elevations.
-    Also will subtract 100 from all non-zero values if the DEM has been previously modified.
     """
     # Check if the array contains any negative value
     if np.any(arr < 0) and b_modified_dem is False:
         # Add 100 to the entire array
         arr += 100
         b_modified_dem = True
-    elif b_modified_dem is True:
-        # Subtract 100 only from elements that are not zero
-        arr[arr != 0] -= 100
 
     return arr, b_modified_dem
 
@@ -3063,7 +3066,7 @@ def main(MIF_Name: str, quiet: bool):
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
                                                                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation, 
-                                                                                                                                 i_landcover_for_bathy)
+                                                                                                                                 b_FindBanksBasedOnLandCover, i_landcover_for_bathy)
 
         # Solve using the volume fill approach
         i_volume_fill_approach = 1
@@ -3355,7 +3358,7 @@ def main(MIF_Name: str, quiet: bool):
             elif b_modified_dem is False:
                 All_BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
                 All_DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
-                All_QMax_curve_list.append(round(da_total_q[i_last_elevation_index], 3))
+            All_QMax_curve_list.append(round(d_q_maximum, 3))
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
@@ -3573,7 +3576,8 @@ def main(MIF_Name: str, quiet: bool):
         #Make sure all the bathymetry points are above the DEM elevation
         dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, np.nan, dm_output_bathymetry)
         # remove the increase in elevation, if negative elevations were present
-        dm_output_bathymetry, b_modified_dem = modify_array(dm_output_bathymetry, b_modified_dem)
+        if b_modified_dem is True:
+            dm_output_bathymetry = dm_output_bathymetry - 100
         write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(s_output_flood) > 1:

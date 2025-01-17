@@ -546,6 +546,8 @@ def read_main_input_file(s_mif_name: str):
         b_reach_average_curve_file = True
     elif "False" in b_reach_average_curve_file or b_reach_average_curve_file == '':
         b_reach_average_curve_file = False
+    if len(s_output_curve_file)<1:
+        b_reach_average_curve_file = False   #Has to be false because there is no curve file to be used.
 
 def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float):
     """
