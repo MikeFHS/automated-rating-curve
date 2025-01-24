@@ -330,16 +330,16 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
             d_return_value = 1
 
             # String is found. Process the rest of the line
-            if len(ls[1]) > 0:
+            if len(ls) > 1 and len(ls[1]) > 0 :
                 # More information is available to parse
                 d_return_value = ls[1]
 
     # Log the value to the console
     if d_return_value != '':
-        LOG.info('  ' + s_target + ' is set to ' + d_return_value)
+        LOG.info(f'  {s_target} is set to {d_return_value}')
 
     else:
-       LOG.info('  Could not find ' + s_target)
+       LOG.info(f'  Could not find {s_target}')
 
     # Return value to the calling function
     return d_return_value
@@ -1409,9 +1409,9 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
     for entry in range(1, i_cross_section_number):
         # Check if the profile elevation matches the target elevation
         if da_xs_profile[entry] >= d_z_target:
-            if elevation_wanted is "WSE":
+            if elevation_wanted == "WSE":
                 return entry - 1
-            elif elevation_wanted is "banks":
+            elif elevation_wanted == "banks":
                 return entry
             
 
@@ -2066,7 +2066,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     # Extract the roughness from the file
     for i_entry in range(1, i_number_of_lines):
         # Split the line
-        sl_line_split = sl_lines[i_entry].strip().split('\t')
+        sl_line_split = sl_lines[i_entry].strip().split()
 
         # Store the information into the list
         da_input_mannings[da_input_mannings == int(sl_line_split[0])] = float(sl_line_split[2])
