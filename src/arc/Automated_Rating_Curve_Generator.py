@@ -330,16 +330,16 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
             d_return_value = 1
 
             # String is found. Process the rest of the line
-            if len(ls[1]) > 0:
+            if len(ls) > 1 and len(ls[1]) > 0 :
                 # More information is available to parse
                 d_return_value = ls[1]
 
     # Log the value to the console
     if d_return_value != '':
-        LOG.info('  ' + s_target + ' is set to ' + d_return_value)
+        LOG.info(f'  {s_target} is set to {d_return_value}')
 
     else:
-       LOG.info('  Could not find ' + s_target)
+       LOG.info(f'  Could not find {s_target}')
 
     # Return value to the calling function
     return d_return_value
@@ -1409,9 +1409,9 @@ def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target
     for entry in range(1, i_cross_section_number):
         # Check if the profile elevation matches the target elevation
         if da_xs_profile[entry] >= d_z_target:
-            if elevation_wanted is "WSE":
+            if elevation_wanted == "WSE":
                 return entry - 1
-            elif elevation_wanted is "banks":
+            elif elevation_wanted == "banks":
                 return entry
             
 
@@ -2066,7 +2066,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     # Extract the roughness from the file
     for i_entry in range(1, i_number_of_lines):
         # Split the line
-        sl_line_split = sl_lines[i_entry].strip().split('\t')
+        sl_line_split = sl_lines[i_entry].strip().split()
 
         # Store the information into the list
         da_input_mannings[da_input_mannings == int(sl_line_split[0])] = float(sl_line_split[2])
@@ -2196,56 +2196,43 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
     """
     Calculate bathymetry based on water surface elevations.
     """
+
+
     # set the function used to none before we start running things
     function_used = None
 
     # we will use this elevation to burn the bathymetry with
     d_wse_from_dem = da_xs_profile1[0]
     
-    #First find the bank information
-    if b_FindBanksBasedOnLandCover==True:   # and i_landcover_for_bathy == i_lc_water_value:
-        #This finds the banks of the river using land cover data.
-        #In the Main Input File must set "FindBanksBasedOnLandCover" and "LC_Water_Value"
+    # First find the bank information
+    if b_FindBanksBasedOnLandCover:   
         (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, ia_lc_xs2, xs2_n, d_dem_low_point_elev + 0.1, i_lc_water_value)
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
             function_used = "find_wse_and_banks_by_lc"
     else:
-        #Default is to determine bank locations based on the flat water within the DEM
         i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1, "WSE")
         i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1, "WSE")
-        #For Testing Purposes
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
             function_used = "find_wse_and_banks_by_flat_water"
-        #if i_total_bank_cells<=10:
-        #    print(i_total_bank_cells)
-        #    print(d_dem_low_point_elev + 0.1)
-        #    print(da_xs_profile1)
-        #    print(da_xs_profile1)
-    
-    # If the banks can't be found using the Flat WSE / LC, we use the DEM and the width-to-depth ratio approach
+
     if i_total_bank_cells <= 1:
-        # Use width-to-depth ratio method if banks not found
         (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
                                                                               ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-        # d_wse_from_dem = da_xs_profile1[0]
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
             function_used = "find_bank_using_width_to_depth_ratio"
 
-    # If the banks can't be found using the Flat WSE / LC or the width-to-depth ratio, let's try to use the bank inflection points). 
     if i_total_bank_cells <= 1:
         i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
         i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells > 1:
             function_used = "find_bank_inflection_point"
-    
+
     if i_total_bank_cells <= 1:
         i_total_bank_cells = 1
-    
-
 
     #Trapezoid Shape
     #      d_total_bank_dist 
@@ -2260,76 +2247,59 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
     # d_bathymetry_trapzoid_height is the fraction of d_total_bank_dist that is for the sloped part (see Follum et al., 2023).
     #        Basically, it assumes ~40% of the total top-width of the trapezoid is part of the sloping part
     #        Typically, d_bathymetry_trapzoid_height is set to 0.2
-
-
-
-    # Calculate the trapezoid dimensions
+    
     d_total_bank_dist = i_total_bank_cells * d_distance_z
     d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
     d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
 
+    d_y_bathy = 0.0  # Initialize d_y_bathy to avoid UnboundLocalError
+
+    def retry_and_reset_depth():
+        """
+        Retry methods and reset d_y_depth if necessary.
+        """
+        nonlocal d_y_depth, i_total_bank_cells, d_trap_base, d_total_bank_dist, function_used
+
+        if i_total_bank_cells <= 1:
+            (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
+                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+            d_total_bank_dist = i_total_bank_cells * d_distance_z
+            d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
+            d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+            d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+            function_used = "find_bank_using_width_to_depth_ratio"
+
+        if d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
+            i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
+            i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+            d_total_bank_dist = i_total_bank_cells * d_distance_z
+            d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
+            d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+            d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+            function_used = "find_bank_inflection_point"
+
+        if d_y_depth >= 25:
+            d_y_depth = 0.0
+            d_y_bathy = da_xs_profile1[0] - d_y_depth
+            i_bank_1_index = 0
+            i_bank_2_index = 0
+            i_total_bank_cells = 1
+
     if d_q_baseflow > 0.0 and function_used != None:
-        # Calculate depth using baseflow
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-        d_y_bathy = d_wse_from_dem - d_y_depth
-        # if the depth we estimated was 
-        if d_y_depth >= 25 and (function_used == "find_wse_and_banks_by_lc" or function_used == "find_wse_and_banks_by_flat_water"):
-            # If depth is too large, rerun the sequence of methods to refine it
-            if i_total_bank_cells <= 1:
-                (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
-                                                                                      ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-                i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-                # Calculate the trapezoid dimensions
-                d_total_bank_dist = i_total_bank_cells * d_distance_z
-                d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
-                d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-                # Calculate depth using baseflow
-                d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-                d_y_bathy = d_wse_from_dem - d_y_depth
-                function_used = "find_bank_using_width_to_depth_ratio"
-                # if the depth is still wonky, let's try using the inflection point method
-                if d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
-                    i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
-                    i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
-                    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-                    # Calculate the trapezoid dimensions
-                    d_total_bank_dist = i_total_bank_cells * d_distance_z
-                    d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
-                    d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-                    # Calculate depth using baseflow
-                    d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-                    d_y_bathy = d_wse_from_dem - d_y_depth
-                    function_used = "find_bank_inflection_point"
-                    # if we get to this point, we don't have a good way for the bathymetry to be estimated, so we will leave it alone
-                    if d_y_depth >= 25 and function_used == "find_bank_inflection_point":
-                        d_y_depth = 0.0
-                        i_bank_1_index = 0
-                        i_bank_2_index = 0
-                        i_total_bank_cells = 1
-            
-            if i_total_bank_cells <= 1:
-                d_y_depth = 0.0  # Set depth to zero if no method succeeds in finding valid banks
-                d_y_bathy = da_xs_profile1[0] - d_y_depth
-                i_bank_1_index = 0
-                i_bank_2_index = 0
-                i_total_bank_cells = 1
+        if d_y_depth >= 25:
+            retry_and_reset_depth()
 
         if i_total_bank_cells > 1:
-            # This is our estimate of the depth of the thalweg
             d_y_bathy = da_xs_profile1[0] - d_y_depth
-
-            # Adjust the profile for bathymetry
             adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, 0.0, dm_elevation)
             adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, 0.0, dm_elevation)
 
     else:
-        # Set depth to zero if no method succeeds in finding valid banks
         d_y_depth = 0.0
-        d_y_bathy = da_xs_profile1[0] - d_y_depth
-        i_bank_1_index = 0
-        i_bank_2_index = 0
-        i_total_bank_cells = 1
-    
+
     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
 def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
@@ -2714,6 +2684,77 @@ def modify_array(arr, b_modified_dem):
         b_modified_dem = True
 
     return arr, b_modified_dem
+
+@njit(cache=True)
+def compute_gaussian_kernel(window_size, sigma):
+    """
+    Compute a 2D Gaussian kernel.
+
+    Parameters:
+        window_size (int): Size of the kernel (must be odd).
+        sigma (float): Standard deviation of the Gaussian.
+
+    Returns:
+        numpy.ndarray: Normalized 2D Gaussian kernel.
+    """
+    half_window = window_size // 2
+    kernel = np.zeros((window_size, window_size))
+    for i in range(-half_window, half_window + 1):
+        for j in range(-half_window, half_window + 1):
+            kernel[i + half_window, j + half_window] = np.exp(-(i**2 + j**2) / (2 * sigma**2))
+    kernel /= np.sum(kernel)
+    return kernel
+
+
+@njit(cache=True)
+def smooth_bathymetry_gaussian_numba(dm_output_bathymetry, window_size=7, sigma=2, n_pass=3):
+    """
+    Smooth a 2D array using a Gaussian filter with multiple passes, excluding NaN values.
+    NaN values in the original array are preserved.
+
+    Parameters:
+        dm_output_bathymetry (numpy.ndarray): Input 2D array with float and NaN values.
+        window_size (int): Size of the Gaussian kernel (must be odd).
+        sigma (float): Standard deviation of the Gaussian.
+        n_pass (int): Number of smoothing iterations to apply.
+
+    Returns:
+        numpy.ndarray: Smoothed 2D array with NaN values preserved.
+    """
+    rows, cols = dm_output_bathymetry.shape
+    half_window = window_size // 2
+    kernel = compute_gaussian_kernel(window_size, sigma)
+    output = dm_output_bathymetry.copy()
+
+    for _ in range(n_pass):
+        temp_output = output.copy()
+        for r in range(rows):
+            for c in range(cols):
+                if np.isnan(output[r, c]):
+                    # Preserve NaN values
+                    continue
+
+                # Apply the Gaussian kernel
+                weighted_sum = 0.0
+                weight_total = 0.0
+                for i in range(-half_window, half_window + 1):
+                    for j in range(-half_window, half_window + 1):
+                        nr, nc = r + i, c + j
+                        if 0 <= nr < rows and 0 <= nc < cols and not np.isnan(output[nr, nc]):
+                            weight = kernel[i + half_window, j + half_window]
+                            weighted_sum += output[nr, nc] * weight
+                            weight_total += weight
+
+                # Normalize by total weight
+                if weight_total > 0:
+                    temp_output[r, c] = weighted_sum / weight_total
+                else:
+                    temp_output[r, c] = np.nan  # Retain NaN if no valid neighbors
+
+        output = temp_output  # Update for the next iteration
+
+    return output
+
 
 def main(MIF_Name: str, quiet: bool):
     starttime = datetime.now()  
@@ -3583,6 +3624,9 @@ def main(MIF_Name: str, quiet: bool):
         # remove the increase in elevation, if negative elevations were present
         if b_modified_dem is True:
             dm_output_bathymetry = dm_output_bathymetry - 100
+        # # Joseph was testing a simple smoothing algorithm here to attempt to reduce variation in the bank based bathmetry (functions but doesn't provide better results)
+        # if b_bathy_use_banks is True:
+        #     dm_output_bathymetry = smooth_bathymetry_gaussian_numba(dm_output_bathymetry)
         write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(s_output_flood) > 1:
