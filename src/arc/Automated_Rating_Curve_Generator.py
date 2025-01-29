@@ -2066,7 +2066,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     # Extract the roughness from the file
     for i_entry in range(1, i_number_of_lines):
         # Split the line
-        sl_line_split = sl_lines[i_entry].strip().split()
+        sl_line_split = sl_lines[i_entry].strip().split('\t')
 
         # Store the information into the list
         da_input_mannings[da_input_mannings == int(sl_line_split[0])] = float(sl_line_split[2])
@@ -2291,7 +2291,6 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         if d_y_depth >= 25:
             retry_and_reset_depth()
-
         if i_total_bank_cells > 1:
             d_y_bathy = da_xs_profile1[0] - d_y_depth
             adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, 0.0, dm_elevation)
