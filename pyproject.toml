@@ -7,16 +7,27 @@ name = "arc"
 description = "Wrapper package for using ARC, by Mike Follum -> https://github.com/MikeFHS/automated-rating-curve/tree/main"
 dynamic = ["version"]
 dependencies = [
+  "numpy",
   "matplotlib",
-  "numba",
   "pandas",
-  "gdal",
-  "tqdm",
-  "scipy",
   "geopandas",
+  "gdal",
+  "pip",
+  "netCDF4",
+  "xarray",
+  "geojson",
   "networkx",
+  "dask",
+  "geoglows",
+  "numba",
+  "scipy",
+  "tqdm",
+  "pyproj",
+  "fiona",
+  "netcdf4",
   "shapely",
-  "geojson"
+  "networkx",
+  "s3fs"
 ]
 requires-python = ">= 3.10"
 authors = [

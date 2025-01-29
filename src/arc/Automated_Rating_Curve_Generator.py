@@ -3432,10 +3432,10 @@ def main(MIF_Name: str, quiet: bool):
 
         # Output the XS information, if you've chosen to do so
         if s_xs_output_file != '':
-            if b_modified_dem is False:
+            if b_modified_dem == True:
                 da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n]-100)
                 da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]-100) 
-            elif b_modified_dem is False:
+            elif b_modified_dem == False:
                 da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
                 da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
             dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 

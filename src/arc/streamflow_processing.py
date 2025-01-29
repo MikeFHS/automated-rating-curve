@@ -210,9 +210,12 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
         from the GEOGLOWS ECMWF Streamflow Service
 
     """
+    print("Processing Median Values...\n")
     overall_median_Qout = GetMedianFlowValues(NetCDF_Historical_Folder)
     overall_median_Qout = abs(overall_median_Qout)
+    print("Processing Mean Values...\n")
     overall_mean_Qout = GetMeanFlowValues(NetCDF_Historical_Folder)
+    print("Processing Return Period Values...\n")
     combined_df = GetReturnPeriodFlowValues(NetCDF_RecurrenceInterval_File_Path)
     
     # Append Series to DataFrame using .loc indexer
@@ -462,60 +465,3 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     
     # Return the combined DataFrame as a Dask DataFrame
     return (CSV_File_Name, OutShp_File_Name, rivids_int, StrmShp_filtered_gdf)
-
-if __name__ == "__main__":
-    
-    # StrmShp = r"F:\Global_Forecast\StrmShp\geoglows-v2-map-optimized.parquet"
-    # rivid_field = "LINKNO"
-    # DEM_Tile_Dir = r"F:\FABDEM_DEM"
-
-    StrmShp = r"C:\Users\jlgut\OneDrive\Desktop\AutomatedRatingCurve_TestCase\Gardiner_TestCase\StrmShp\Gardiner_GeoGLoWS_StreamShapefile.shp"
-    rivid_field = "LINKNO"
-    DEM_Tile_Dir = r"C:\Users\jlgut\OneDrive\Desktop\AutomatedRatingCurve_TestCase\Gardiner_TestCase\DEM"
-
-    # load in the the StrmShp GDF
-    # StrmShp_gdf = gpd.read_parquet(StrmShp)
-    StrmShp_gdf = gpd.read_file(StrmShp)
-
-
-
-    # make sure the Stream shapefile and DEMs are in the same coordinate system
-    print('Converting the coordinate system of the stream file to match the DEM files, if necessary')
-    dem_dir = os.listdir(DEM_Tile_Dir)
-    dem_dir.sort()
-    for test_dem in dem_dir:
-        if test_dem.endswith(".tif"):
-            test_dem_path = os.path.join(DEM_Tile_Dir,test_dem)
-            # Load the DEM file and get its CRS using gdal
-            dem_dataset = gdal.Open(test_dem_path)
-            dem_proj = dem_dataset.GetProjection()  # Get the projection as a WKT string
-            dem_spatial_ref = osr.SpatialReference()
-            dem_spatial_ref.ImportFromWkt(dem_proj)
-            dem_crs = dem_spatial_ref.ExportToProj4()  # Export CRS to a Proj4 string (or other formats if needed)
-            # Check if the CRS of the shapefile matches the DEM's CRS
-            if StrmShp_gdf.crs != dem_crs:
-                # Reproject the shapefile to match the DEM's CRS
-                StrmShp_gdf = StrmShp_gdf.to_crs(dem_crs)
-            dem_dataset = None
-            dem_proj = None 
-            dem_spatial_ref = None
-            dem_crs = None     
-            break
-
-
-    # Walk through the DEM directory to find all DEM files
-    for root, _, files in os.walk(DEM_Tile_Dir):
-        for file in files:
-            if file.endswith(".tif"):
-                DEM_Tile = os.path.join(DEM_Tile_Dir, file)
-                # OutShp_File_Name = rf"F:\Global_Forecast\StrmShp\{file[:-4]}_StrmShp.shp"
-                # CSV_File_Name = rf"F:\Global_Forecast\Global_Forecast\FLOW\{file[:-4]}_Reanalysis.csv"
-
-                OutShp_File_Name = rf"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Gardiner_TestCase\STRM\{file[:-4]}_StrmShp.shp"
-                CSV_File_Name = rf"C:\Users\jlgut\OneDrive\Desktop\FHS_OperationalFloodMapping\Gardiner_TestCase\FLOW\{file[:-4]}_Reanalysis.csv"
-
-                Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name)
-                # if os.path.exists(OutShp_File_Name):
-                #     pass
-                # else:
-                #     Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name)

@@ -228,16 +228,6 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     -------
     None
     """
-    print(CurveParam_File)
-    print(COMID_Q_File)
-    print(STRM_Raster_File)
-    print(OutGeoJSON_File)
-    print(OutProjection)
-    print(StrmShp)
-    print(Stream_ID_Field)
-    print(Downstream_ID_Field)
-    print(SEED_Output_File)
-    print(Thin_Output)
 
     if COMID_Q_File is not None:
         # Read the streamflow data into pandas

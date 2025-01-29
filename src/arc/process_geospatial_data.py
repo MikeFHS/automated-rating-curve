@@ -1151,21 +1151,6 @@ def Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, 
     print(unique_combined_coordinates_int [:10])
     VX, VY = np.array(unique_combined_coordinates).T
 
-    '''
-    x_values = []
-    y_values = []
-    z_values = []
-    for i in range(1000):
-        x_use, y_use = transformer.transform(X[i], Y[i])
-        x_values.append(x_use)
-        y_values.append(y_use)
-        z_values.append(i)
-    output_file = r"C:\PROGRAMS_Git\automated_rating_curve_generator\Streampoints.geojson"
-    Create_GeoJSON_Points(x_values, y_values, z_values, '26912', output_file)
-    '''
-
-
-
     #streams_shapefile
     # Evaluate each stream cell location against the shapefile vertices
     print('Vertice number: ' + str(len(VX)))
@@ -1191,84 +1176,3 @@ def Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, 
     #Write Stream Angle Raster in DEGREES!!!
     Write_Output_Raster(strm_angle_raster_deg, A, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)  
     return 
-
-if __name__ == "__main__":
-
-    #These codes were developed to try and find stream angles based on the shapefile.  They never worked well.
-    '''
-    #Creating Stream Angle Raster
-    streams_shapefile = r"C:\Projects\2024_GRB\FHS_FloodForecastingSystem\StrmShp\streams_703_GRB_4269_Above_Fontenelle.shp"
-    dem_filename = r"C:\Projects\2024_GRB\FHS_FloodForecastingSystem\DEM\GRB_DEM.tif"
-    strm_raster = r"C:\Projects\2024_GRB\FHS_FloodForecastingSystem\Bathy_Test_FloodSpreader_FABDEM_WseBathy_NotClean\STRM\GRB_DEM_STRM_Raster_Clean.tif"
-    strm_angle_raster_deg = r"C:\PROGRAMS_Git\automated_rating_curve_generator\GRB_STRM_Angle.tif"
-    crs_for_angle_calculation = "EPSG:26912"
-    Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, "LINKNO", strm_angle_raster_deg, crs_for_angle_calculation)
-
-    #Stream Angle Processing
-    streams_shapefile = r"C:\PROGRAMS_Git\gap-crossing\Shapefile\NGA_Streams_12N.shp"
-    output_angles_txt = r"C:\PROGRAMS_Git\automated_rating_curve_generator\StrmAngles.txt"
-    Calculate_Stream_Angles_From_Shapefile_for_each_LineSegment(streams_shapefile, "LINKNO", "strm_angle_rad", output_angles_txt)
-    '''
-
-
-
-    dem_cleaner = False
-    use_clean_dem = True
-    # test_cases = ['Shields_TestCase', 'Gardiner_TestCase']
-    test_cases = ['SC_TestCase','OH_TestCase','TX_TestCase','IN_TestCase','PA_TestCase']
-    # test_cases = ['SC_TestCase','OH_TestCase','IN_TestCase','PA_TestCase']
-    # test_cases = ['TX_TestCase']
-
-
-    test_cases_dict = {'SC_TestCase':
-                        {'id_field':'COMID',
-                         'flow_field': 'HighFlow',
-                         'baseflow_field': 'BaseFlow',
-                         'medium_flow_field': 'MedFlow',
-                         'low_flow_field': 'LowFlow',
-                         'flow_file': 'FlowFile.txt'
-                        },
-                      'OH_TestCase':
-                        {'id_field':'COMID',
-                         'flow_field': 'HighFlow',
-                         'baseflow_field': 'BaseFlow',
-                         'medium_flow_field': 'MedFlow',
-                         'low_flow_field': 'LowFlow',
-                         'flow_file': 'FlowFile.txt'
-                        },
-                      'TX_TestCase':
-                        {'id_field':'permanent_',
-                         'flow_field': 'HighFlow',
-                         'baseflow_field': 'BaseFlow',
-                         'medium_flow_field': 'MedFlow',
-                         'low_flow_field': 'LowFlow',
-                         'flow_file': 'FlowFile.txt'
-                        },
-                      'IN_TestCase':
-                        {'id_field':'COMID',
-                         'flow_field': 'HighFlow',
-                         'baseflow_field': 'MedFlow',
-                         'medium_flow_field': 'MedFlow',
-                         'low_flow_field': 'LowFlow',
-                         'flow_file': 'FlowFile.txt'
-                        },
-                      'PA_TestCase':
-                        {'id_field':'permanent_',
-                         'flow_field': 'HighFlow',
-                         'baseflow_field': 'BaseFlow',
-                         'medium_flow_field': 'MedFlow',
-                         'low_flow_field': 'LowFlow',
-                         'flow_file': 'FlowFile.txt'
-                        },
-                     }
-
-    for test_case in test_cases:
-        test_case_dict = test_cases_dict[test_case]
-
-        FLOW_File = os.path.join(test_case, "FLOW", test_case_dict['flow_file'])
-
-        # Process_AutoRoute_Geospatial_Data_for_testing(test_case, test_case_dict['id_field'], test_case_dict['flow_field'], 
-        #                                   test_case_dict['baseflow_field'], test_case_dict['medium_flow_field'], 
-        #                                   test_case_dict['low_flow_field'], dem_cleaner, use_clean_dem)
-        Process_ARC_Geospatial_Data(test_case, test_case_dict['id_field'], 'HighFlow', 'BaseFlow', FLOW_File)
-    

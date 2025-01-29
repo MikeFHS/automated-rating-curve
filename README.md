@@ -24,7 +24,7 @@ git clone https://github.com/MikeFHS/automated-rating-curve
 ```bash
 cd automated-rating-curve
 ```
-5. Create the Conda environment using the following command.
+5. Create the Conda environment using the following command. Alternatively, if you have an existing conda environment you would like integrate ARC within, take a look at it [dependencies](https://github.com/MikeFHS/automated-rating-curve/blob/main/environment.yaml) and make sure you environment has these libraries.
 ```bash
 conda env create -f environment.yaml
 ```
