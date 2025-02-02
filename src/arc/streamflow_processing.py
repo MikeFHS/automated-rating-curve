@@ -10,7 +10,7 @@ import sys
 import dask.array as da
 import dask.dataframe as dd
 from dask.diagnostics import ProgressBar
-import geoglows       #pip install geoglows -q     #conda install pip      #https://gist.github.com/rileyhales/873896e426a5bd1c4e68120b286bc029
+#import geoglows       #pip install geoglows -q     #conda install pip      #https://gist.github.com/rileyhales/873896e426a5bd1c4e68120b286bc029
 import geopandas as gpd
 import netCDF4   #conda install netCDF4
 import numpy as np

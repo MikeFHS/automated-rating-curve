@@ -8,7 +8,6 @@ description = "Wrapper package for using ARC, by Mike Follum -> https://github.c
 dynamic = ["version"]
 dependencies = [
   "numpy",
-  "matplotlib",
   "pandas",
   "geopandas",
   "gdal",
@@ -18,7 +17,6 @@ dependencies = [
   "geojson",
   "networkx",
   "dask",
-  "geoglows",
   "numba",
   "scipy",
   "tqdm",

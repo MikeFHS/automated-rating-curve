@@ -4,7 +4,6 @@ channels:
 dependencies:
   - python
   - numpy
-  - matplotlib
   - pandas
   - geopandas
   - gdal
@@ -14,7 +13,6 @@ dependencies:
   - geojson
   - networkx
   - dask
-  - geoglows
   - numba
   - scipy
   - tqdm
