@@ -710,9 +710,9 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     sl_header = sl_lines[0].strip().split(',')
 
     # Initialize the counters
-    i_flow_id_index = 0
-    i_baseflow_index = 0
-    i_flow_maximum_index = 0
+    i_flow_id_index = -1
+    i_baseflow_index = -1
+    i_flow_maximum_index = -1
 
     # Parse the header
     for entry in range(len(sl_header)):
@@ -724,6 +724,14 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
         if sl_header[entry] == s_flow_qmax:
             i_flow_maximum_index = entry
+
+    # Check that the header information was found
+    if i_flow_id_index == -1:
+        raise ValueError(f"Could not find '{s_flow_id}' in the header of the flow file")
+    if i_baseflow_index == -1:
+        raise ValueError(f"Could not find '{s_flow_baseflow}' in the header of the flow file")
+    if i_flow_maximum_index == -1:
+        raise ValueError(f"Could not find '{s_flow_qmax}' in the header of the flow file")
 
     # Extract the data from the line
     for entry in range(1, i_number_of_lines):
