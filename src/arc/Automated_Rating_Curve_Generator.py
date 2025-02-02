@@ -3296,7 +3296,7 @@ def main(MIF_Name: str, quiet: bool):
                 qbaseflow_dict_list.append(d_q_baseflow)
 
                 # Loop backward through the elevations
-                if s_output_curve_file:
+                if s_output_vdt_database:
                     for i, i_entry_elevation in enumerate(range(1, i_number_of_elevations)):
                         o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
                         o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
@@ -3387,7 +3387,7 @@ def main(MIF_Name: str, quiet: bool):
                 qbaseflow_dict_list.append(d_q_baseflow)
 
                 # Loop backward through the elevations
-                if s_output_curve_file:
+                if s_output_vdt_database:
                     for i, i_entry_elevation in enumerate(range(1, i_number_of_elevations)):
                         o_out_file_dict[f'q_{i_entry_elevation}'].append(da_total_q[i_entry_elevation])
                         o_out_file_dict[f'v_{i_entry_elevation}'].append(da_total_v[i_entry_elevation])
