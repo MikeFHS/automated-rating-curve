@@ -1175,5 +1175,4 @@ def Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, 
 
     #Write Stream Angle Raster in DEGREES!!!
     Write_Output_Raster(strm_angle_raster_deg, A, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)  
-    
     return 
