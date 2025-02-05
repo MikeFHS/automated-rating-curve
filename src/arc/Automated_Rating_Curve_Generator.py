@@ -1133,6 +1133,140 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
     return d_stream_direction, d_xs_direction
 
 @njit(cache=True)
+def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
+                        da_xc_second_fract: np.ndarray, d_xs_direction: np.ndarray, i_centerpoint: int, d_dx: float, d_dy: float):
+    """
+    ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, d_xs_direction, i_row_cell,
+                                               i_column_cell, i_center_point, dx, dy
+    Calculates the distance of the stream cross section
+
+    Parameters
+    ----------
+    ia_xc_dr_index_main: ndarray
+        Indices of the first cross section index
+    ia_xc_dc_index_main: ndarray
+        Index offsets of the first cross section index
+    ia_xc_dr_index_second: ndarray
+        Indices of the second cross section index
+    ia_xc_dc_index_second: ndarray
+        Index offsets of the second cross section index
+    da_xc_main_fract: ndarray: ndarray
+        # todo: add
+    da_xc_second_fract: ndarray
+        # todo: add
+    d_xs_direction: float
+        Orientation of the cross section
+    i_centerpoint: int
+        Distance from the cell to search
+    d_dx: float
+        Cell resolution in the x direction
+    d_dy: float
+        Cell resolution in the y direction
+
+    Returns
+    -------
+    d_distance_z: float
+        Distance along the cross section direction
+
+    """
+    
+    
+    '''
+    Assume there are 4 quadrants:
+            Q3 | Q4      r<0 c<0  |  r<0 c>0
+            Q2 | Q1      r>0 c<0  |  r>0 c>0
+    
+    These quadrants are inversed about the x-axis due to rows being positive in the downward direction
+    '''
+    
+    
+    # Determine the best direction to perform calcualtions
+    #  Row-Dominated
+    if d_xs_direction >= (math.pi / 4) and d_xs_direction <= (3 * math.pi / 4):
+        # Calculate the distance in the x direction
+        da_distance_x = np.arange(i_centerpoint) * d_dy * math.cos(d_xs_direction)
+
+        # Convert the distance to a number of indices
+        ia_x_index_offset: int = da_distance_x // d_dx
+
+        ia_xc_dr_index_main[0:i_centerpoint] = np.arange(i_centerpoint)
+        ia_xc_dc_index_main[0:i_centerpoint] = ia_x_index_offset
+
+        # Calculate the sign of the angle
+        ia_sign = np.ones(i_centerpoint)
+        ia_sign[da_distance_x < 0] = -1
+
+        # Round using the angle direction
+        ia_x_index_offset = np.round((da_distance_x / d_dx) + 0.5 * ia_sign, 0)
+
+        # Set the values in as index locations
+        ia_xc_dr_index_second[0:i_centerpoint] = np.arange(i_centerpoint)
+        ia_xc_dc_index_second[0:i_centerpoint] = ia_x_index_offset
+
+        # ddx is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
+        da_ddx = np.fabs((da_distance_x / d_dx) - ia_x_index_offset)
+        da_xc_main_fract[0:i_centerpoint] = 1.0 - da_ddx
+        da_xc_second_fract[0:i_centerpoint] = da_ddx
+        
+        # da_xc_main_fract_int = np.rint(da_xc_main_fract).astype(int)
+        da_xc_main_fract_int = np.empty(da_xc_main_fract.shape, dtype=np.int64)
+        for i in range(da_xc_main_fract.size):
+            da_xc_main_fract_int[i] = int(np.round(da_xc_main_fract[i]))
+
+        # da_xc_second_fract_int = np.subtract(1,da_xc_main_fract_int, dtype=int)
+        da_xc_second_fract_int = 1 - da_xc_main_fract_int
+
+        # Distance between each increment
+        d_distance_z = math.sqrt((d_dy * math.cos(d_xs_direction)) * (d_dy * math.cos(d_xs_direction)) + d_dy * d_dy)
+
+    # Col-Dominated
+    else:
+        # Calculate based on the column being the dominate direction
+        # Calculate the distance in the y direction
+        da_distance_y = np.arange(i_centerpoint) * d_dx * math.sin(d_xs_direction)
+
+        # Convert the distance to a number of indices
+        ia_y_index_offset: int = da_distance_y // d_dy
+        
+        column_pos_or_neg = 1 
+        if d_xs_direction >= (math.pi / 2): 
+            column_pos_or_neg = -1
+
+        ia_xc_dr_index_main[0:i_centerpoint] = ia_y_index_offset
+        ia_xc_dc_index_main[0:i_centerpoint] = np.arange(i_centerpoint) * column_pos_or_neg
+
+        # Calculate the sign of the angle
+        ia_sign = np.ones(i_centerpoint)   #I think this can always just be positive one
+        #ia_sign[da_distance_y < 0] = -1
+        #ia_sign[da_distance_y > 0] = -1
+        #ia_sign = ia_sign * -1
+
+        # Round using the angle direction
+        ia_y_index_offset = np.round((da_distance_y / d_dy) + 0.5 * ia_sign, 0)
+
+        # Set the values in as index locations
+        ia_xc_dr_index_second[0:i_centerpoint] = ia_y_index_offset
+        ia_xc_dc_index_second[0:i_centerpoint] = np.arange(i_centerpoint) * column_pos_or_neg
+
+        # ddy is the distance from the main cell to the location where the line passes through.  Do 1-ddx to get the weight
+        da_ddy = np.fabs((da_distance_y / d_dy) - ia_y_index_offset)
+        da_xc_main_fract[0:i_centerpoint] = 1.0 - da_ddy
+        da_xc_second_fract[0:i_centerpoint] = da_ddy
+        
+        # da_xc_main_fract_int = np.round(da_xc_main_fract).astype(int)
+        da_xc_main_fract_int = np.empty(da_xc_main_fract.shape, dtype=np.int64)
+        for i in range(da_xc_main_fract.size):
+            da_xc_main_fract_int[i] = int(np.round(da_xc_main_fract[i]))
+        # da_xc_second_fract_int = np.subtract(1,da_xc_main_fract_int, dtype=int)
+        da_xc_second_fract_int = 1 - da_xc_main_fract_int
+
+        # Distance between each increment
+        d_distance_z = math.sqrt((d_dx * math.sin(d_xs_direction)) * (d_dx * math.sin(d_xs_direction)) + d_dx * d_dx)
+
+    # Return to the calling function
+    return d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int
+
+@njit(cache=True)
 def get_xs_index_values(i_entry_cell: int, ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
                         da_xc_second_fract: np.ndarray, d_xs_direction: np.ndarray, i_r_start: int, i_c_start: int, i_centerpoint: int, d_dx: float, d_dy: float):
     """
@@ -2859,6 +2993,9 @@ def main(MIF_Name: str, quiet: bool):
     dx, dy, dproject = convert_cell_size(dcellsize, dyll, dyur)
     LOG.info('Cellsize X = ' + str(dx))
     LOG.info('Cellsize Y = ' + str(dy))
+
+    i_precompute_angles = 30
+    d_precompute_angles = np.pi / i_precompute_angles
     
     # Pull cross sections
     i_center_point = int((d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
@@ -2866,12 +3003,21 @@ def main(MIF_Name: str, quiet: bool):
     da_xs_profile2 = np.zeros(i_center_point + 1)
     ia_lc_xs1 = np.zeros(i_center_point + 1)
     ia_lc_xs2 = np.zeros(i_center_point + 1)
-    ia_xc_dr_index_main = np.zeros(i_center_point + 1, dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    ia_xc_dc_index_main = np.zeros(i_center_point + 1, dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    ia_xc_dr_index_second = np.zeros(i_center_point + 1, dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    ia_xc_dc_index_second = np.zeros(i_center_point + 1, dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    da_xc_main_fract = np.zeros(i_center_point + 1)
-    da_xc_second_fract = np.zeros(i_center_point + 1)
+    ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
+    ia_xc_dc_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
+    ia_xc_dr_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
+    ia_xc_dc_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
+    d_distance_z = np.zeros(i_precompute_angles + 1, dtype=int)
+    da_xc_main_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1))
+    da_xc_second_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1))
+    da_xc_main_fract_int = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)
+    da_xc_second_fract_int = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)
+
+    for i in range(i_precompute_angles+1):
+        d_xs_direction = d_precompute_angles * i
+        # Get the Cross-Section Ordinates
+        (d_distance_z[i], da_xc_main_fract_int[i], da_xc_second_fract_int[i]) = get_xs_index_values_precalculated(ia_xc_dr_index_main[i], ia_xc_dc_index_main[i], ia_xc_dr_index_second[i], ia_xc_dc_index_second[i], da_xc_main_fract[i], da_xc_second_fract[i], d_xs_direction,
+                                                                                           i_center_point, dx, dy)
 
     # Find all the different angle increments to test
     l_angles_to_test = [0.0]
@@ -2992,20 +3138,26 @@ def main(MIF_Name: str, quiet: bool):
             d_q_maximum = 0
     
         # Get the Cross-Section Ordinates
-        (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, i_row_cell, 
-                                                                                           i_column_cell, i_center_point, dx, dy)
+        #(d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, i_row_cell, 
+        #                                                                                   i_column_cell, i_center_point, dx, dy)
+
+        #We now precompute the cross-section ordinates
+        if d_xs_direction > np.pi:
+            i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
+        else:
+            i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
         
         # Now Pull a Cross-Section
-        ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main
-        ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main * -1
-        ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main
-        ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main * -1
+        ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest]
+        ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest] * -1
+        ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest]
+        ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest] * -1
 
         # todo: These appear to be resetting the center point only?
-        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
-                                              i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-        xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
-                                              i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
+        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
+                                              i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
+        xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
+                                              i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1, da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
 
         # Adjust to the lowest-point in the Cross-Section
         i_lowest_point_index_offset=0
@@ -3022,10 +3174,10 @@ def main(MIF_Name: str, quiet: bool):
 
         # re-sample the cross-section to make sure all of the low-spot data has the same values through interpolation
         if abs(i_lowest_point_index_offset) > 0:
-            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
-                                                    i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
-                                                    i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
+            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
+                                                    i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
+            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
+                                                    i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1, da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
             # set the low-spot value to the new low spot in the cross-section 
             d_dem_low_point_elev = da_xs_profile1[0]
 
@@ -3043,23 +3195,29 @@ def main(MIF_Name: str, quiet: bool):
                     d_xs_angle_use = d_xs_angle_use + math.pi
                 
                 # Get XS ordinates... again
-                (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_angle_use, 
-                                                                                                   i_row_cell, i_column_cell, i_center_point, dx, dy)
+                #(d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_angle_use, 
+                #                                                                                   i_row_cell, i_column_cell, i_center_point, dx, dy)
                 
-                # Pull the cross-section again
-                ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main
-                ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main * -1
-                ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main
-                ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main * -1
+                #We now precompute the cross-section ordinates
+                if d_xs_angle_use > np.pi:
+                    i_precompute_angle_closest = int(round((d_xs_angle_use-np.pi) / d_precompute_angles))
+                else:
+                    i_precompute_angle_closest = int(round(d_xs_angle_use / d_precompute_angles))
 
-                xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
-                                                      i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-                xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
-                                                      i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
+                # Pull the cross-section again
+                ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest]
+                ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest] * -1
+                ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest]
+                ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest] * -1
+
+                xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
+                                                      i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
+                xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
+                                                      i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1, da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
                 
                 d_wse = da_xs_profile1[0] + d_test_depth
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z[i_precompute_angle_closest], dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z[i_precompute_angle_closest], dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
 
                 if (T1 + T2) < d_t_test:
                     d_t_test = T1 + T2
@@ -3067,13 +3225,18 @@ def main(MIF_Name: str, quiet: bool):
 
             # Now rerun everything with the shortest top-width angle
             d_xs_direction = d_shortest_tw_angle
-            (d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, #THIS USES THE UPDATED CROSS-SECTION ANGLE!!!!!!!!!
-                                                                                               i_row_cell, i_column_cell, i_center_point, dx, dy)
+            #(d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, #THIS USES THE UPDATED CROSS-SECTION ANGLE!!!!!!!!!
+            #                                                                                   i_row_cell, i_column_cell, i_center_point, dx, dy)
+            #We now precompute the cross-section ordinates
+            if d_xs_direction > np.pi:
+                i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
+            else:
+                i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
 
-            ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main
-            ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main * -1
-            ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main
-            ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main * -1
+            ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest]
+            ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest] * -1
+            ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest]
+            ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest] * -1
             
             #Set the index values to be within the confines of the raster
             ia_xc_r1_index_main = np.clip(ia_xc_r1_index_main,0,nrows+2*i_boundary_number-1)
@@ -3081,10 +3244,10 @@ def main(MIF_Name: str, quiet: bool):
             ia_xc_c1_index_main = np.clip(ia_xc_c1_index_main,0,ncols+2*i_boundary_number-1)
             ia_xc_c2_index_main = np.clip(ia_xc_c2_index_main,0,ncols+2*i_boundary_number-1)
 
-            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
-                                                  i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second * -1,
-                                              i_column_cell + ia_xc_dc_index_second * -1, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
+            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
+                                                  i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
+            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
+                                              i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1, da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
         
         # Burn bathymetry profile into cross-section profile
         # "Be the banks for your river" - Needtobreathe
@@ -3103,24 +3266,24 @@ def main(MIF_Name: str, quiet: bool):
                 continue
 
         # pull the landcover data prior to making the streams cells all water 
-        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
-                                                i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use_before_streams)
+        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
+                                                i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use_before_streams)
 
         i_landcover_for_bathy = ia_lc_xs1[0]
         # now switch the values back
-        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second,
-                                                i_column_cell + ia_xc_dc_index_second, da_xc_main_fract, da_xc_main_fract_int, da_xc_second_fract, da_xc_second_fract_int, i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
+        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, i_row_cell, i_column_cell, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
+                                                i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_main_fract_int[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], da_xc_second_fract_int[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
 
         
         #BATHYMETRY CALCULATION
         #This method calculates bathymetry based on the water surface elevation or LandCover ("FindBanksBasedOnLandCover" and "LC_Water_Value").
         if b_bathy_use_banks is False and s_output_bathymetry_path != '':
-            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
+            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z[i_precompute_angle_closest], d_slope_use, nrows, ncols, 
                                                                                                                                                 ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value,
                                                                                                                                                 dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover, i_landcover_for_bathy)
         #This method calculates the banks based on the Riverbank
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
-            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols, 
+            (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z[i_precompute_angle_closest], d_slope_use, nrows, ncols, 
                                                                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation, 
                                                                                                                                  b_FindBanksBasedOnLandCover, i_landcover_for_bathy)
 
@@ -3230,14 +3393,14 @@ def main(MIF_Name: str, quiet: bool):
 
             # Find the wse associated with the Maximum flow using 0.5m increments
             d_maxflow_wse_initial = da_xs_profile1[0]
-            d_maxflow_wse_initial, d_q_sum = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
+            d_maxflow_wse_initial, d_q_sum = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
             
             # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
             d_maxflow_wse_initial = d_maxflow_wse_initial - 0.5
             if d_maxflow_wse_initial < da_xs_profile1[0]:
                 d_maxflow_wse_initial = da_xs_profile1[0]
             d_maxflow_wse_med = d_maxflow_wse_initial
-            d_maxflow_wse_med, d_q_sum = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
+            d_maxflow_wse_med, d_q_sum = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
             # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
             d_maxflow_wse_med = d_maxflow_wse_med - 0.05
@@ -3245,7 +3408,7 @@ def main(MIF_Name: str, quiet: bool):
                 d_maxflow_wse_med = da_xs_profile1[0]
             d_maxflow_wse_final = d_maxflow_wse_med
             
-            d_maxflow_wse_final, d_q_sum = find_wse(51, d_maxflow_wse_final, d_depth_increment_small, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
+            d_maxflow_wse_final, d_q_sum = find_wse(51, d_maxflow_wse_final, d_depth_increment_small, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
             #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
             if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
@@ -3264,7 +3427,7 @@ def main(MIF_Name: str, quiet: bool):
             d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
 
-            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum)
+            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum)
 
             #This prevents the way-over simulated cells.  These are outliers.
             if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
@@ -3333,8 +3496,8 @@ def main(MIF_Name: str, quiet: bool):
             for i_entry_elevation in range(1, i_number_of_elevations):
                 # Calculate the geometry
                 d_wse = da_elevation_list_mm[i_entry_elevation] / 1000.0
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z[i_precompute_angle_closest], dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z[i_precompute_angle_closest], dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
 
                 # Aggregate the geometric properties
                 da_total_t[i_entry_elevation] = T1 + T2
@@ -3447,7 +3610,7 @@ def main(MIF_Name: str, quiet: bool):
                 da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
             dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
             dm_manning_n_raster2_str = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z}\t{dm_manning_n_raster2_str}\n")
+            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z[i_precompute_angle_closest]}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z[i_precompute_angle_closest]}\t{dm_manning_n_raster2_str}\n")
 
    
     # Write the output VDT Database file
