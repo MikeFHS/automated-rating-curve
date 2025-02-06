@@ -2551,7 +2551,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                     bank_elev_2 = da_xs_profile2[i]
                     i_bank_2_index = i - 1
                     break
-        i_total_bank_cells = i_bank_1_index + i_bank_2_index  - 1
+        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
         if i_total_bank_cells <= 1:
             i_total_bank_cells = 1
         else:
@@ -2615,7 +2615,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster,
                 ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main
             )
-            i_total_bank_cells = i_bank_1_index + i_bank_2_index -1
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index
             if i_total_bank_cells <= 1:
                 i_total_bank_cells = 1
             else:
@@ -2637,7 +2637,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 bank_elev_1 = da_xs_profile1[i_bank_1_index]
                 i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
                 bank_elev_2 = da_xs_profile2[i_bank_2_index]
-                i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+                i_total_bank_cells = i_bank_1_index + i_bank_2_index
                 if i_total_bank_cells <= 1:
                     i_total_bank_cells = 1
                 else:
@@ -2662,7 +2662,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
             bank_elev_1 = da_xs_profile1[i_bank_1_index]
             i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
             bank_elev_2 = da_xs_profile2[i_bank_2_index]
-            i_total_bank_cells = i_bank_1_index + i_bank_2_index -1
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index
             if i_total_bank_cells <= 1:
                 i_total_bank_cells = 1
             else:
