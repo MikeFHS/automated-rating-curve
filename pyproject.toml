@@ -54,6 +54,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+[tool.setuptools.dynamic]
+version = { attr = "arc.__version__" }
+
 [project.scripts]
 arc = "arc.arc:_main"
 curve-to-geojson-stream-vector = "arc.Curves_To_GeoJSON:main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector"
