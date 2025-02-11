@@ -2356,7 +2356,7 @@ def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2
 
 def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
                                                            ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value,
-                                                           dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover, i_landcover_for_bathy, b_bathy_use_banks):
+                                                           dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover, i_landcover_for_bathy, b_bathy_use_banks, d_bathymetry_trapzoid_height):
     """
     Calculate bathymetry based on water surface elevations.
     """
@@ -2478,7 +2478,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                                                        ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main,
                                                        d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
                                                        dm_manning_n_raster, i_lc_water_value, dm_elevation, b_FindBanksBasedOnLandCover,
-                                                       i_landcover_for_bathy, b_bathy_use_banks):
+                                                       i_landcover_for_bathy, b_bathy_use_banks, d_bathymetry_trapzoid_height):
     """
     Calculate the bathymetry (water depth and thalweg elevation) based on river bank elevations.
     """
@@ -2511,16 +2511,19 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
         return d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base, d_y_depth
 
-    def calc_bankfull_elevation(base_elev, bank_elev_1, bank_elev_2):
-        """Determine the bankfull elevation based on the two bank values."""
-        if bank_elev_1 > base_elev and bank_elev_2 > base_elev:
-            return min(bank_elev_1, bank_elev_2)
-        elif bank_elev_1 > base_elev:
-            return bank_elev_1
-        elif bank_elev_2 > base_elev:
-            return bank_elev_2
-        else:
-            return base_elev
+    def is_valid_number(elev):
+        """Check if elev is a valid number (not None, NaN, or non-numeric)."""
+        return isinstance(elev, (int, float)) and not np.isnan(elev)
+
+    def calc_bankfull_elevation(base_elev, bank_elev_1, bank_elev_2): 
+        """
+        Determine the bankfull elevation based on the two bank elevation values.
+        It collects all valid bank elevations that are at least base_elev.
+        If both are valid, it picks the minimum one.
+        If neither is valid, it defaults to base_elev.
+        """
+        valid_banks = [elev for elev in (bank_elev_1, bank_elev_2) if is_valid_number(elev) and elev >= base_elev]
+        return min(valid_banks, default=base_elev)
 
     # --- End of helper functions --- #
 
@@ -2606,9 +2609,10 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                                                  i_bank_1_index, i_bank_2_index, d_bankfull_elevation,
                                                  d_bathymetry_trapzoid_height, d_q_baseflow, d_slope_use
                                                 )
-
+        # calculate the elevation of the bathy depth and re-calculate if higher than the bankfull elevation
+        d_y_bathy = d_bankfull_elevation - d_y_depth
         # If the estimated depth is an outlier, try alternate approaches
-        if d_y_depth >= 25 and (function_used == "find_wse_and_banks_by_lc" or
+        if d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation and (function_used == "find_wse_and_banks_by_lc" or
                                 function_used == "find_wse_and_banks_by_flat_water"):
             # Recalculate using width-to-depth ratio
             (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(
@@ -2631,7 +2635,9 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 i_bank_1_index, i_bank_2_index, d_bankfull_elevation,
                 d_bathymetry_trapzoid_height, d_q_baseflow, d_slope_use
             )
-            if d_y_depth >= 25:
+            # calculate the elevation of the bathy depth and re-calculate if higher than the bankfull elevation
+            d_y_bathy = d_bankfull_elevation - d_y_depth
+            if d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation:
                 # Try using the inflection point method
                 i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
                 bank_elev_1 = da_xs_profile1[i_bank_1_index]
@@ -2649,14 +2655,16 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                     i_bank_1_index, i_bank_2_index, d_bankfull_elevation,
                     d_bathymetry_trapzoid_height, d_q_baseflow, d_slope_use
                 )
-                if d_y_depth >= 25 or i_total_bank_cells <= 1:
+                # calculate the elevation of the bathy depth and re-calculate if higher than the bankfull elevation
+                d_y_bathy = d_bankfull_elevation - d_y_depth
+                if d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation or i_total_bank_cells <= 1:
                     d_y_depth = 0
                     d_y_bathy = da_xs_profile1[0]
                     i_bank_1_index = 0
                     i_bank_2_index = 0
                     i_total_bank_cells = 1
 
-        elif d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
+        elif d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation and function_used == "find_bank_using_width_to_depth_ratio":
             # Use the inflection point method directly
             i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
             bank_elev_1 = da_xs_profile1[i_bank_1_index]
@@ -2674,14 +2682,16 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
                 i_bank_1_index, i_bank_2_index, d_bankfull_elevation,
                 d_bathymetry_trapzoid_height, d_q_baseflow, d_slope_use
             )
-            if d_y_depth >= 25 or i_total_bank_cells <= 1:
+            # calculate the elevation of the bathy depth and re-calculate if higher than the bankfull elevation
+            d_y_bathy = d_bankfull_elevation - d_y_depth
+            if d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation or i_total_bank_cells <= 1:
                 d_y_depth = 0
                 d_y_bathy = da_xs_profile1[0]
                 i_bank_1_index = 0
                 i_bank_2_index = 0
                 i_total_bank_cells = 1
 
-        elif d_y_depth >= 25 and function_used == "find_bank_inflection_point":
+        elif d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation and function_used == "find_bank_inflection_point":
             d_y_depth = 0
             d_y_bathy = da_xs_profile1[0]
             i_bank_1_index = 0
@@ -2707,7 +2717,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
 
     # --- Adjust bathymetry on both profiles if valid banks were found --- #
     if i_total_bank_cells > 1:
-        d_y_bathy = d_bankfull_elevation - d_y_depth
         # Add 1 to the bank index to get to the actual bank cell.
         adjust_profile_for_bathymetry(
             i_entry_cell, da_xs_profile1, i_bank_1_index + 1, d_total_bank_dist,
@@ -2726,309 +2735,6 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
 
     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
-
-# def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, nrows, ncols,  
-#                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell,
-#                                                        dm_manning_n_raster, i_lc_water_value, dm_elevation, b_FindBanksBasedOnLandCover, i_landcover_for_bathy):
-    
-#     # set the function used to none before we start running things
-#     function_used = None
-    
-#     # Initially set the bank info to zeros and bank elevations to the current water surface elevation
-#     i_bank_1_index = 0
-#     i_bank_2_index = 0
-#     bank_elev_1 = da_xs_profile1[0]
-#     bank_elev_2 = da_xs_profile2[0]
-#     d_y_depth = 0.0
-
-#     #First find the bank information
-#     if b_FindBanksBasedOnLandCover==True:   # and i_landcover_for_bathy == i_lc_water_value:
-#         # Use land cover data to find the banks of the stream
-#         if xs1_n >= 1 and i_landcover_for_bathy == i_lc_water_value:
-#             bank_elev_1 = da_xs_profile1[0]
-#             for i in range(1, xs1_n):
-#                 if ia_lc_xs1[i] != i_lc_water_value:
-#                     bank_elev_1 = da_xs_profile1[i]
-#                     i_bank_1_index = i - 1
-#                     break
-#         if xs2_n >= 1 and i_landcover_for_bathy == i_lc_water_value:
-#             bank_elev_2 = da_xs_profile2[0]
-#             for i in range(1, xs2_n):
-#                 if ia_lc_xs2[i] != i_lc_water_value:
-#                     bank_elev_2 = da_xs_profile2[i]
-#                     i_bank_2_index = i - 1
-#                     break
-#         # If we don't have any banks, we may need to try another approach to find the banks
-#         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1 
-#         if i_total_bank_cells <= 1:
-#             i_total_bank_cells = 1
-#         elif i_total_bank_cells > 1:
-#             function_used = "find_wse_and_banks_by_lc"
-#     else:
-#         #Default is to determine bank locations based on the flat water within the DEM
-#         i_bank_1_index = find_bank(da_xs_profile1, xs1_n, d_dem_low_point_elev + 0.1, "banks")
-#         i_bank_2_index = find_bank(da_xs_profile2, xs2_n, d_dem_low_point_elev + 0.1, "banks")
-#         # set the bank elevations
-#         bank_elev_1 = da_xs_profile1[i_bank_1_index]
-#         bank_elev_2 = da_xs_profile2[i_bank_2_index]
-#         #For Testing Purposes
-#         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-#         if i_total_bank_cells > 1:
-#             function_used = "find_wse_and_banks_by_flat_water"
-
-#     # Use width-depth ratio calculation to find banks if land cover didn't work
-#     if i_total_bank_cells <= 1:
-#         (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
-#                                                                               ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-#         bank_elev_1 = da_xs_profile1[i_bank_1_index]
-#         bank_elev_2 = da_xs_profile2[i_bank_2_index]
-#         # If we don't have any banks, we may need to try another approach to find the banks
-#         i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-#         if i_total_bank_cells <= 1:
-#             i_total_bank_cells = 1
-#         elif i_total_bank_cells > 1:
-#             function_used = "find_bank_using_width_to_depth_ratio"
-
-#     # If no banks are found, try using the inflection point
-#     if i_total_bank_cells <= 1:
-#         i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
-#         bank_elev_1 = da_xs_profile1[i_bank_1_index]
-#         i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
-#         bank_elev_2 = da_xs_profile2[i_bank_2_index]
-#         # If we don't have any banks, we may need to try another approach to find the banks
-#         i_total_bank_cells = i_bank_1_index + i_bank_2_index
-#         if i_total_bank_cells <= 1:
-#             i_total_bank_cells = 1
-#         elif i_total_bank_cells > 1:
-#             function_used = "find_bank_inflection_point"
-
-#     # Calculate bankfull elevation
-#     if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
-#         d_bankfull_elevation = min(bank_elev_1, bank_elev_2)
-#     elif bank_elev_1 > da_xs_profile1[0]:
-#         d_bankfull_elevation = bank_elev_1
-#     elif bank_elev_2 > da_xs_profile1[0]:
-#         d_bankfull_elevation = bank_elev_2
-#     else:
-#         d_bankfull_elevation = da_xs_profile1[0]
-
-#     # Now let's estimate the depth of the bathymetry and re-run if we need to
-#     if d_q_baseflow > 0.0 and function_used != None:
-        
-#         # Calculate the trapezoid dimensions
-#         # Get the sides between the bank elevation and the next index up
-#         try:
-#             d_d_elev_dem_pnts = da_xs_profile1[i_bank_1_index+1]-da_xs_profile1[i_bank_1_index]
-#             if d_d_elev_dem_pnts>0:
-#                 d_side1_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile1[i_bank_1_index]) / d_d_elev_dem_pnts
-#                 if d_side1_dist<0.0 or d_side1_dist>d_distance_z:
-#                     d_side1_dist = 0.5*d_distance_z
-#             else:
-#                 d_side1_dist = 0.0
-#         except:
-#             d_side1_dist = 0.5*d_distance_z
-#         try: 
-#             d_d_elev_dem_pnts = da_xs_profile2[i_bank_2_index+1]-da_xs_profile2[i_bank_2_index]
-#             if d_d_elev_dem_pnts>0:
-#                 d_side2_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile2[i_bank_2_index]) / d_d_elev_dem_pnts
-#                 if d_side2_dist<0.0 or d_side2_dist>d_distance_z:
-#                     d_side2_dist = 0.5*d_distance_z
-#             else:
-#                 d_side2_dist = 0.0
-#         except:
-#             d_side2_dist = 0.5*d_distance_z
-#         d_total_bank_dist = i_total_bank_cells * d_distance_z + d_side1_dist + d_side2_dist
-#         d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
-#         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-#         d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-#         # if the estimated depth is an outlier, let's try one of the other approaches to bathymetry estimation 
-#         if d_y_depth >= 25  and (function_used == "find_wse_and_banks_by_lc" or function_used == "find_wse_and_banks_by_flat_water"):  # If depth is classified as an outlier
-            
-#             # Recalculate using width-to-depth ratio if depth is an outlier
-#             (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
-#                                                                                   ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main)
-            
-#             # If we don't have any banks, we may need to try another approach to find the banks
-#             i_total_bank_cells = i_bank_1_index + i_bank_2_index
-#             if i_total_bank_cells <= 1:
-#                 i_total_bank_cells = 1
-#             elif i_total_bank_cells > 1:
-#                 function_used = "find_bank_using_width_to_depth_ratio"
-            
-#             # find the elevation of the banks
-#             bank_elev_1 = da_xs_profile1[i_bank_1_index]
-#             bank_elev_2 = da_xs_profile2[i_bank_2_index]
-            
-#             # Calculate bankfull elevation
-#             if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
-#                 d_bankfull_elevation = min(bank_elev_1, bank_elev_2)
-#             elif bank_elev_1 > da_xs_profile1[0]:
-#                 d_bankfull_elevation = bank_elev_1
-#             elif bank_elev_2 > da_xs_profile1[0]:
-#                 d_bankfull_elevation = bank_elev_2
-#             else:
-#                 d_bankfull_elevation = da_xs_profile1[0]
-            
-#             # Calculate the trapezoid dimensions
-#             # Get the sides between the bank elevation and the next index up
-#             try:
-#                 d_d_elev_dem_pnts = da_xs_profile1[i_bank_1_index+1]-da_xs_profile1[i_bank_1_index]
-#                 if d_d_elev_dem_pnts>0:
-#                     d_side1_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile1[i_bank_1_index]) / d_d_elev_dem_pnts
-#                     if d_side1_dist<0.0 or d_side1_dist>d_distance_z:
-#                         d_side1_dist = 0.5*d_distance_z
-#                 else:
-#                     d_side1_dist = 0.0
-#             except:
-#                 d_side1_dist = 0.5*d_distance_z
-#             try: 
-#                 d_d_elev_dem_pnts = da_xs_profile2[i_bank_2_index+1]-da_xs_profile2[i_bank_2_index]
-#                 if d_d_elev_dem_pnts>0:
-#                     d_side2_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile2[i_bank_2_index]) / d_d_elev_dem_pnts
-#                     if d_side2_dist<0.0 or d_side2_dist>d_distance_z:
-#                         d_side2_dist = 0.5*d_distance_z
-#                 else:
-#                     d_side2_dist = 0.0
-#             except:
-#                 d_side2_dist = 0.5*d_distance_z
-#             d_total_bank_dist = i_total_bank_cells * d_distance_z + d_side1_dist + d_side2_dist
-#             d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
-#             d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-#             d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-#             # If depth is still an outlier, try using the inflection point method
-#             if d_y_depth >= 25:
-#                 i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
-#                 bank_elev_1 = da_xs_profile1[i_bank_1_index]
-#                 i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
-#                 bank_elev_2 = da_xs_profile2[i_bank_2_index]
-#                 # If we don't have any banks, we may need to try another approach to find the banks
-#                 i_total_bank_cells = i_bank_1_index + i_bank_2_index
-#                 if i_total_bank_cells <= 1:
-#                     i_total_bank_cells = 1
-#                 elif i_total_bank_cells > 1:
-#                     function_used = "find_bank_inflection_point"
-#                 # Calculate bankfull elevation
-#                 if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
-#                     d_bankfull_elevation = min(bank_elev_1, bank_elev_2)
-#                 elif bank_elev_1 > da_xs_profile1[0]:
-#                     d_bankfull_elevation = bank_elev_1
-#                 elif bank_elev_2 > da_xs_profile1[0]:
-#                     d_bankfull_elevation = bank_elev_2
-#                 else:
-#                     d_bankfull_elevation = da_xs_profile1[0]
-#                 # Calculate the trapezoid dimensions
-#                 # Get the sides between the bank elevation and the next index up
-#                 try:
-#                     d_d_elev_dem_pnts = da_xs_profile1[i_bank_1_index+1]-da_xs_profile1[i_bank_1_index]
-#                     if d_d_elev_dem_pnts>0:
-#                         d_side1_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile1[i_bank_1_index]) / d_d_elev_dem_pnts
-#                         if d_side1_dist<0.0 or d_side1_dist>d_distance_z:
-#                             d_side1_dist = 0.5*d_distance_z
-#                     else:
-#                         d_side1_dist = 0.0
-#                 except:
-#                     d_side1_dist = 0.5*d_distance_z
-#                 try: 
-#                     d_d_elev_dem_pnts = da_xs_profile2[i_bank_2_index+1]-da_xs_profile2[i_bank_2_index]
-#                     if d_d_elev_dem_pnts>0:
-#                         d_side2_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile2[i_bank_2_index]) / d_d_elev_dem_pnts
-#                         if d_side2_dist<0.0 or d_side2_dist>d_distance_z:
-#                             d_side2_dist = 0.5*d_distance_z
-#                     else:
-#                         d_side2_dist = 0.0
-#                 except:
-#                     d_side2_dist = 0.5*d_distance_z
-#                 d_total_bank_dist = i_total_bank_cells * d_distance_z + d_side1_dist + d_side2_dist
-#                 d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
-#                 d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-#                 d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-#                 # If depth is still an outlier, we give up
-#                 if d_y_depth >= 25 or i_total_bank_cells <= 1:
-#                     d_y_depth = 0
-#                     d_y_bathy = da_xs_profile1[0]
-#                     i_bank_1_index = 0
-#                     i_bank_2_index = 0
-#                     i_total_bank_cells = 1
-
-#         # If depth is still an outlier, try using the inflection point method
-#         elif d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
-#             i_bank_1_index = find_bank_inflection_point(da_xs_profile1, xs1_n, d_distance_z)
-#             bank_elev_1 = da_xs_profile1[i_bank_1_index]
-#             i_bank_2_index = find_bank_inflection_point(da_xs_profile2, xs2_n, d_distance_z)
-#             bank_elev_2 = da_xs_profile2[i_bank_2_index]
-#             # If we don't have any banks, we may need to try another approach to find the banks
-#             i_total_bank_cells = i_bank_1_index + i_bank_2_index
-#             if i_total_bank_cells <= 1:
-#                 i_total_bank_cells = 1
-#             elif i_total_bank_cells > 1:
-#                 function_used = "find_bank_inflection_point"
-#             # Calculate bankfull elevation
-#             if bank_elev_1 > da_xs_profile1[0] and bank_elev_2 > da_xs_profile1[0]:
-#                 d_bankfull_elevation = min(bank_elev_1, bank_elev_2)
-#             elif bank_elev_1 > da_xs_profile1[0]:
-#                 d_bankfull_elevation = bank_elev_1
-#             elif bank_elev_2 > da_xs_profile1[0]:
-#                 d_bankfull_elevation = bank_elev_2
-#             else:
-#                 d_bankfull_elevation = da_xs_profile1[0]
-#             # Calculate the trapezoid dimensions
-#             # Get the sides between the bank elevation and the next index up
-#             try:
-#                 d_d_elev_dem_pnts = da_xs_profile1[i_bank_1_index+1]-da_xs_profile1[i_bank_1_index]
-#                 if d_d_elev_dem_pnts>0:
-#                     d_side1_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile1[i_bank_1_index]) / d_d_elev_dem_pnts
-#                     if d_side1_dist<0.0 or d_side1_dist>d_distance_z:
-#                         d_side1_dist = 0.5*d_distance_z
-#                 else:
-#                     d_side1_dist = 0.0
-#             except:
-#                 d_side1_dist = 0.5*d_distance_z
-#             try: 
-#                 d_d_elev_dem_pnts = da_xs_profile2[i_bank_2_index+1]-da_xs_profile2[i_bank_2_index]
-#                 if d_d_elev_dem_pnts>0:
-#                     d_side2_dist = d_distance_z * (d_bankfull_elevation - da_xs_profile2[i_bank_2_index]) / d_d_elev_dem_pnts
-#                     if d_side2_dist<0.0 or d_side2_dist>d_distance_z:
-#                         d_side2_dist = 0.5*d_distance_z
-#                 else:
-#                     d_side2_dist = 0.0
-#             except:
-#                 d_side2_dist = 0.5*d_distance_z
-#             d_total_bank_dist = i_total_bank_cells * d_distance_z + d_side1_dist + d_side2_dist
-#             d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
-#             d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-#             d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-#             # If depth is still an outlier, we give up
-#             if d_y_depth >= 25 or i_total_bank_cells <= 1:
-#                 d_y_depth = 0
-#                 d_y_bathy = da_xs_profile1[0]
-#                 i_bank_1_index = 0
-#                 i_bank_2_index = 0
-#                 i_total_bank_cells = 1
-                
-#         # If depth is still an outlier after using the inflection point method, we give up
-#         elif d_y_depth >= 25 and function_used == "find_bank_inflection_point":
-#             d_y_depth = 0
-#             d_y_bathy = da_xs_profile1[0]
-#             i_bank_1_index = 0
-#             i_bank_2_index = 0
-#             i_total_bank_cells = 1
-#     else:
-#         # Set depth to zero if no method succeeds in finding valid banks
-#         d_y_depth = 0.0
-#         d_y_bathy = da_xs_profile1[0]
-#         i_bank_1_index = 0
-#         i_bank_2_index = 0
-#         i_total_bank_cells = 1
-    
-#     if i_total_bank_cells > 1:
-#         # set the new estimate of the elevation of the thalweg
-#         d_y_bathy = d_bankfull_elevation - d_y_depth
-#         # We add 1 to the i_bank_index so that we can get to the actual bank of the river.
-#         adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile1, i_bank_1_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main, nrows, ncols, ia_lc_xs1, dm_land_use, d_side1_dist, dm_elevation)
-#         adjust_profile_for_bathymetry(i_entry_cell, da_xs_profile2, i_bank_2_index+1, d_total_bank_dist, d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth, dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main, nrows, ncols, ia_lc_xs2, dm_land_use, d_side2_dist, dm_elevation)
-
-#     print(function_used)
-#     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
 @njit(cache=True)
 def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use):
@@ -3562,12 +3268,12 @@ def main(MIF_Name: str, quiet: bool):
         if b_bathy_use_banks is False and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z[i_precompute_angle_closest], d_slope_use, nrows, ncols, 
                                                                                                                                                 ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, i_lc_water_value,
-                                                                                                                                                dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover, i_landcover_for_bathy, b_bathy_use_banks)
+                                                                                                                                                dm_elevation, dm_manning_n_raster, b_FindBanksBasedOnLandCover, i_landcover_for_bathy, b_bathy_use_banks, d_bathymetry_trapzoid_height)
         #This method calculates the banks based on the Riverbank
         elif b_bathy_use_banks is True and s_output_bathymetry_path != '':
             (i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy) = Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z[i_precompute_angle_closest], d_slope_use, nrows, ncols, 
                                                                                                                                  ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_row_cell, i_column_cell, dm_manning_n_raster, i_lc_water_value, dm_elevation, 
-                                                                                                                                 b_FindBanksBasedOnLandCover, i_landcover_for_bathy, b_bathy_use_banks)
+                                                                                                                                 b_FindBanksBasedOnLandCover, i_landcover_for_bathy, b_bathy_use_banks, d_bathymetry_trapzoid_height)
 
         # Solve using the volume fill approach
         i_volume_fill_approach = 1
