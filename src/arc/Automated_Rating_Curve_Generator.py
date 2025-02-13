@@ -1738,7 +1738,7 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
     # If banks are calculated, make an adjustment to the trapezoidal bathymetry
     if i_bank_index > 0:
         # Loop over the bank width offset indices
-        for x in range(i_bank_index + 1):
+        for x in range(min(i_bank_index + 1, len(ia_xc_r_index_main))):
             # Calculate the distance to the bank
             d_dist_cell_to_bank = (i_bank_index - x) * d_distance_z + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
             lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
