@@ -14,7 +14,7 @@ import tqdm
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from scipy.optimize import curve_fit, OptimizeWarning
+from scipy.optimize import curve_fit, OptimizeWarning, bisect
 from scipy.signal import savgol_filter
 from osgeo import gdal
 from numba import njit
@@ -1738,7 +1738,7 @@ def adjust_profile_for_bathymetry(i_entry_cell: int, da_xs_profile: np.ndarray, 
     # If banks are calculated, make an adjustment to the trapezoidal bathymetry
     if i_bank_index > 0:
         # Loop over the bank width offset indices
-        for x in range(i_bank_index + 1):
+        for x in range(min(i_bank_index + 1, len(ia_xc_r_index_main))):
             # Calculate the distance to the bank
             d_dist_cell_to_bank = (i_bank_index - x) * d_distance_z + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
             lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
@@ -1893,7 +1893,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
 
         else:
             # All values are good, so include them all.
-            # Calculate teh geometric values
+            # Calculate the geometric values
             d_area = np.sum(da_area_good[da_y_depth[1:] > 0])
             d_perimeter = np.sum(da_perimeter_i_good[da_y_depth[1:] > 0])
             if d_perimeter == 0:
@@ -1906,6 +1906,12 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
 
             # Update the top width
             d_top_width = d_distance_z * np.sum(da_y_depth[1:] > 0)
+
+    # d_area = round(d_area, 3)
+    # d_perimeter = round(d_perimeter, 3)
+    # d_hydraulic_radius = round(d_hydraulic_radius, 3)
+    # d_composite_n = round(d_composite_n, 3)
+    # d_top_width = round(d_top_width, 3)
 
     # Return to the calling function
     return d_area, d_perimeter, d_hydraulic_radius, d_composite_n, d_top_width
@@ -2735,14 +2741,74 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
 
     return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
+# @njit(cache=True)
+# def discharge_at_wse(wse, d_q_maximum, 
+#                      da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, 
+#                      d_distance_z, n_x_section_1, n_x_section_2, d_slope_use):
+#     # Compute geometry for both cross-sections.
+#     A1, P1, R1, comp_n1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], wse, d_distance_z, n_x_section_1)
+#     A2, P2, R2, comp_n2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], wse, d_distance_z, n_x_section_2)
+
+#     # Aggregate the geometric properties.
+#     d_a_sum = A1 + A2
+#     d_p_sum = P1 + P2
+#     d_t_sum = T1 + T2
+
+#     # Compute the discharge using Manning's equation if the geometry is valid.
+#     if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+#         d_composite_n = ((comp_n1 + comp_n2) / d_p_sum) ** (2.0 / 3.0)
+#         d_q = (1.0 / d_composite_n) * d_a_sum * ((d_a_sum / d_p_sum) ** (2.0 / 3.0)) * (d_slope_use ** 0.5)
+#     else:
+#         d_q = 0.0
+
+#     return d_q
+
+# @njit(cache=True)
+# def find_wse(initial_wse, tolerance, max_iterations, d_q_maximum, 
+#                     da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, 
+#                     d_distance_z, n_x_section_1, n_x_section_2, d_slope_use):
+#     wse = initial_wse
+#     epsilon = 1e-6  # small increment for finite difference
+#     for i in range(max_iterations):
+#         # Compute discharge at the current water-surface elevation
+#         q = discharge_at_wse(wse, d_q_maximum, 
+#                              da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, 
+#                              d_distance_z, n_x_section_1, n_x_section_2, d_slope_use)
+#         # f(wse) = discharge(wse) - d_q_maximum
+#         f_value = q - d_q_maximum
+
+#         # Check if the solution is within the desired tolerance
+#         if abs(f_value) < tolerance:
+#             return wse, d_q_maximum
+
+#         # Estimate the derivative using a finite difference
+#         q_eps = discharge_at_wse(wse + epsilon, d_q_maximum, 
+#                                  da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, 
+#                                  d_distance_z, n_x_section_1, n_x_section_2, d_slope_use)
+#         f_deriv = (q_eps - q) / epsilon
+
+#         # Protect against division by zero
+#         if abs(f_deriv) < 1e-12:
+#             break
+
+#         # Update the water-surface elevation using Newton's method
+#         wse = wse - f_value / f_deriv
+
+#     # If convergence is not reached within max_iterations, return the current estimate.
+#     return wse, discharge_at_wse(wse, d_q_maximum, 
+#                                  da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, 
+#                                  d_distance_z, n_x_section_1, n_x_section_2, d_slope_use)
 
 @njit(cache=True)
 def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use):
     d_wse, d_q_sum = 0.0, 0.0
+    prev_wse, prev_q = 0.0, 0.0  # Store previous iteration values for interpolation
+
     for i_depthincrement in range(1, range_end):
         d_wse = start_wse + i_depthincrement * increment
-        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
-        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+        d_wse = round(d_wse, 3)
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_distance_z, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse, d_distance_z, n_x_section_2)
 
         # Aggregate the geometric properties
         d_a_sum = A1 + A2
@@ -2750,32 +2816,86 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
         d_t_sum = T1 + T2
         d_q_sum = 0.0
 
-        # Estimate mannings n and flow
+        # Estimate Manning's n and flow
         if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
             d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
             d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
         
-        # Perform check on the maximum flow
-        if d_q_sum > d_q_maximum:
+        # Check for overshoot in discharge
+        if d_q_sum == d_q_maximum:
             break
+        elif d_q_sum > d_q_maximum:
+            # If overshoot occurs at the very first increment, interpolation cannot be done
+            if i_depthincrement == 1:
+                break
+            else:
+                # Linear interpolation between previous and current values:
+                # interp_wse = prev_wse + (target_q - prev_q) * (d_wse - prev_wse) / (d_q_sum - prev_q)
+                interp_wse = prev_wse + (d_q_maximum - prev_q) * (d_wse - prev_wse) / (d_q_sum - prev_q)
+                interp_wse = round(interp_wse, 3)
+                # Recalculate geometry and discharge at the interpolated water surface elevation
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], interp_wse, d_distance_z, n_x_section_1)
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], interp_wse, d_distance_z, n_x_section_2)
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                    # d_composite_n = round(d_composite_n, 3)
+                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                    # d_q_sum = round(d_q_sum, 3)
+                d_wse = interp_wse
+            break
+
+        # Save current values for the next iteration
+        prev_wse = d_wse
+        prev_q = d_q_sum
 
     return d_wse, d_q_sum
 
+
+# @njit(cache=True)
+# def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use):
+#     d_wse, d_q_sum = 0.0, 0.0
+#     for i_depthincrement in range(1, range_end):
+#         d_wse = start_wse + i_depthincrement * increment
+#         A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
+#         A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+
+#         # Aggregate the geometric properties
+#         d_a_sum = A1 + A2
+#         d_p_sum = P1 + P2
+#         d_t_sum = T1 + T2
+#         d_q_sum = 0.0
+
+#         # Estimate mannings n and flow
+#         if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+#             d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+#             d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+        
+#         # Perform check on the maximum flow
+#         if d_q_sum > d_q_maximum:
+#             break
+
+#     return d_wse, d_q_sum
+
 @njit(cache=True)
-def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum):
+def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_ordinate_dist, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum):
     i_start_elevation_index, i_last_elevation_index = 0, 0
     for i_entry_elevation in range(i_number_of_increments):
-        # Calculate the geometry
-        d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
 
-            
-        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z, n_x_section_1)
-        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z, n_x_section_2)
+        d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
+        d_wse = round(d_wse, 3)  
+        
+        # Calculate the geometry          
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_ordinate_dist, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse, d_ordinate_dist, n_x_section_2)
 
         # Aggregate the geometric properties
         da_total_t[i_entry_elevation] = T1 + T2
         da_total_a[i_entry_elevation] = A1 + A2
         da_total_p[i_entry_elevation] = P1 + P2
+        da_total_q[i_entry_elevation] = 0.0
 
         # Check the properties are physically realistic. If so, estimate the flow with them.
         if da_total_t[i_entry_elevation] <= 0.0 or da_total_a[i_entry_elevation] <= 0.0 or da_total_p[i_entry_elevation] <= 0.0:
@@ -2787,6 +2907,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
             i_start_elevation_index = i_entry_elevation
 
         else:
+
             # Estimate mannings n
             d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
 
@@ -2794,13 +2915,12 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
             if d_composite_n < 0.0001:
                 d_composite_n = 0.035
 
-            # Estimate total flows
             da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
                                             math.pow(d_slope_use, 0.5))
             da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
             da_total_wse[i_entry_elevation] = d_wse
             i_last_elevation_index = i_entry_elevation
-
+        
     return i_start_elevation_index, i_last_elevation_index
 
 def modify_array(arr, b_modified_dem):
@@ -2961,7 +3081,8 @@ def main(MIF_Name: str, quiet: bool):
         dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2)).astype(int)
 
     # Get the list of stream locations
-    ia_valued_row_indices, ia_valued_column_indices = np.where(dm_stream > 0)
+    ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, COMID))
+
     i_number_of_stream_cells = len(ia_valued_row_indices)
 
     # Get the original landcover value before we start changing it
@@ -3085,6 +3206,8 @@ def main(MIF_Name: str, quiet: bool):
     pbar = tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet)
     for i_entry_cell in pbar:
 
+
+
         # pbar.disable = True
         
         # Get the metadata for the loop
@@ -3092,13 +3215,17 @@ def main(MIF_Name: str, quiet: bool):
         i_column_cell = ia_valued_column_indices[i_entry_cell]
         i_cell_comid = int(dm_stream[i_row_cell,i_column_cell])
 
+
         # Get the Flow Rates Associated with the Stream Cell
         try:
-            im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
+            im_flow_index = np.where(COMID == i_cell_comid)
+            # im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
+            # print("This is the flow index: ", im_flow_index)
             im_flow_index = int(im_flow_index[0][0])
             d_q_baseflow = QBaseFlow[im_flow_index]
             d_q_maximum = QMax[im_flow_index]
         except:
+            # print("I cant find the flow index")
             continue
         
         # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
@@ -3115,15 +3242,15 @@ def main(MIF_Name: str, quiet: bool):
         if d_slope_use < 0.0002:
             d_slope_use = 0.0002
     
-        # Get the Flow Rates Associated with the Stream Cell
-        try:
-            im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
-            im_flow_index = int(im_flow_index[0][0])
-            d_q_baseflow = QBaseFlow[im_flow_index]
-            d_q_maximum = QMax[im_flow_index]
-        except:
-            d_q_baseflow = 0
-            d_q_maximum = 0
+        # # Get the Flow Rates Associated with the Stream Cell
+        # try:
+        #     im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
+        #     im_flow_index = int(im_flow_index[0][0])
+        #     d_q_baseflow = QBaseFlow[im_flow_index]
+        #     d_q_maximum = QMax[im_flow_index]
+        # except:
+        #     d_q_baseflow = 0
+        #     d_q_maximum = 0
     
         # Get the Cross-Section Ordinates
         #(d_distance_z, da_xc_main_fract_int, da_xc_second_fract_int) = get_xs_index_values(i_entry_cell, ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second, da_xc_main_fract, da_xc_second_fract, d_xs_direction, i_row_cell, 
@@ -3240,8 +3367,9 @@ def main(MIF_Name: str, quiet: bool):
         # Burn bathymetry profile into cross-section profile
         # "Be the banks for your river" - Needtobreathe
                 
-        #If you don't have a cross-section, skip it or fill in empty values for the reach average processing
+        # If you don't have a cross-section, skip it or fill in empty values for the reach average processing
         if xs1_n<=0 and xs2_n<=0:
+            # print("I'm skipping because xs1_n<=0 and xs2_n<=0")
             if b_reach_average_curve_file is True:
                 All_COMID_curve_list.append(i_cell_comid)
                 All_Row_curve_list.append(i_row_cell)
@@ -3288,6 +3416,7 @@ def main(MIF_Name: str, quiet: bool):
         
             i_number_of_elevations = len(da_elevation_list_mm)
             if i_number_of_elevations <= 0:
+                # print("I'm skipping because i_number_of_elevations <= 0")
                 if b_reach_average_curve_file is True:
                     All_COMID_curve_list.append(i_cell_comid)
                     All_Row_curve_list.append(i_row_cell)
@@ -3301,6 +3430,7 @@ def main(MIF_Name: str, quiet: bool):
     
             if i_number_of_elevations >= ep:
                 LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
+                # print("I'm skipping because i_number_of_elevations >= ep")
                 if b_reach_average_curve_file is True:
                     All_COMID_curve_list.append(i_cell_comid)
                     All_Row_curve_list.append(i_row_cell)
@@ -3341,14 +3471,22 @@ def main(MIF_Name: str, quiet: bool):
         i_start_elevation_index = -1
         i_last_elevation_index = 0
         
-        # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
-        d_depth_increment_big = 0.5
-        d_depth_increment_med = 0.05
-        d_depth_increment_small = 0.01
-
+        
         if i_volume_fill_approach==1:
             # Find elevation where maximum flow is hit
             i_ordinate_for_Qmax = 0
+
+            # Emptry variables to reset things.
+            A1, P1, R1, np1, T1 = 0.0, 0.0, 0.0, 0.0, 0.0
+            d_composite_n = 0.0
+            d_q_sum = 0.0
+
+            # Here are the n values for each side of the cross-section
+            n_x_section_1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
+            n_x_section_2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
+
+            # space between ordinates in the cross-section
+            d_ordinate_dist = d_distance_z[i_precompute_angle_closest]
             
             '''
             for i_entry_elevation in range(1, i_number_of_elevations):
@@ -3376,59 +3514,318 @@ def main(MIF_Name: str, quiet: bool):
             d_inc_y = ((da_elevation_list_mm[i_ordinate_for_Qmax] - da_elevation_list_mm[0]) / 1000.0) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
             '''
-            n_x_section_1 = dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]
-            n_x_section_2 = dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]]
+            # we'll assume the results are acceptable until we think otherwise
+            acceptable = True
 
-            # Find the wse associated with the Maximum flow using 0.5m increments
+            # This is the bottom of the channel
             d_maxflow_wse_initial = da_xs_profile1[0]
-            d_maxflow_wse_initial, d_q_sum = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
+
+            # Define an objective function: the difference between the calculated max flow and d_q_maximum.
+            def objective_with_wse(trial_wse):
+
+                trial_wse = round(trial_wse, 3)
+                
+                # Calculate the geometry
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], trial_wse, d_ordinate_dist, n_x_section_1)
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], trial_wse, d_ordinate_dist, n_x_section_2)
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+
+                d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                # d_composite_n = round(d_composite_n, 3)
+                trial_d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                # trial_d_q_sum = round(trial_d_q_sum, 3)
+                difference = trial_d_q_sum - d_q_maximum
+
+                # The objective is zero when trial_d_q_sum equals d_q_maximum.
+                return difference
+            
+            # Define an objective function: the difference between the calculated max flow and d_q_maximum.
+            def objective_with_slope(trial_slope):
+                # find_wse returns a tuple: (d_maxflow_wse_final, d_q_sum)
+                trial_slope = round(trial_slope, 3)
+                _, trial_d_q_sum = find_wse(
+                    2501, 
+                    d_maxflow_wse_initial, 
+                    d_depth_increment_small, 
+                    d_q_maximum, 
+                    da_xs_profile1, 
+                    da_xs_profile2,
+                    xs1_n,
+                    xs2_n,
+                    d_ordinate_dist, 
+                    ia_xc_r1_index_main, 
+                    ia_xc_c1_index_main, 
+                    ia_xc_r2_index_main, 
+                    ia_xc_c2_index_main, 
+                    n_x_section_1, 
+                    n_x_section_2, 
+                    trial_slope
+                )
+                # The objective is zero when trial_d_q_sum equals d_q_maximum.
+                return trial_d_q_sum - d_q_maximum
+
+            wse_lower = d_maxflow_wse_initial + 0.01
+            wse_upper = d_maxflow_wse_initial + 25
+
+            # Check if the objective function changes sign between the bounds.
+            f_lower = objective_with_wse(wse_lower)
+            f_upper = objective_with_wse(wse_upper)
+
+            if f_lower * f_upper < 0:
+                # The signs differ, so we have a valid bracket.
+                d_maxflow_wse_final = bisect(objective_with_wse, wse_lower, wse_upper, xtol=0.0001)
+                d_maxflow_wse_final = round(d_maxflow_wse_final, 3)
+
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_1)
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_2)
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+
+                d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                    
+
+            # Let's see if the volume-fill approach gave us a better answer and use that if it did
+            # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
+            d_depth_increment_big = 0.5
+            d_depth_increment_med = 0.05
+            d_depth_increment_small = 0.01
+
+            d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_ordinate_dist, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
             
             # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
             d_maxflow_wse_initial = d_maxflow_wse_initial - 0.5
             if d_maxflow_wse_initial < da_xs_profile1[0]:
                 d_maxflow_wse_initial = da_xs_profile1[0]
             d_maxflow_wse_med = d_maxflow_wse_initial
-            d_maxflow_wse_med, d_q_sum = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
+            d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_ordinate_dist, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
             # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
             d_maxflow_wse_med = d_maxflow_wse_med - 0.05
             if d_maxflow_wse_med < da_xs_profile1[0]:
                 d_maxflow_wse_med = da_xs_profile1[0]
-            d_maxflow_wse_final = d_maxflow_wse_med
-            
-            d_maxflow_wse_final, d_q_sum = find_wse(51, d_maxflow_wse_final, d_depth_increment_small, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
+            d_maxflow_wse_final_test = d_maxflow_wse_med
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_ordinate_dist, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use)
 
-            #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
-            if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
-                if b_reach_average_curve_file is True:
-                    All_COMID_curve_list.append(i_cell_comid)
-                    All_Row_curve_list.append(i_row_cell)
-                    All_Col_curve_list.append(i_column_cell)
-                    All_BaseElev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
-                    All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
-                    All_QMax_curve_list.append(d_q_maximum)
-                    continue
+            # let's see if the iterative method gave use a better result and use that if it did
+            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+
+            # here we will see if we can get a better answer with a revised slope
+            # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
+            # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
+            potential_slope_error = 0.6 / d_ordinate_dist
+            
+            # Set lower and upper bounds for the slope search.
+            slope_lower = d_slope_use - potential_slope_error
+            slope_upper = d_slope_use + potential_slope_error
+
+            # Check if the objective function changes sign between the bounds.
+            f_lower = objective_with_slope(slope_lower)
+            f_upper = objective_with_slope(slope_upper)
+            if f_lower * f_upper < 0:
+                # The signs differ, so we have a valid bracket.
+                trial_slope_use = bisect(objective_with_slope, slope_lower, slope_upper, xtol=0.0001)
+                trial_slope_use = round(trial_slope_use, 3)
+                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                    2501, 
+                    d_maxflow_wse_initial, 
+                    d_depth_increment_small, 
+                    d_q_maximum, 
+                    da_xs_profile1, 
+                    da_xs_profile2, 
+                    xs1_n, 
+                    xs2_n,
+                    d_ordinate_dist, 
+                    ia_xc_r1_index_main, 
+                    ia_xc_c1_index_main, 
+                    ia_xc_r2_index_main, 
+                    ia_xc_c2_index_main, 
+                    n_x_section_1, 
+                    n_x_section_2, 
+                    trial_slope_use
+                )
+                # Check if d_q_sum is within acceptable bounds
+                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                    # Optionally update d_slope_use to the accepted value:
+                    d_slope_use = trial_slope_use
+                    d_maxflow_wse_final = d_maxflow_wse_final_test
+                    d_q_sum = d_q_sum_test
                 else:
-                    continue
-            
-            # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
-            d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
-            i_number_of_elevations = i_number_of_increments + 1
+                    pass
 
-            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z[i_precompute_angle_closest], n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum)
+
+            #If the max flow calculated from the cross-section is 50% high or low, let's try changing the slope
+            if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+
+                # print("I'm here because d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5")
+                # something isn't good with our results
+                acceptable = False
+
+                # here we will see if we can get a better answer with a revised slope
+                # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
+                # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
+                potential_slope_error = 0.6 / d_ordinate_dist
+
+                # Set lower and upper bounds for the slope search.
+                slope_lower = d_slope_use - potential_slope_error
+                slope_upper = d_slope_use + potential_slope_error
+
+                # Check if the objective function changes sign between the bounds.
+                f_lower = objective_with_slope(slope_lower)
+                f_upper = objective_with_slope(slope_upper)
+
+
+                if f_lower * f_upper < 0:
+                    # The signs differ, so we have a valid bracket.
+                    new_slope = bisect(objective_with_slope, slope_lower, slope_upper, xtol=0.0001)
+                    trial_slope_use = new_slope
+                    # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                    d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                        2501, 
+                        d_maxflow_wse_initial, 
+                        d_depth_increment_small, 
+                        d_q_maximum, 
+                        da_xs_profile1, 
+                        da_xs_profile2, 
+                        xs1_n, 
+                        xs2_n,
+                        d_ordinate_dist, 
+                        ia_xc_r1_index_main, 
+                        ia_xc_c1_index_main, 
+                        ia_xc_r2_index_main, 
+                        ia_xc_c2_index_main, 
+                        n_x_section_1, 
+                        n_x_section_2, 
+                        trial_slope_use
+                    )
+                    # Check if d_q_sum is within acceptable bounds
+                    if d_q_maximum * 0.5 <= d_q_sum_test <= d_q_maximum * 1.5:
+                        acceptable = True
+                        d_slope_use = trial_slope_use
+                        d_maxflow_wse_final = d_maxflow_wse_final_test
+                        d_q_sum = d_q_sum_test
+                        continue
+                else:
+                    pass
+
+            # #If the max flow calculated from the cross-section is 20% high or low, just skip this cell
+            # if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+            #     if b_reach_average_curve_file is True:
+            #         All_COMID_curve_list.append(i_cell_comid)
+            #         All_Row_curve_list.append(i_row_cell)
+            #         All_Col_curve_list.append(i_column_cell)
+            #         All_BaseElev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+            #         All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+            #         All_QMax_curve_list.append(d_q_maximum)
+            #         continue
+            #     else:
+            #         continue
 
             #This prevents the way-over simulated cells.  These are outliers.
             if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
-                if b_reach_average_curve_file is True:
+
+                # something isn't good with our results
+                acceptable = False
+
+                # here we will see if we can get a better answer with a revised slope
+                # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_distance_z[i_precompute_angle_closest] gives us a round about
+                # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
+                potential_slope_error = 0.6 / d_ordinate_dist
+
+                # Set lower and upper bounds for the slope search.
+                slope_lower = d_slope_use - potential_slope_error
+                slope_upper = d_slope_use + potential_slope_error
+
+                # Check if the objective function changes sign between the bounds.
+                f_lower = objective_with_slope(slope_lower)
+                f_upper = objective_with_slope(slope_upper)
+                
+                
+                if f_lower * f_upper < 0:
+                    
+                    # The signs differ, so we have a valid bracket.
+                    trial_slope_use = bisect(objective_with_slope, slope_lower, slope_upper, xtol=0.001)
+                    
+                    # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                    d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                        2501, 
+                        d_maxflow_wse_initial, 
+                        d_depth_increment_small, 
+                        d_q_maximum, 
+                        da_xs_profile1, 
+                        da_xs_profile2, 
+                        xs1_n, 
+                        xs2_n,
+                        d_ordinate_dist, 
+                        ia_xc_r1_index_main, 
+                        ia_xc_c1_index_main, 
+                        ia_xc_r2_index_main, 
+                        ia_xc_c2_index_main, 
+                        n_x_section_1, 
+                        n_x_section_2, 
+                        trial_slope_use
+                    )
+                    # Check if d_q_sum is within acceptable bounds
+                    if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
+                        acceptable = True
+                        d_slope_use = trial_slope_use
+                        d_maxflow_wse_final = d_maxflow_wse_final_test
+                        d_q_sum = d_q_sum_test
+                else:
+                    pass
+
+            if acceptable==False:
+                # print("I'm skipping because d_q_sum is outside acceptable range after varying d_slope_use")
+                if b_reach_average_curve_file:
                     All_COMID_curve_list.append(i_cell_comid)
                     All_Row_curve_list.append(i_row_cell)
                     All_Col_curve_list.append(i_column_cell)
-                    All_BaseElev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
-                    All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+                    All_BaseElev_curve_list.append(dm_elevation[i_row_cell, i_column_cell])
+                    All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell, i_column_cell])
                     All_QMax_curve_list.append(d_q_maximum)
                     continue
                 else:
                     continue
+
+
+            # #This prevents the way-over simulated cells.  These are outliers.
+            # if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
+            #     if b_reach_average_curve_file is True:
+            #         All_COMID_curve_list.append(i_cell_comid)
+            #         All_Row_curve_list.append(i_row_cell)
+            #         All_Col_curve_list.append(i_column_cell)
+            #         All_BaseElev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+            #         All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell,i_column_cell])
+            #         All_QMax_curve_list.append(d_q_maximum)
+            #         continue
+            #     else:
+            #         continue
+
+
+            # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
+            d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
+            i_number_of_elevations = i_number_of_increments + 1
+            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
+                                                                               d_inc_y, 
+                                                                               da_xs_profile1, da_xs_profile2, xs1_n, xs2_n,
+                                                                               d_ordinate_dist, 
+                                                                               n_x_section_1, n_x_section_2, d_slope_use, da_total_t, 
+                                                                               da_total_a, da_total_p, da_total_v, da_total_q, 
+                                                                               da_total_wse, d_q_baseflow, d_q_maximum)
 
             if d_q_baseflow>0.001 and da_total_q[i_start_elevation_index+1] >= d_q_baseflow:
                 da_total_q[i_start_elevation_index+1] = d_q_baseflow-0.001
@@ -3484,8 +3881,8 @@ def main(MIF_Name: str, quiet: bool):
             for i_entry_elevation in range(1, i_number_of_elevations):
                 # Calculate the geometry
                 d_wse = da_elevation_list_mm[i_entry_elevation] / 1000.0
-                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], d_wse, d_distance_z[i_precompute_angle_closest], dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
-                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[0:xs2_n], d_wse, d_distance_z[i_precompute_angle_closest], dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_ordinate_dist, dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]])
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse, d_ordinate_dist, dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
 
                 # Aggregate the geometric properties
                 da_total_t[i_entry_elevation] = T1 + T2
@@ -3598,7 +3995,7 @@ def main(MIF_Name: str, quiet: bool):
                 da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
             dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
             dm_manning_n_raster2_str = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_distance_z[i_precompute_angle_closest]}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_distance_z[i_precompute_angle_closest]}\t{dm_manning_n_raster2_str}\n")
+            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_ordinate_dist}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_ordinate_dist}\t{dm_manning_n_raster2_str}\n")
 
    
     # Write the output VDT Database file
