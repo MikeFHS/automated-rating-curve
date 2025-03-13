@@ -4175,7 +4175,8 @@ def main(MIF_Name: str, quiet: bool):
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
         #Make sure all the bathymetry points are above the DEM elevation
-        # dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, np.nan, dm_output_bathymetry)
+        if b_bathy_use_banks is False:
+            dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, np.nan, dm_output_bathymetry)
         # remove the increase in elevation, if negative elevations were present
         if b_modified_dem is True:
             # Subtract 100 only for cells that are not NaN
