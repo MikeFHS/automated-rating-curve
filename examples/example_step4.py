@@ -2,10 +2,10 @@
 import os
 
 # local imports
-from arc.Curves_To_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
-from arc.Curves_To_GeoJSON import Write_SEED_Data_To_File_Using_Stream_Raster
-from arc.Curves_To_GeoJSON import GetSEED_Data_From_File
-from arc.Curves_To_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Raster
+from arc.Create_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
+from arc.Create_GeoJSON import Write_SEED_Data_To_File_Using_Stream_Raster
+from arc.Create_GeoJSON import GetSEED_Data_From_File
+from arc.Create_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Raster
 
 if __name__ == "__main__":
 
