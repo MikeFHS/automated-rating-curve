@@ -421,6 +421,10 @@ def read_main_input_file(s_mif_name: str):
     # Find the path to the output velocity, depth, and top width file
     global s_output_vdt_database
     s_output_vdt_database = get_parameter_name(sl_lines, i_number_of_lines, 'Print_VDT_Database')
+
+    # Find the path to the output area and wetted-perimeter file
+    global s_output_ap_database
+    s_output_ap_database = get_parameter_name(sl_lines, i_number_of_lines, 'Print_AP_Database')
     
     global s_output_curve_file
     s_output_curve_file = get_parameter_name(sl_lines, i_number_of_lines, 'Print_Curve_File')
@@ -2000,25 +2004,26 @@ def find_bank_inflection_point(da_xs_profile: np.ndarray, i_cross_section_number
         Updated cell index that defines the bank
     """
     # Apply smoothing to the cross-section data
-    da_xs_smooth = da_xs_profile
-    # da_xs_smooth = savgol_filter(da_xs_profile, window_length=window_length, polyorder=polyorder)
+    # da_xs_smooth = da_xs_profile
+    da_xs_smooth = savgol_filter(da_xs_profile, window_length=window_length, polyorder=polyorder)
     
     # Loop on the smoothed cross-section cells
+    entry = 0
     previous_delta_elevation = 0.0
     total_width = 0.0
-    for entry in range(i_cross_section_number+1):
+    while entry < i_cross_section_number:
         elevation_0 = da_xs_smooth[entry]
         elevation_1 = da_xs_smooth[entry + 1]
-        # calculate the change in elevation
+
         current_delta_elevation = elevation_1 - elevation_0
-        # If the change in elevation goes up or stays the same, we haven't found the bank yet
+
         if current_delta_elevation >= previous_delta_elevation:
             previous_delta_elevation = current_delta_elevation
-            total_width = total_width + d_distance_z
-        # If the change in elevation decreases, we may have found the bank
-        elif current_delta_elevation < previous_delta_elevation:
-            # Stop here and go one spot back because we've found the bank
-            return entry
+            total_width += d_distance_z
+            entry += 1  # move forward
+        else:
+            # Found the bank – go back one if needed
+            return entry  # or return entry - 1 if you want the previous one
 
     # Return to the calling function
     return 0
@@ -2877,9 +2882,12 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
             i_start_elevation_index = i_entry_elevation
 
         else:
-
-            # Estimate mannings n
             d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
+            # # Estimate mannings n
+            # if da_total_p[i_entry_elevation] > 0.0:
+            #     d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
+            # else:
+            #     d_composite_n = 0.035
 
             # Check that the mannings n is physically realistic
             if d_composite_n < 0.0001:
@@ -3157,6 +3165,20 @@ def main(MIF_Name: str, quiet: bool):
         o_out_file_dict[f'v_{i}'] = []
         o_out_file_dict[f't_{i}'] = []
         o_out_file_dict[f'wse_{i}'] = []
+
+    # Create the dictionary and lists that will be used to create our ATW database
+    if len(s_output_ap_database) > 0:
+        o_ap_file_dict: dict[str, list] = {}
+        o_ap_file_dict['COMID'] = []
+        o_ap_file_dict['Row'] = []
+        o_ap_file_dict['Col'] = []
+        comid_ap_dict_list = o_ap_file_dict['COMID']
+        row_ap_dict_list = o_ap_file_dict['Row']
+        col_ap_dict_list = o_ap_file_dict['Col']
+        for i in range(1, i_number_of_increments+1):
+            o_ap_file_dict[f'q_{i}'] = []
+            o_ap_file_dict[f'a_{i}'] = []
+            o_ap_file_dict[f'p_{i}'] = []
     
     #Create the list that we will use to generate the output Curve file
     if len(s_output_curve_file)>0:
@@ -3180,6 +3202,12 @@ def main(MIF_Name: str, quiet: bool):
     vdt_column_names = []
     for i in range(1, i_number_of_increments+1):
         vdt_column_names.append((f'q_{i}', f'v_{i}', f't_{i}', f'wse_{i}'))
+
+    # Creating strings takes a lot of time. Let's compute the AWP database column names here
+    if len(s_output_ap_database) > 0:
+        ap_column_names = []
+        for i in range(1, i_number_of_increments+1):
+            ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
 
     ### Begin the stream cell solution loop ###
     pbar = tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet)
@@ -3514,9 +3542,12 @@ def main(MIF_Name: str, quiet: bool):
                 d_t_sum = T1 + T2
                 d_q_sum = 0.0
 
-
                 d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-                # d_composite_n = round(d_composite_n, 3)
+
+                # Check that the mannings n is physically realistic
+                if d_composite_n < 0.0001:
+                    d_composite_n = 0.035
+
                 trial_d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
                 # trial_d_q_sum = round(trial_d_q_sum, 3)
                 difference = trial_d_q_sum - d_q_maximum
@@ -3569,8 +3600,12 @@ def main(MIF_Name: str, quiet: bool):
                 d_t_sum = T1 + T2
                 d_q_sum = 0.0
 
-
                 d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+
+                # Check that the mannings n is physically realistic
+                if d_composite_n < 0.0001:
+                    d_composite_n = 0.035
+
                 d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
                     
 
@@ -3815,6 +3850,10 @@ def main(MIF_Name: str, quiet: bool):
                 comid_dict_list.append(i_cell_comid)
                 row_dict_list.append(i_row_cell - i_boundary_number)
                 col_dict_list.append(i_column_cell - i_boundary_number)
+                if len(s_output_ap_database) > 0:
+                    comid_ap_dict_list.append(i_cell_comid)
+                    row_ap_dict_list.append(i_row_cell - i_boundary_number)
+                    col_ap_dict_list.append(i_column_cell - i_boundary_number)
                 if b_modified_dem:
                     elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
                 else:
@@ -3832,6 +3871,13 @@ def main(MIF_Name: str, quiet: bool):
                         o_out_file_dict[wse_name].append(da_total_wse[i])
                     if b_modified_dem:
                         da_total_wse += 100
+                
+                if len(s_output_ap_database) > 0:
+                    for i, (q_name, a_name, p_name) in enumerate(ap_column_names[:i_number_of_elevations - 1], start=1):
+                        o_ap_file_dict[q_name].append(da_total_q[i])
+                        o_ap_file_dict[a_name].append(da_total_a[i])
+                        o_ap_file_dict[p_name].append(da_total_p[i])
+
 
             if i_number_of_elevations > 0:
                 i_outprint_yes = 1
@@ -3907,6 +3953,10 @@ def main(MIF_Name: str, quiet: bool):
                 comid_dict_list.append(i_cell_comid)
                 row_dict_list.append(i_row_cell - i_boundary_number)
                 col_dict_list.append(i_column_cell - i_boundary_number)
+                if len(s_output_ap_database) > 0:
+                    comid_ap_dict_list.append(i_cell_comid)
+                    row_ap_dict_list.append(i_row_cell - i_boundary_number)
+                    col_ap_dict_list.append(i_column_cell - i_boundary_number)
                 if b_modified_dem:
                     elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
                 else:
@@ -4003,6 +4053,30 @@ def main(MIF_Name: str, quiet: bool):
     o_out_file_df = o_out_file_df.loc[~(o_out_file_df[cols_to_check] < 0).any(axis=1)]
     o_out_file_df.to_csv(s_output_vdt_database, index=False)
     LOG.info('Finished writing ' + str(s_output_vdt_database))
+    
+    # Output the area and wetted perimeter database file if requested
+    if len(s_output_ap_database) > 0:
+        # Write the output VDT Database file
+        dtypes = {
+                    "COMID": 'int64',
+                    "Row": 'int64',
+                    "Col": 'int64',
+        }
+        for i in range(1, i_number_of_increments + 1):
+            o_ap_file_dict[f'q_{i}'] = np.round(o_ap_file_dict[f'q_{i}'], 3)
+            o_ap_file_dict[f'a_{i}'] = np.round(o_ap_file_dict[f'a_{i}'], 3)
+            o_ap_file_dict[f'p_{i}'] = np.round(o_ap_file_dict[f'p_{i}'], 3)
+
+        o_ap_file_df = pd.DataFrame(o_ap_file_dict).astype(dtypes)
+        # Remove rows with NaN values
+        o_ap_file_df = o_ap_file_df.dropna()
+        # # Remove rows where any column has a negative value except wse or elevation
+        # Select columns NOT starting with 'wse' or 'Elev'
+        cols_to_check = [col for col in o_ap_file_df.columns if (col.startswith('q') or col.startswith('a') or col.startswith('p'))]
+        # Remove rows where any of the selected columns have a negative value
+        o_ap_file_df = o_ap_file_df.loc[~(o_ap_file_df[cols_to_check] < 0).any(axis=1)]
+        o_ap_file_df.to_csv(s_output_ap_database, index=False)
+        LOG.info('Finished writing ' + str(s_output_ap_database))
 
     # Here we'll generate reach-based coefficients for all stream cells, if the flag is triggered
     if b_reach_average_curve_file:
