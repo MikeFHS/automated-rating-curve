@@ -1639,7 +1639,7 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
             d_area = d_working_depth * (d_bottom_width + d_top_width) / 2.0
             d_perimeter = d_bottom_width + 2.0 * math.sqrt(d_average_width * d_average_width + d_working_depth * d_working_depth)
             d_hydraulic_radius = d_area / d_perimeter
-            d_flow_calculated = (1.0 / d_mannings_n) * d_area * math.pow(d_hydraulic_radius, (2 / 3)) * pow(d_slope, 0.5)
+            d_flow_calculated = (1.0 / d_mannings_n) * d_area * d_hydraulic_radius**(2 / 3) * d_slope**0.5
 
         # Update the starting depth
         d_depth_start = d_working_depth - d_dy
@@ -1774,7 +1774,7 @@ def calculate_hypotnuse(d_side_one: float, d_side_two: float):
     """
 
     # Calculate the distance
-    d_distance = np.sqrt(d_side_one ** 2 + d_side_two ** 2)
+    d_distance = (d_side_one ** 2 + d_side_two ** 2)**(1/2)
 
     # Return to the calling function
     return d_distance
@@ -1817,7 +1817,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
         da_perimeter_i_good = calculate_hypotnuse(d_distance_z, (da_y_depth[1:] - da_y_depth[:-1]))
 
         # Calculate the Mannings n for later use
-        da_composite_n_good = da_perimeter_i_good * np.power(da_n_profile[1:], 1.5)
+        da_composite_n_good = da_perimeter_i_good * da_n_profile[1:]**1.5
 
         # Take action if there are bad values
         bad_values_exist = False
@@ -1841,7 +1841,7 @@ def calculate_stream_geometry(da_xs_profile: np.ndarray, d_wse: float, d_distanc
             d_hydraulic_radius = d_area / d_perimeter
 
             # Calculate the composite n
-            d_composite_n = np.sum(da_composite_n_good[:i_target_index - 1]) + d_perimeter_i * np.power(da_n_profile[i_target_index - 1], 1.5)
+            d_composite_n = np.sum(da_composite_n_good[:i_target_index - 1]) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
 
             # Update the top width
             d_top_width = d_distance_z * (i_target_index - 1) + d_dist_use
@@ -2756,6 +2756,7 @@ def Calculate_Bathymetry_Based_on_RiverBank_Elevations(i_entry_cell, da_xs_profi
 #                                  da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, 
 #                                  d_distance_z, n_x_section_1, n_x_section_2, d_slope_use)
 
+
 @njit(cache=True)
 def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, n_x_section_1, n_x_section_2, d_slope_use):
     d_wse, d_q_sum = 0.0, 0.0
@@ -2774,8 +2775,9 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 
     # Estimate Manning's n and flow
     if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-        d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-        d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+        d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+        d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
+
 
     if d_q_sum < d_q_maximum:
         # Even the greatest depth increment is not enough to reach the target discharge
@@ -2794,8 +2796,9 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 
         # Estimate Manning's n and flow
         if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-            d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
-            d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+            d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+            d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
+
         
         # Check for overshoot in discharge
         if d_q_sum == d_q_maximum:
@@ -2815,10 +2818,9 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
                 d_p_sum = P1 + P2
                 d_t_sum = T1 + T2
                 if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                    d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
                     # d_composite_n = round(d_composite_n, 3)
-                    d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
-                    # d_q_sum = round(d_q_sum, 3)
+                    d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
                 d_wse = interp_wse
             break
 
@@ -2882,7 +2884,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
             i_start_elevation_index = i_entry_elevation
 
         else:
-            d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
+            d_composite_n = round(((np1 + np2) / da_total_p[i_entry_elevation])**(2 / 3), 4)
             # # Estimate mannings n
             # if da_total_p[i_entry_elevation] > 0.0:
             #     d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
@@ -2893,8 +2895,8 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
             if d_composite_n < 0.0001:
                 d_composite_n = 0.035
 
-            da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) *
-                                            math.pow(d_slope_use, 0.5))
+            da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * (da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation])**(2 / 3) *
+                                            d_slope_use**0.5)
             da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
             da_total_wse[i_entry_elevation] = d_wse
             i_last_elevation_index = i_entry_elevation
@@ -3527,6 +3529,9 @@ def main(MIF_Name: str, quiet: bool):
             # This is the bottom of the channel
             d_maxflow_wse_initial = da_xs_profile1[0]
 
+            # set this as the default in case we don't find a better one
+            d_maxflow_wse_final = -999.0
+
             # Define an objective function: the difference between the calculated max flow and d_q_maximum.
             def objective_with_wse(trial_wse):
 
@@ -3542,13 +3547,15 @@ def main(MIF_Name: str, quiet: bool):
                 d_t_sum = T1 + T2
                 d_q_sum = 0.0
 
-                d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
 
                 # Check that the mannings n is physically realistic
                 if d_composite_n < 0.0001:
                     d_composite_n = 0.035
 
-                trial_d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                trial_d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
+
+
                 # trial_d_q_sum = round(trial_d_q_sum, 3)
                 difference = trial_d_q_sum - d_q_maximum
 
@@ -3600,13 +3607,14 @@ def main(MIF_Name: str, quiet: bool):
                 d_t_sum = T1 + T2
                 d_q_sum = 0.0
 
-                d_composite_n = math.pow(((np1 + np2) / d_p_sum), (2 / 3))
+                d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
 
                 # Check that the mannings n is physically realistic
                 if d_composite_n < 0.0001:
                     d_composite_n = 0.035
 
-                d_q_sum = (1 / d_composite_n) * d_a_sum * math.pow((d_a_sum / d_p_sum), (2 / 3)) * math.pow(d_slope_use, 0.5)
+                d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
+
                     
 
             # Let's see if the volume-fill approach gave us a better answer and use that if it did
@@ -3793,7 +3801,7 @@ def main(MIF_Name: str, quiet: bool):
                         trial_slope_use
                     )
                     # Check if d_q_sum is within acceptable bounds
-                    if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
+                    if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow and d_maxflow_wse_final_test > 0.0:
                         acceptable = True
                         d_slope_use = trial_slope_use
                         d_maxflow_wse_final = d_maxflow_wse_final_test
@@ -3827,60 +3835,62 @@ def main(MIF_Name: str, quiet: bool):
             #         continue
             #     else:
             #         continue
+            
+            # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
+            if acceptable==True and d_maxflow_wse_final > 0.0:
+            
+                # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
+                d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
+                i_number_of_elevations = i_number_of_increments + 1
+                i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
+                                                                                d_inc_y, 
+                                                                                da_xs_profile1, da_xs_profile2, xs1_n, xs2_n,
+                                                                                d_ordinate_dist, 
+                                                                                n_x_section_1, n_x_section_2, d_slope_use, da_total_t, 
+                                                                                da_total_a, da_total_p, da_total_v, da_total_q, 
+                                                                                da_total_wse, d_q_baseflow, d_q_maximum)
 
+                if d_q_baseflow>0.001 and da_total_q[i_start_elevation_index+1] >= d_q_baseflow:
+                    da_total_q[i_start_elevation_index+1] = d_q_baseflow-0.001
+                    
 
-            # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
-            d_inc_y = (d_maxflow_wse_final - da_xs_profile1[0]) / i_number_of_increments
-            i_number_of_elevations = i_number_of_increments + 1
-            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
-                                                                               d_inc_y, 
-                                                                               da_xs_profile1, da_xs_profile2, xs1_n, xs2_n,
-                                                                               d_ordinate_dist, 
-                                                                               n_x_section_1, n_x_section_2, d_slope_use, da_total_t, 
-                                                                               da_total_a, da_total_p, da_total_v, da_total_q, 
-                                                                               da_total_wse, d_q_baseflow, d_q_maximum)
-
-            if d_q_baseflow>0.001 and da_total_q[i_start_elevation_index+1] >= d_q_baseflow:
-                da_total_q[i_start_elevation_index+1] = d_q_baseflow-0.001
-                
-
-            # Process each of the elevations to the output file if feasbile values were produced
-            da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
-            if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-                comid_dict_list.append(i_cell_comid)
-                row_dict_list.append(i_row_cell - i_boundary_number)
-                col_dict_list.append(i_column_cell - i_boundary_number)
-                if len(s_output_ap_database) > 0:
-                    comid_ap_dict_list.append(i_cell_comid)
-                    row_ap_dict_list.append(i_row_cell - i_boundary_number)
-                    col_ap_dict_list.append(i_column_cell - i_boundary_number)
-                if b_modified_dem:
-                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
-                else:
-                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
-                qbaseflow_dict_list.append(d_q_baseflow)
-
-                # Loop backward through the elevations
-                if s_output_vdt_database:
+                # Process each of the elevations to the output file if feasbile values were produced
+                da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
+                if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+                    comid_dict_list.append(i_cell_comid)
+                    row_dict_list.append(i_row_cell - i_boundary_number)
+                    col_dict_list.append(i_column_cell - i_boundary_number)
+                    if len(s_output_ap_database) > 0:
+                        comid_ap_dict_list.append(i_cell_comid)
+                        row_ap_dict_list.append(i_row_cell - i_boundary_number)
+                        col_ap_dict_list.append(i_column_cell - i_boundary_number)
                     if b_modified_dem:
-                        da_total_wse -= 100
-                    for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
-                        o_out_file_dict[q_name].append(da_total_q[i])
-                        o_out_file_dict[v_name].append(da_total_v[i])
-                        o_out_file_dict[t_name].append(da_total_t[i])
-                        o_out_file_dict[wse_name].append(da_total_wse[i])
-                    if b_modified_dem:
-                        da_total_wse += 100
-                
-                if len(s_output_ap_database) > 0:
-                    for i, (q_name, a_name, p_name) in enumerate(ap_column_names[:i_number_of_elevations - 1], start=1):
-                        o_ap_file_dict[q_name].append(da_total_q[i])
-                        o_ap_file_dict[a_name].append(da_total_a[i])
-                        o_ap_file_dict[p_name].append(da_total_p[i])
+                        elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
+                    else:
+                        elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                    qbaseflow_dict_list.append(d_q_baseflow)
+
+                    # Loop backward through the elevations
+                    if s_output_vdt_database:
+                        if b_modified_dem:
+                            da_total_wse -= 100
+                        for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
+                            o_out_file_dict[q_name].append(da_total_q[i])
+                            o_out_file_dict[v_name].append(da_total_v[i])
+                            o_out_file_dict[t_name].append(da_total_t[i])
+                            o_out_file_dict[wse_name].append(da_total_wse[i])
+                        if b_modified_dem:
+                            da_total_wse += 100
+                    
+                    if len(s_output_ap_database) > 0:
+                        for i, (q_name, a_name, p_name) in enumerate(ap_column_names[:i_number_of_elevations - 1], start=1):
+                            o_ap_file_dict[q_name].append(da_total_q[i])
+                            o_ap_file_dict[a_name].append(da_total_a[i])
+                            o_ap_file_dict[p_name].append(da_total_p[i])
 
 
-            if i_number_of_elevations > 0:
-                i_outprint_yes = 1
+                if i_number_of_elevations > 0:
+                    i_outprint_yes = 1
         
         elif i_volume_fill_approach == 2:
             # This was trying to set a max elevation difference between the ordinates
@@ -3930,7 +3940,7 @@ def main(MIF_Name: str, quiet: bool):
                         d_composite_n = 0.035
 
                     # Estimate total flows
-                    da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * math.pow((da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation]), (2 / 3)) * math.pow(d_slope_use, 0.5))
+                    da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * (da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation])**(2 / 3) * d_slope_use**0.5)
                     da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
                     da_total_wse[i_entry_elevation] = d_wse
                     i_last_elevation_index = i_entry_elevation
