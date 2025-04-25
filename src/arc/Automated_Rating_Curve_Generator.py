@@ -2857,50 +2857,104 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 #     return d_wse, d_q_sum
 
 @njit(cache=True)
-def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_ordinate_dist, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a, da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum):
-    i_start_elevation_index, i_last_elevation_index = 0, 0
-    for i_entry_elevation in range(i_number_of_increments):
+def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n,
+                             d_ordinate_dist, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a,
+                             da_total_p, da_total_v, da_total_q, da_total_wse, d_q_baseflow, d_q_maximum):
 
+    i_start_elevation_index, i_last_elevation_index = 0, 0
+    alpha = 0.25  # smoothing factor
+
+    # Initialize previous values
+    prev_t = 0.0
+    prev_a = 0.0
+    prev_p = 0.0
+    prev_q = 0.0
+    prev_v = 0.0
+
+    for i_entry_elevation in range(i_number_of_increments):
         d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
-        d_wse = round(d_wse, 3)  
-        
+        d_wse = round(d_wse, 3)
+
         # Calculate the geometry          
         A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_ordinate_dist, n_x_section_1)
         A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse, d_ordinate_dist, n_x_section_2)
 
-        # Aggregate the geometric properties
-        da_total_t[i_entry_elevation] = T1 + T2
-        da_total_a[i_entry_elevation] = A1 + A2
-        da_total_p[i_entry_elevation] = P1 + P2
-        da_total_q[i_entry_elevation] = 0.0
+        T = T1 + T2
+        A = A1 + A2
+        P = P1 + P2
 
-        # Check the properties are physically realistic. If so, estimate the flow with them.
-        if da_total_t[i_entry_elevation] <= 0.0 or da_total_a[i_entry_elevation] <= 0.0 or da_total_p[i_entry_elevation] <= 0.0:
+        if T > 0 and A > 0 and P > 0:
+
+            # Estimate mannings n
+            d_composite_n = round(((np1 + np2) / P)**(2 / 3), 4)
+
+            # use Manning's equation to estimate the flow
+            Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * d_slope_use**0.5
+            V = Q / A
+
+            if Q < prev_q:
+                # increase d_wse by 1 cm to try to make sure Q is greater than prev_q
+                d_wse_lower_bound = d_wse + 0.01
+                # set the upper bound for the water surface elevation to the next increment
+                d_wse_upper_bound = da_xs_profile1[0] + d_inc_y * i_entry_elevation+1
+                d_wse_upper_bound = round(d_wse_upper_bound, 3)
+                while d_wse_lower_bound < d_wse_upper_bound:
+                    # Calculate the geometry          
+                    A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_1)
+                    A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_2)
+
+                    T = T1 + T2
+                    A = A1 + A2
+                    P = P1 + P2
+
+                    # Estimate mannings n
+                    d_composite_n = round(((np1 + np2) / P)**(2 / 3), 4)
+
+                    # use Manning's equation to estimate the flow
+                    Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * d_slope_use**0.5
+                    V = Q / A
+
+                    if A > prev_a and P > prev_p and Q > prev_q:
+                        d_wse = d_wse_lower_bound
+                        break
+                    else:
+                        d_wse_lower_bound += 0.01
+                        
+                # if we reach the upper bound without finding a solution, let's skip this increment
+                if Q < prev_q:
+                    da_total_t[i_entry_elevation] = prev_t
+                    da_total_a[i_entry_elevation] = prev_a
+                    da_total_p[i_entry_elevation] = prev_p
+                    da_total_q[i_entry_elevation] = prev_q
+                    da_total_v[i_entry_elevation] = prev_v
+                    continue
+
+            # Save the values
+            da_total_wse[i_entry_elevation] = d_wse
+            da_total_t[i_entry_elevation] = T
+            da_total_a[i_entry_elevation] = A
+            da_total_p[i_entry_elevation] = P
+            da_total_q[i_entry_elevation] = Q
+            da_total_v[i_entry_elevation] = V
+
+            # Update previous values
+            prev_t = T
+            prev_a = A
+            prev_p = P
+            prev_q = Q
+            prev_v = V
+
+
+            i_last_elevation_index = i_entry_elevation
+        else:
+            # Invalid geometry case
             da_total_t[i_entry_elevation] = 0.0
             da_total_a[i_entry_elevation] = 0.0
             da_total_p[i_entry_elevation] = 0.0
-            # this is the channel bottom elevation that we will use as depth = 0 when building the power functions
-            da_total_wse[i_entry_elevation] = d_wse
+            da_total_q[i_entry_elevation] = 0.0
+            da_total_v[i_entry_elevation] = 0.0
             i_start_elevation_index = i_entry_elevation
 
-        else:
-            d_composite_n = round(((np1 + np2) / da_total_p[i_entry_elevation])**(2 / 3), 4)
-            # # Estimate mannings n
-            # if da_total_p[i_entry_elevation] > 0.0:
-            #     d_composite_n = math.pow(((np1 + np2) / da_total_p[i_entry_elevation]), (2 / 3))
-            # else:
-            #     d_composite_n = 0.035
-
-            # Check that the mannings n is physically realistic
-            if d_composite_n < 0.0001:
-                d_composite_n = 0.035
-
-            da_total_q[i_entry_elevation] = ((1 / d_composite_n) * da_total_a[i_entry_elevation] * (da_total_a[i_entry_elevation] / da_total_p[i_entry_elevation])**(2 / 3) *
-                                            d_slope_use**0.5)
-            da_total_v[i_entry_elevation] = da_total_q[i_entry_elevation] / da_total_a[i_entry_elevation]
-            da_total_wse[i_entry_elevation] = d_wse
-            i_last_elevation_index = i_entry_elevation
-        
     return i_start_elevation_index, i_last_elevation_index
 
 def modify_array(arr, b_modified_dem):
