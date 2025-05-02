@@ -10,11 +10,13 @@ if __name__ == "__main__":
     id_field = "COMID"
     # Name of the field containing the maximum streamflow input into ARC that is within the flow file you generated in Step 1.
     max_flow_field = "base"
-    # Name of the field containing the baseflow input into ARC that is within the flow file you generated in Step 1.
-    baseflow_field = "max"
+    # Name of the field containing the baseflow or bankfull/channel forming discharge input into ARC that is within the flow file you generated in Step 1.
+    baseflow_bankfull_field = "max"
     # Path to the flow file you generated in Step 1.
     flow_file_path = r"C:\Users\jlgut\OneDrive\Desktop\Montana_Test_Case\Flow_Files\RFS1_Base_Max.csv"
     # Do you want to use the estimates of bank elevations to estimate bathymetry?
     bathy_use_banks = False
+    # Do you want to use land cover to find banks or use the flat surface approach?
+    use_land_cover_to_find_banks = True
 
-    Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path, bathy_use_banks)
+    Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_bankfull_field, flow_file_path, bathy_use_banks, use_land_cover_to_find_banks)

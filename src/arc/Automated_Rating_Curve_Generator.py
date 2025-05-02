@@ -25,6 +25,25 @@ from arc import LOG
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 gdal.UseExceptions()
 
+@njit(cache=True)
+def safe_signs_differ(fa, fb, tol=1e-10):
+
+    safe_signs = False
+
+    # Rounds small floating point noise and checks for real sign difference
+    fa = np.round(fa, 5)
+    fb = np.round(fb, 5)
+
+    if fa == 0 or fb == 0:
+        safe_signs = False
+    elif fa * fb < 0:
+        safe_signs = True
+    else:
+        safe_signs = False
+
+
+    return safe_signs
+
 def format_array(da_array: np.ndarray, s_format: str):
     """
     Formats a string. Helper function to allow multidimensional formats
@@ -2775,7 +2794,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 
     # Estimate Manning's n and flow
     if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-        d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+        d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
         d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
 
 
@@ -2796,7 +2815,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 
         # Estimate Manning's n and flow
         if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-            d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+            d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
             d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
 
         
@@ -2818,7 +2837,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
                 d_p_sum = P1 + P2
                 d_t_sum = T1 + T2
                 if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
-                    d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+                    d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
                     # d_composite_n = round(d_composite_n, 3)
                     d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
                 d_wse = interp_wse
@@ -2873,7 +2892,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
 
     for i_entry_elevation in range(i_number_of_increments):
         d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
-        d_wse = round(d_wse, 3)
+        d_wse = np.round(d_wse, 3)
 
         # Calculate the geometry          
         A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_ordinate_dist, n_x_section_1)
@@ -2886,7 +2905,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
         if T > 0 and A > 0 and P > 0:
 
             # Estimate mannings n
-            d_composite_n = round(((np1 + np2) / P)**(2 / 3), 4)
+            d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
 
             # use Manning's equation to estimate the flow
             Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * d_slope_use**0.5
@@ -2897,7 +2916,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                 d_wse_lower_bound = d_wse + 0.01
                 # set the upper bound for the water surface elevation to the next increment
                 d_wse_upper_bound = da_xs_profile1[0] + d_inc_y * i_entry_elevation+1
-                d_wse_upper_bound = round(d_wse_upper_bound, 3)
+                d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
                 while d_wse_lower_bound < d_wse_upper_bound:
                     # Calculate the geometry          
                     A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_1)
@@ -2908,7 +2927,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                     P = P1 + P2
 
                     # Estimate mannings n
-                    d_composite_n = round(((np1 + np2) / P)**(2 / 3), 4)
+                    d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
 
                     # use Manning's equation to estimate the flow
                     Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * d_slope_use**0.5
@@ -3268,7 +3287,7 @@ def main(MIF_Name: str, quiet: bool):
     ### Begin the stream cell solution loop ###
     pbar = tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet)
     for i_entry_cell in pbar:
-
+        # i_entry_cell = 3184282
 
 
         # pbar.disable = True
@@ -3589,7 +3608,7 @@ def main(MIF_Name: str, quiet: bool):
             # Define an objective function: the difference between the calculated max flow and d_q_maximum.
             def objective_with_wse(trial_wse):
 
-                trial_wse = round(trial_wse, 3)
+                trial_wse = np.round(trial_wse, 3)
                 
                 # Calculate the geometry
                 A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[0:xs1_n], trial_wse, d_ordinate_dist, n_x_section_1)
@@ -3601,7 +3620,7 @@ def main(MIF_Name: str, quiet: bool):
                 d_t_sum = T1 + T2
                 d_q_sum = 0.0
 
-                d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+                d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
 
                 # Check that the mannings n is physically realistic
                 if d_composite_n < 0.0001:
@@ -3647,10 +3666,13 @@ def main(MIF_Name: str, quiet: bool):
             f_lower = objective_with_wse(wse_lower)
             f_upper = objective_with_wse(wse_upper)
 
-            if f_lower * f_upper < 0:
+            if safe_signs_differ(f_lower, f_upper):
+                # if i_entry_cell == 3184282:
+                #     print(f"F_lower = {str(f_lower)}")
+                #     print(f"F_upper = {str(f_upper)}")
                 # The signs differ, so we have a valid bracket.
                 d_maxflow_wse_final = brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.0001)
-                d_maxflow_wse_final = round(d_maxflow_wse_final, 3)
+                d_maxflow_wse_final = np.round(d_maxflow_wse_final, 3)
 
                 A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_1)
                 A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_2)
@@ -3661,7 +3683,7 @@ def main(MIF_Name: str, quiet: bool):
                 d_t_sum = T1 + T2
                 d_q_sum = 0.0
 
-                d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+                d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
 
                 # Check that the mannings n is physically realistic
                 if d_composite_n < 0.0001:
@@ -3710,10 +3732,10 @@ def main(MIF_Name: str, quiet: bool):
             # Check if the objective function changes sign between the bounds.
             f_lower = objective_with_slope(slope_lower)
             f_upper = objective_with_slope(slope_upper)
-            if f_lower * f_upper < 0:
+            if safe_signs_differ(f_lower, f_upper):
                 # The signs differ, so we have a valid bracket.
                 trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001)
-                trial_slope_use = round(trial_slope_use, 3)
+                trial_slope_use = np.round(trial_slope_use, 3)
                 # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
                 d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                     2501, 
@@ -3764,7 +3786,7 @@ def main(MIF_Name: str, quiet: bool):
                 f_upper = objective_with_slope(slope_upper)
 
 
-                if f_lower * f_upper < 0:
+                if safe_signs_differ(f_lower, f_upper):
                     # The signs differ, so we have a valid bracket.
                     new_slope = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001)
                     trial_slope_use = new_slope
@@ -3830,7 +3852,7 @@ def main(MIF_Name: str, quiet: bool):
                 f_upper = objective_with_slope(slope_upper)
                 
                 
-                if f_lower * f_upper < 0:
+                if safe_signs_differ(f_lower, f_upper):
                     
                     # The signs differ, so we have a valid bracket.
                     trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.001)
@@ -4048,12 +4070,12 @@ def main(MIF_Name: str, quiet: bool):
             All_Row_curve_list.append(int(i_row_cell - i_boundary_number))
             All_Col_curve_list.append(int(i_column_cell - i_boundary_number))
             if b_modified_dem:
-                All_BaseElev_curve_list.append(round(da_xs_profile1[0], 3)-100)
-                All_DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3)-100)
+                All_BaseElev_curve_list.append(np.round(da_xs_profile1[0], 3)-100)
+                All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3)-100)
             else:
-                All_BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
-                All_DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
-            All_QMax_curve_list.append(round(d_q_maximum, 3))
+                All_BaseElev_curve_list.append(np.round(da_xs_profile1[0], 3))
+                All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
+            All_QMax_curve_list.append(np.round(d_q_maximum, 3))
 
         # Work on the Regression Equations File
         if i_outprint_yes == 1 and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
@@ -4066,18 +4088,18 @@ def main(MIF_Name: str, quiet: bool):
             Row_curve_list.append(int(i_row_cell - i_boundary_number))
             Col_curve_list.append(int(i_column_cell - i_boundary_number))
             if b_modified_dem:
-                BaseElev_curve_list.append(round(da_xs_profile1[0], 3)-100)
-                DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3)-100)
+                BaseElev_curve_list.append(np.round(da_xs_profile1[0], 3)-100)
+                DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3)-100)
             else:
-                BaseElev_curve_list.append(round(da_xs_profile1[0], 3))
-                DEM_Elev_curve_list.append(round(d_dem_low_point_elev, 3))
-            QMax_curve_list.append(round(da_total_q[i_last_elevation_index], 3))
-            depth_a_curve_list.append(round(d_d_a, 3))
-            depth_b_curve_list.append(round(d_d_b, 3))
-            tw_a_curve_list.append(round(d_t_a, 3))
-            tw_b_curve_list.append(round(d_t_b, 3))
-            vel_a_curve_list.append(round(d_v_a, 3))
-            vel_b_curve_list.append(round(d_v_b, 3))
+                BaseElev_curve_list.append(np.round(da_xs_profile1[0], 3))
+                DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
+            QMax_curve_list.append(np.round(da_total_q[i_last_elevation_index], 3))
+            depth_a_curve_list.append(np.round(d_d_a, 3))
+            depth_b_curve_list.append(np.round(d_d_b, 3))
+            tw_a_curve_list.append(np.round(d_t_a, 3))
+            tw_b_curve_list.append(np.round(d_t_b, 3))
+            vel_a_curve_list.append(np.round(d_v_a, 3))
+            vel_b_curve_list.append(np.round(d_v_b, 3))
 
         # Output the XS information, if you've chosen to do so
         if s_xs_output_file != '':
@@ -4149,8 +4171,8 @@ def main(MIF_Name: str, quiet: bool):
             "COMID": All_COMID_curve_list,
             "Row": All_Row_curve_list,
             "Col": All_Col_curve_list,
-            "BaseElev":  [round(num, 3) for num in All_BaseElev_curve_list],
-            "DEM_Elev": [round(num, 3) for num in All_DEM_Elev_curve_list],
+            "BaseElev":  [np.round(num, 3) for num in All_BaseElev_curve_list],
+            "DEM_Elev": [np.round(num, 3) for num in All_DEM_Elev_curve_list],
             "QMax": All_QMax_curve_list,
         }
 
@@ -4233,12 +4255,12 @@ def main(MIF_Name: str, quiet: bool):
 
             # Append results to lists
             comid_list.append(comid)
-            d_t_a_list.append(round(d_t_a, 3) if not np.isnan(d_t_a) else np.nan)
-            d_t_b_list.append(round(d_t_b, 3) if not np.isnan(d_t_b) else np.nan)
-            d_v_a_list.append(round(d_v_a, 3) if not np.isnan(d_v_a) else np.nan)
-            d_v_b_list.append(round(d_v_b, 3) if not np.isnan(d_v_b) else np.nan)
-            d_d_a_list.append(round(d_d_a, 3) if not np.isnan(d_d_a) else np.nan)
-            d_d_b_list.append(round(d_d_b, 3) if not np.isnan(d_d_b) else np.nan)
+            d_t_a_list.append(np.round(d_t_a, 3) if not np.isnan(d_t_a) else np.nan)
+            d_t_b_list.append(np.round(d_t_b, 3) if not np.isnan(d_t_b) else np.nan)
+            d_v_a_list.append(np.round(d_v_a, 3) if not np.isnan(d_v_a) else np.nan)
+            d_v_b_list.append(np.round(d_v_b, 3) if not np.isnan(d_v_b) else np.nan)
+            d_d_a_list.append(np.round(d_d_a, 3) if not np.isnan(d_d_a) else np.nan)
+            d_d_b_list.append(np.round(d_d_b, 3) if not np.isnan(d_d_b) else np.nan)
 
         # Create a DataFrame with regression coefficients
         regression_df = pd.DataFrame({
