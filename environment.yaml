@@ -18,9 +18,7 @@ dependencies:
   - tqdm
   - pyproj
   - fiona
-  - netcdf4
   - shapely
-  - networkx
   - s3fs
 
 
