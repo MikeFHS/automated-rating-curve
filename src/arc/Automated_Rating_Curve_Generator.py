@@ -210,7 +210,7 @@ def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_nu
     o_driver = gdal.GetDriverByName(s_file_format)  # Typically will be a GeoTIFF "GTiff"
     
     # Construct the file with the appropriate data shape
-    o_output_file = o_driver.Create(s_output_filename, xsize=i_number_of_columns, ysize=i_number_of_rows, bands=1, eType=s_output_type)
+    o_output_file = o_driver.Create(s_output_filename, xsize=i_number_of_columns, ysize=i_number_of_rows, bands=1, eType=s_output_type, options=['COMPRESS=LZW', "PREDICTOR=2"])
     
     # Set the geotransform
     o_output_file.SetGeoTransform(l_dem_geotransform)
