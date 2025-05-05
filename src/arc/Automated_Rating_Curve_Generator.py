@@ -210,8 +210,9 @@ def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_nu
     o_driver = gdal.GetDriverByName(s_file_format)  # Typically will be a GeoTIFF "GTiff"
     
     # Construct the file with the appropriate data shape
-    o_output_file = o_driver.Create(s_output_filename, xsize=i_number_of_columns, ysize=i_number_of_rows, bands=1, eType=s_output_type)
-    
+    # o_output_file = o_driver.Create(s_output_filename, xsize=i_number_of_columns, ysize=i_number_of_rows, bands=1, eType=s_output_type)
+    o_output_file = o_driver.Create(s_output_filename, xsize=i_number_of_columns, ysize=i_number_of_rows, bands=1, eType=s_output_type, options=['COMPRESS=LZW', "PREDICTOR=2"])
+
     # Set the geotransform
     o_output_file.SetGeoTransform(l_dem_geotransform)
     
@@ -1547,30 +1548,27 @@ def find_wse_and_banks_by_lc(da_xs_profile1, ia_lc_xs1, xs1_n, da_xs_profile2, i
     
     bank_elev_1 = da_xs_profile1[0]
     bank_elev_2 = da_xs_profile2[0]
+    for i in range(1, xs1_n):
+        if ia_lc_xs1[i] == i_lc_water_value:
+            if da_xs_profile1[i] < bank_elev_1:
+                bank_elev_1 = da_xs_profile1[i]
+        else:
+            i_bank_1_index = i
+            break
+
+    for i in range(1, xs2_n):
+        if ia_lc_xs2[i] == i_lc_water_value:
+            if da_xs_profile2[i] < bank_elev_2:
+                bank_elev_2 = da_xs_profile2[i]
+        else:
+            i_bank_2_index = i
+            break
     
-    if xs1_n>=1:
-        bank_elev_1 = da_xs_profile1[0]
-        for i in range(1, xs1_n):
-            if ia_lc_xs1[i]==i_lc_water_value: 
-                if da_xs_profile1[i]<bank_elev_1:
-                    bank_elev_1 = da_xs_profile1[i]
-            else:
-                i_bank_1_index = i
-                break
-    if xs2_n>=1:
-        bank_elev_2 = da_xs_profile2[0]
-        for i in range(1, xs2_n):
-            if ia_lc_xs2[i]==i_lc_water_value: 
-                if da_xs_profile2[i]<bank_elev_2:
-                    bank_elev_2 = da_xs_profile2[i]
-            else:
-                i_bank_2_index = i
-                break
-    
-    if bank_elev_1>da_xs_profile1[0] and bank_elev_2>da_xs_profile1[0]:
-        d_wse_from_dem = min(bank_elev_1, bank_elev_2)
-    elif bank_elev_1>da_xs_profile1[0]:
-        d_wse_from_dem = bank_elev_1
+    if bank_elev_1>da_xs_profile1[0]:
+        if bank_elev_2>da_xs_profile1[0]:
+            d_wse_from_dem = min(bank_elev_1, bank_elev_2)
+        else:
+            d_wse_from_dem = bank_elev_1
     elif bank_elev_2>da_xs_profile1[0]:
         d_wse_from_dem = bank_elev_2
     else:
@@ -1652,8 +1650,11 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
         d_flow_calculated = 0.0
         d_working_depth = d_depth_start
 
+        # This will prevent infinite loops
+        d_max_depth = d_depth_start + 25
+
         # Converge until the calculate flow is above the baseflow
-        while d_flow_calculated <= d_baseflow:
+        while d_flow_calculated <= d_baseflow and d_working_depth < d_max_depth:
             d_working_depth = d_working_depth + d_dy
             d_area = d_working_depth * (d_bottom_width + d_top_width) / 2.0
             d_perimeter = d_bottom_width + 2.0 * math.sqrt(d_average_width * d_average_width + d_working_depth * d_working_depth)
@@ -2026,6 +2027,10 @@ def find_bank_inflection_point(da_xs_profile: np.ndarray, i_cross_section_number
     # da_xs_smooth = da_xs_profile
     da_xs_smooth = savgol_filter(da_xs_profile, window_length=window_length, polyorder=polyorder)
     
+    return find_bank_inflection_point_helper(da_xs_smooth, i_cross_section_number, d_distance_z)
+
+@njit(cache=True)
+def find_bank_inflection_point_helper(da_xs_smooth: np.ndarray, i_cross_section_number: int, d_distance_z: float) -> int:
     # Loop on the smoothed cross-section cells
     entry = 0
     previous_delta_elevation = 0.0
@@ -2404,7 +2409,7 @@ def Calculate_Bathymetry_Based_on_WSE_or_LC(i_entry_cell, da_xs_profile1, xs1_n,
         """
         Retry methods and reset d_y_depth if necessary.
         """
-        nonlocal d_y_depth, i_total_bank_cells, d_trap_base, d_total_bank_dist, function_used
+        nonlocal d_y_depth, i_total_bank_cells, d_trap_base, d_total_bank_dist, function_used, d_y_bathy
 
         if i_total_bank_cells <= 1:
             (i_bank_1_index, i_bank_2_index) = find_bank_using_width_to_depth_ratio(da_xs_profile1, da_xs_profile2, xs1_n, xs2_n, d_distance_z, dm_manning_n_raster, 
@@ -2802,7 +2807,33 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
         # Even the greatest depth increment is not enough to reach the target discharge
         return d_wse, d_q_sum
 
-    for i_depthincrement in range(1, range_end):
+    # We will try 10 increments to narrow down the search space, reducing time spent
+    range_start = 1
+    step = range_end // 10
+    for i in range(range_end - step, 0, -step):
+        d_wse = start_wse + i * increment
+
+        A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_distance_z, n_x_section_1)
+        A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse, d_distance_z, n_x_section_2)
+
+        d_a_sum = A1 + A2
+        d_p_sum = P1 + P2
+        d_t_sum = T1 + T2
+        d_q_sum = 0.0
+
+        if d_a_sum > 0.0 and d_p_sum > 0.0 and d_t_sum > 0.0:
+            d_composite_n = round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+            d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
+
+        if d_q_sum > d_q_maximum:
+            # The WSE is too high, keep going
+            pass
+        else:
+            # We can start searching here
+            range_start = i
+            break
+
+    for i_depthincrement in range(range_start, range_end):
         d_wse = start_wse + i_depthincrement * increment
         A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse, d_distance_z, n_x_section_1)
         A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse, d_distance_z, n_x_section_2)
@@ -3068,9 +3099,9 @@ def main(MIF_Name: str, quiet: bool):
     COMID, QBaseFlow, QMax = read_flow_file(s_input_flow_file_path, s_flow_file_id, s_flow_file_baseflow, s_flow_file_qmax)
 
     ### Read Raster Data ###
-    DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection = read_raster_gdal(s_input_dem_path)
-    STRM, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection = read_raster_gdal(s_input_stream_path)
-    LC, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection = read_raster_gdal(s_input_land_use_path)
+    dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection = read_raster_gdal(s_input_dem_path)
+    dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection = read_raster_gdal(s_input_stream_path)
+    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection = read_raster_gdal(s_input_land_use_path)
 
 
 
@@ -3098,14 +3129,11 @@ def main(MIF_Name: str, quiet: bool):
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
     i_boundary_number = max(1, i_general_slope_distance, i_general_direction_distance)
 
-    dm_stream = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), dtype=np.int64)
-    dm_stream[i_boundary_number:(nrows + i_boundary_number), i_boundary_number:(ncols + i_boundary_number)] = STRM
+    dm_stream = np.pad(dm_stream, i_boundary_number, mode='constant', constant_values=0).astype(np.int64)
 
-    dm_elevation = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
-    dm_elevation[i_boundary_number:(nrows + i_boundary_number), i_boundary_number:(ncols + i_boundary_number)] = DEM
+    dm_elevation = np.pad(dm_elevation, i_boundary_number, mode='constant', constant_values=0)
 
-    dm_land_use = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2))
-    dm_land_use[i_boundary_number:(nrows + i_boundary_number), i_boundary_number:(ncols + i_boundary_number)] = LC
+    dm_land_use = np.pad(dm_land_use, i_boundary_number, mode='constant', constant_values=0).astype(float)
     
 
     ##### Begin Calculations #####
@@ -3660,7 +3688,7 @@ def main(MIF_Name: str, quiet: bool):
                 return trial_d_q_sum - d_q_maximum
 
             wse_lower = d_maxflow_wse_initial + 0.01
-            wse_upper = d_maxflow_wse_initial + 25
+            wse_upper = d_maxflow_wse_initial + 24.99
 
             # Check if the objective function changes sign between the bounds.
             f_lower = objective_with_wse(wse_lower)
@@ -3689,9 +3717,47 @@ def main(MIF_Name: str, quiet: bool):
                 if d_composite_n < 0.0001:
                     d_composite_n = 0.035
 
-                d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5
+                d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5 
 
-                    
+            # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+            elif np.round(f_lower, 5) == 0:          
+                d_maxflow_wse_final = np.round(wse_lower, 3)
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_1)
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_2)
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+                d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+
+                # Check that the mannings n is physically realistic
+                if d_composite_n < 0.0001:
+                    d_composite_n = 0.035
+
+                d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5 
+
+            # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+            elif np.round(f_upper, 5) == 0:          
+                d_maxflow_wse_final = np.round(wse_upper, 3)
+                A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_1)
+                A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_maxflow_wse_final, d_ordinate_dist, n_x_section_2)
+
+                # Aggregate the geometric properties
+                d_a_sum = A1 + A2
+                d_p_sum = P1 + P2
+                d_t_sum = T1 + T2
+                d_q_sum = 0.0
+
+                d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+
+                # Check that the mannings n is physically realistic
+                if d_composite_n < 0.0001:
+                    d_composite_n = 0.035
+
+                d_q_sum = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * d_slope_use**0.5 
 
             # Let's see if the volume-fill approach gave us a better answer and use that if it did
             # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
@@ -3736,6 +3802,67 @@ def main(MIF_Name: str, quiet: bool):
                 # The signs differ, so we have a valid bracket.
                 trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001)
                 trial_slope_use = np.round(trial_slope_use, 3)
+                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                    2501, 
+                    d_maxflow_wse_initial, 
+                    d_depth_increment_small, 
+                    d_q_maximum, 
+                    da_xs_profile1, 
+                    da_xs_profile2, 
+                    xs1_n, 
+                    xs2_n,
+                    d_ordinate_dist, 
+                    ia_xc_r1_index_main, 
+                    ia_xc_c1_index_main, 
+                    ia_xc_r2_index_main, 
+                    ia_xc_c2_index_main, 
+                    n_x_section_1, 
+                    n_x_section_2, 
+                    trial_slope_use
+                )
+                # Check if d_q_sum is within acceptable bounds
+                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                    # Optionally update d_slope_use to the accepted value:
+                    d_slope_use = trial_slope_use
+                    d_maxflow_wse_final = d_maxflow_wse_final_test
+                    d_q_sum = d_q_sum_test
+                else:
+                    pass
+            # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+            elif np.round(f_lower, 5) == 0:          
+                trial_slope_use = np.round(slope_lower, 3)
+                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                    2501, 
+                    d_maxflow_wse_initial, 
+                    d_depth_increment_small, 
+                    d_q_maximum, 
+                    da_xs_profile1, 
+                    da_xs_profile2, 
+                    xs1_n, 
+                    xs2_n,
+                    d_ordinate_dist, 
+                    ia_xc_r1_index_main, 
+                    ia_xc_c1_index_main, 
+                    ia_xc_r2_index_main, 
+                    ia_xc_c2_index_main, 
+                    n_x_section_1, 
+                    n_x_section_2, 
+                    trial_slope_use
+                )
+                # Check if d_q_sum is within acceptable bounds
+                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                    # Optionally update d_slope_use to the accepted value:
+                    d_slope_use = trial_slope_use
+                    d_maxflow_wse_final = d_maxflow_wse_final_test
+                    d_q_sum = d_q_sum_test
+                else:
+                    pass
+
+            # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+            elif np.round(f_upper, 5) == 0:          
+                trial_slope_use = np.round(slope_upper, 3)
                 # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
                 d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                     2501, 
@@ -3816,6 +3943,69 @@ def main(MIF_Name: str, quiet: bool):
                         d_maxflow_wse_final = d_maxflow_wse_final_test
                         d_q_sum = d_q_sum_test
                         continue
+
+                # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+                elif np.round(f_lower, 5) == 0:          
+                    trial_slope_use = np.round(slope_lower, 3)
+                    # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                    d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                        2501, 
+                        d_maxflow_wse_initial, 
+                        d_depth_increment_small, 
+                        d_q_maximum, 
+                        da_xs_profile1, 
+                        da_xs_profile2, 
+                        xs1_n, 
+                        xs2_n,
+                        d_ordinate_dist, 
+                        ia_xc_r1_index_main, 
+                        ia_xc_c1_index_main, 
+                        ia_xc_r2_index_main, 
+                        ia_xc_c2_index_main, 
+                        n_x_section_1, 
+                        n_x_section_2, 
+                        trial_slope_use
+                    )
+                    # Check if d_q_sum is within acceptable bounds
+                    if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                        # Optionally update d_slope_use to the accepted value:
+                        d_slope_use = trial_slope_use
+                        d_maxflow_wse_final = d_maxflow_wse_final_test
+                        d_q_sum = d_q_sum_test
+                    else:
+                        pass
+
+                # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+                elif np.round(f_upper, 5) == 0:          
+                    trial_slope_use = np.round(slope_upper, 3)
+                    # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                    d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                        2501, 
+                        d_maxflow_wse_initial, 
+                        d_depth_increment_small, 
+                        d_q_maximum, 
+                        da_xs_profile1, 
+                        da_xs_profile2, 
+                        xs1_n, 
+                        xs2_n,
+                        d_ordinate_dist, 
+                        ia_xc_r1_index_main, 
+                        ia_xc_c1_index_main, 
+                        ia_xc_r2_index_main, 
+                        ia_xc_c2_index_main, 
+                        n_x_section_1, 
+                        n_x_section_2, 
+                        trial_slope_use
+                    )
+                    # Check if d_q_sum is within acceptable bounds
+                    if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                        # Optionally update d_slope_use to the accepted value:
+                        d_slope_use = trial_slope_use
+                        d_maxflow_wse_final = d_maxflow_wse_final_test
+                        d_q_sum = d_q_sum_test
+                    else:
+                        pass
+                
                 else:
                     pass
 
@@ -3882,6 +4072,69 @@ def main(MIF_Name: str, quiet: bool):
                         d_slope_use = trial_slope_use
                         d_maxflow_wse_final = d_maxflow_wse_final_test
                         d_q_sum = d_q_sum_test
+                        
+                # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+                elif np.round(f_lower, 5) == 0:          
+                    trial_slope_use = np.round(slope_lower, 3)
+                    # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                    d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                        2501, 
+                        d_maxflow_wse_initial, 
+                        d_depth_increment_small, 
+                        d_q_maximum, 
+                        da_xs_profile1, 
+                        da_xs_profile2, 
+                        xs1_n, 
+                        xs2_n,
+                        d_ordinate_dist, 
+                        ia_xc_r1_index_main, 
+                        ia_xc_c1_index_main, 
+                        ia_xc_r2_index_main, 
+                        ia_xc_c2_index_main, 
+                        n_x_section_1, 
+                        n_x_section_2, 
+                        trial_slope_use
+                    )
+                    # Check if d_q_sum is within acceptable bounds
+                    if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                        # Optionally update d_slope_use to the accepted value:
+                        d_slope_use = trial_slope_use
+                        d_maxflow_wse_final = d_maxflow_wse_final_test
+                        d_q_sum = d_q_sum_test
+                    else:
+                        pass
+
+                # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+                elif np.round(f_upper, 5) == 0:          
+                    trial_slope_use = np.round(slope_upper, 3)
+                    # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+                    d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                        2501, 
+                        d_maxflow_wse_initial, 
+                        d_depth_increment_small, 
+                        d_q_maximum, 
+                        da_xs_profile1, 
+                        da_xs_profile2, 
+                        xs1_n, 
+                        xs2_n,
+                        d_ordinate_dist, 
+                        ia_xc_r1_index_main, 
+                        ia_xc_c1_index_main, 
+                        ia_xc_r2_index_main, 
+                        ia_xc_c2_index_main, 
+                        n_x_section_1, 
+                        n_x_section_2, 
+                        trial_slope_use
+                    )
+                    # Check if d_q_sum is within acceptable bounds
+                    if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                        # Optionally update d_slope_use to the accepted value:
+                        d_slope_use = trial_slope_use
+                        d_maxflow_wse_final = d_maxflow_wse_final_test
+                        d_q_sum = d_q_sum_test
+                    else:
+                        pass
+                
                 else:
                     pass
 
@@ -4137,7 +4390,10 @@ def main(MIF_Name: str, quiet: bool):
     cols_to_check = [col for col in o_out_file_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
     # Remove rows where any of the selected columns have a negative value
     o_out_file_df = o_out_file_df.loc[~(o_out_file_df[cols_to_check] < 0).any(axis=1)]
-    o_out_file_df.to_csv(s_output_vdt_database, index=False)
+    if s_output_vdt_database.endswith('.parquet'):
+        o_out_file_df.to_parquet(s_output_vdt_database, compression='brotli', index=False) # Brotli does very well with VDT data
+    else:
+        o_out_file_df.to_csv(s_output_vdt_database, index=False)    
     LOG.info('Finished writing ' + str(s_output_vdt_database))
     
     # Output the area and wetted perimeter database file if requested
@@ -4161,7 +4417,10 @@ def main(MIF_Name: str, quiet: bool):
         cols_to_check = [col for col in o_ap_file_df.columns if (col.startswith('q') or col.startswith('a') or col.startswith('p'))]
         # Remove rows where any of the selected columns have a negative value
         o_ap_file_df = o_ap_file_df.loc[~(o_ap_file_df[cols_to_check] < 0).any(axis=1)]
-        o_ap_file_df.to_csv(s_output_ap_database, index=False)
+        if s_output_ap_database.endswith('.parquet'):
+            o_ap_file_df.to_parquet(s_output_ap_database, compression='brotli', index=False)
+        else:
+            o_ap_file_df.to_csv(s_output_ap_database, index=False)
         LOG.info('Finished writing ' + str(s_output_ap_database))
 
     # Here we'll generate reach-based coefficients for all stream cells, if the flag is triggered
@@ -4280,7 +4539,10 @@ def main(MIF_Name: str, quiet: bool):
         reach_average_curvefile_df = reach_average_curvefile_df.dropna()
 
         # Write the output file
-        reach_average_curvefile_df.to_csv(s_output_curve_file, index=False)
+        if s_output_curve_file.endswith('.parquet'):
+            reach_average_curvefile_df.to_parquet(s_output_curve_file, compression='brotli', index=False)
+        else:
+            reach_average_curvefile_df.to_csv(s_output_curve_file, index=False)        
         LOG.info('Finished writing ' + str(s_output_curve_file))
 
     else:
@@ -4304,7 +4566,10 @@ def main(MIF_Name: str, quiet: bool):
             o_curve_file_df = o_curve_file_df.dropna()
             # # Remove rows where any column has negative a coefficient value
             o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
-            o_curve_file_df.to_csv(s_output_curve_file, index=False)
+            if s_output_curve_file.endswith('.parquet'):
+                o_curve_file_df.to_parquet(s_output_curve_file, compression='brotli', index=False)
+            else:
+                o_curve_file_df.to_csv(s_output_curve_file, index=False)            
             LOG.info('Finished writing ' + str(s_output_curve_file))
     
     
