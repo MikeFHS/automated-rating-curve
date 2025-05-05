@@ -3107,7 +3107,7 @@ def main(MIF_Name: str, quiet: bool):
 
     # if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
     b_modified_dem = False
-    DEM, b_modified_dem = modify_array(DEM, b_modified_dem)
+    dm_elevation, b_modified_dem = modify_array(dm_elevation, b_modified_dem)
 
 
     if dnrows != snrows or dnrows != lnrows:
