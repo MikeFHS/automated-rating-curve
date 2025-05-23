@@ -314,7 +314,7 @@ def read_raster_gdal(s_input_filename: str):
     return dm_raster_array, i_number_of_columns, i_number_of_rows, d_cell_size, d_y_lower_left, d_y_upper_right, d_x_lower_left, d_x_upper_right, d_latitude, l_geotransform, s_raster_projection
 
 
-def get_parameter_name(sl_lines, i_number_of_lines, s_target):
+def get_parameter_name(sl_lines: list[str], s_target: str):
     """
     Gets parameter values from a list of strings, assuming that the file is tab delimited and the first characters are the target string.
     The second column is returned as the target value.
@@ -323,8 +323,6 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
     ----------
     sl_lines: list
         Lines to test for target string
-    i_number_of_lines: int
-        Number of lines to test from the list in order
     s_target: str
         Target string to match at the start for each line
 
@@ -339,9 +337,9 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
     d_return_value = ''
 
     # Loop over entries in the list
-    for entry in range(i_number_of_lines):
+    for line in sl_lines:
         # Split the line and strip special characters
-        ls = sl_lines[entry].strip().split('\t')
+        ls = line.strip().split('\t')
 
         # Check if the first entry is the target string
         if ls[0] == s_target:
@@ -364,13 +362,15 @@ def get_parameter_name(sl_lines, i_number_of_lines, s_target):
     return d_return_value
 
 
-def read_main_input_file(s_mif_name: str):
+def read_main_input_file(s_mif_name: str, args: dict):
     """
 
     Parameters
     ----------
     s_mif_name: str
         Path to the input file
+    args: dict
+        Dictionary of arguments passed to the function. This is used to set the global variables in the function
 
     Returns
     -------
@@ -380,49 +380,52 @@ def read_main_input_file(s_mif_name: str):
 
     ### Open and read the input file ###
     # Open the file
-    o_input_file = open(s_mif_name, 'r')
-    sl_lines = o_input_file.readlines()
-    o_input_file.close()
+    if s_mif_name:
+        with open(s_mif_name, 'r') as o_input_file:
+            sl_lines = o_input_file.readlines()
+    else:
+        # Convert arg dict to a list of lines
+        sl_lines = []
+        for key, value in args.items():
+            sl_lines.append(f"{key}\t{value}\n")
 
-    # Count the number of lines in the file
-    i_number_of_lines = len(sl_lines)
 
     ### Process the parameters ###
     # Find the path to the DEM file
     global s_input_dem_path
-    s_input_dem_path = get_parameter_name(sl_lines, i_number_of_lines, 'DEM_File')
+    s_input_dem_path = get_parameter_name(sl_lines,  'DEM_File')
 
     # Find the path to the stream file
     global s_input_stream_path
-    s_input_stream_path = get_parameter_name(sl_lines, i_number_of_lines, 'Stream_File')
+    s_input_stream_path = get_parameter_name(sl_lines,  'Stream_File')
 
     # Find the path to the land use raster file
     global s_input_land_use_path
-    s_input_land_use_path = get_parameter_name(sl_lines, i_number_of_lines, 'LU_Raster_SameRes')
+    s_input_land_use_path = get_parameter_name(sl_lines,  'LU_Raster_SameRes')
 
     # Find the path to the mannings n file
     global s_input_mannings_path
-    s_input_mannings_path = get_parameter_name(sl_lines, i_number_of_lines, 'LU_Manning_n')
+    s_input_mannings_path = get_parameter_name(sl_lines,  'LU_Manning_n')
 
     # Find the path to the input flow file
     global s_input_flow_file_path
-    s_input_flow_file_path = get_parameter_name(sl_lines, i_number_of_lines, 'Flow_File')
+    s_input_flow_file_path = get_parameter_name(sl_lines,  'Flow_File')
 
     # Find the method used to number the streams
     global s_flow_file_id
-    s_flow_file_id = get_parameter_name(sl_lines, i_number_of_lines, 'Flow_File_ID')
+    s_flow_file_id = get_parameter_name(sl_lines,  'Flow_File_ID')
 
     # Find the flow method
     global s_flow_file_baseflow
-    s_flow_file_baseflow = get_parameter_name(sl_lines, i_number_of_lines, 'Flow_File_BF')
+    s_flow_file_baseflow = get_parameter_name(sl_lines,  'Flow_File_BF')
 
     # Find the field that determines the maximum flow
     global s_flow_file_qmax
-    s_flow_file_qmax = get_parameter_name(sl_lines, i_number_of_lines, 'Flow_File_QMax')
+    s_flow_file_qmax = get_parameter_name(sl_lines,  'Flow_File_QMax')
 
     # Find the spatial units
     global s_spatial_units
-    s_spatial_units = get_parameter_name(sl_lines, i_number_of_lines, 'Spatial_Units')
+    s_spatial_units = get_parameter_name(sl_lines,  'Spatial_Units')
 
     if s_spatial_units == '':
         # Assume degree if not specified in the input efile
@@ -430,7 +433,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the x section distance
     global d_x_section_distance
-    d_x_section_distance = get_parameter_name(sl_lines, i_number_of_lines, 'X_Section_Dist')
+    d_x_section_distance = get_parameter_name(sl_lines,  'X_Section_Dist')
 
     if d_x_section_distance == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -440,22 +443,22 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the path to the output velocity, depth, and top width file
     global s_output_vdt_database
-    s_output_vdt_database = get_parameter_name(sl_lines, i_number_of_lines, 'Print_VDT_Database')
+    s_output_vdt_database = get_parameter_name(sl_lines,  'Print_VDT_Database')
 
     # Find the path to the output area and wetted-perimeter file
     global s_output_ap_database
-    s_output_ap_database = get_parameter_name(sl_lines, i_number_of_lines, 'Print_AP_Database')
+    s_output_ap_database = get_parameter_name(sl_lines,  'Print_AP_Database')
     
     global s_output_curve_file
-    s_output_curve_file = get_parameter_name(sl_lines, i_number_of_lines, 'Print_Curve_File')
+    s_output_curve_file = get_parameter_name(sl_lines,  'Print_Curve_File')
     
     # Find the path to the output metdata file
     global s_output_meta_file
-    s_output_meta_file = get_parameter_name(sl_lines, i_number_of_lines, 'Meta_File')
+    s_output_meta_file = get_parameter_name(sl_lines,  'Meta_File')
 
     # Find degree manipulation attribute
     global d_degree_manipulation
-    d_degree_manipulation = get_parameter_name(sl_lines, i_number_of_lines, 'Degree_Manip')
+    d_degree_manipulation = get_parameter_name(sl_lines,  'Degree_Manip')
 
     if d_degree_manipulation == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -465,7 +468,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the degree interval attribute
     global d_degree_interval
-    d_degree_interval = get_parameter_name(sl_lines, i_number_of_lines, 'Degree_Interval')
+    d_degree_interval = get_parameter_name(sl_lines,  'Degree_Interval')
 
     if d_degree_interval == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -475,7 +478,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the low spot range attribute
     global i_low_spot_range
-    i_low_spot_range = get_parameter_name(sl_lines, i_number_of_lines, 'Low_Spot_Range')
+    i_low_spot_range = get_parameter_name(sl_lines,  'Low_Spot_Range')
 
     if i_low_spot_range == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -485,7 +488,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the general direction distance attribute
     global i_general_direction_distance
-    i_general_direction_distance= get_parameter_name(sl_lines, i_number_of_lines, 'Gen_Dir_Dist')
+    i_general_direction_distance= get_parameter_name(sl_lines,  'Gen_Dir_Dist')
 
     if i_general_direction_distance == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -495,7 +498,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the general slope distance attribute
     global i_general_slope_distance
-    i_general_slope_distance = get_parameter_name(sl_lines, i_number_of_lines, 'Gen_Slope_Dist')
+    i_general_slope_distance = get_parameter_name(sl_lines,  'Gen_Slope_Dist')
 
     if i_general_slope_distance == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -505,7 +508,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the bathymetry trapezoid height attribute
     global d_bathymetry_trapzoid_height
-    d_bathymetry_trapzoid_height = get_parameter_name(sl_lines, i_number_of_lines, 'Bathy_Trap_H')
+    d_bathymetry_trapzoid_height = get_parameter_name(sl_lines,  'Bathy_Trap_H')
 
     if d_bathymetry_trapzoid_height == '':
         # Value does not occur in the input file. Assume a reasonable value
@@ -515,7 +518,7 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
     global b_bathy_use_banks
-    b_bathy_use_banks = get_parameter_name(sl_lines, i_number_of_lines, 'Bathy_Use_Banks')
+    b_bathy_use_banks = get_parameter_name(sl_lines,  'Bathy_Use_Banks')
     if "True" in b_bathy_use_banks:
         b_bathy_use_banks = True
     elif "False" in b_bathy_use_banks or b_bathy_use_banks == '':
@@ -523,40 +526,40 @@ def read_main_input_file(s_mif_name: str):
 
     # Find the path to the output bathymetry file
     global s_output_bathymetry_path
-    s_output_bathymetry_path = get_parameter_name(sl_lines, i_number_of_lines, 'AROutBATHY')
+    s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY')
 
     if s_output_bathymetry_path == '':
         # Value does not occur in the input file. Assume a reasonable value
-        s_output_bathymetry_path = get_parameter_name(sl_lines, i_number_of_lines, 'BATHY_Out_File')
+        s_output_bathymetry_path = get_parameter_name(sl_lines,  'BATHY_Out_File')
 
     # Find the path to the output depth file
     global s_output_depth
-    s_output_depth = get_parameter_name(sl_lines, i_number_of_lines, 'AROutDEPTH')
+    s_output_depth = get_parameter_name(sl_lines,  'AROutDEPTH')
 
     # Find the path to the output flood file
     global s_output_flood
-    s_output_flood = get_parameter_name(sl_lines, i_number_of_lines, 'AROutFLOOD')
+    s_output_flood = get_parameter_name(sl_lines,  'AROutFLOOD')
 
     # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
     global s_xs_output_file
-    s_xs_output_file = get_parameter_name(sl_lines, i_number_of_lines, 'XS_Out_File')
+    s_xs_output_file = get_parameter_name(sl_lines,  'XS_Out_File')
     
     global i_lc_water_value
-    i_lc_water_value = get_parameter_name(sl_lines, i_number_of_lines, 'LC_Water_Value')
+    i_lc_water_value = get_parameter_name(sl_lines,  'LC_Water_Value')
     if i_lc_water_value =='': 
         #Value is defaulted to the water value in the ESA land cover dataset
         i_lc_water_value = 80
 
     # These are the number of increments of water surface elevation that we will use to construct the VDT database and the curve file
     global i_number_of_increments
-    i_number_of_increments = get_parameter_name(sl_lines, i_number_of_lines, 'VDT_Database_NumIterations')
+    i_number_of_increments = get_parameter_name(sl_lines,  'VDT_Database_NumIterations')
     if i_number_of_increments=='':
         i_number_of_increments = 15
     i_number_of_increments  = int(i_number_of_increments)
     
     #Default is to find the banks of the river based on flat water in the DEM.  However, you can also find the banks using the water surface (please also set i_lc_water_value)
     global b_FindBanksBasedOnLandCover
-    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines, i_number_of_lines, 'FindBanksBasedOnLandCover')
+    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines,  'FindBanksBasedOnLandCover')
     if "True" in b_FindBanksBasedOnLandCover:
         b_FindBanksBasedOnLandCover = True
     elif "False" in b_FindBanksBasedOnLandCover or b_FindBanksBasedOnLandCover == '':
@@ -564,7 +567,7 @@ def read_main_input_file(s_mif_name: str):
     
     # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
     global b_reach_average_curve_file
-    b_reach_average_curve_file = get_parameter_name(sl_lines, i_number_of_lines, 'Reach_Average_Curve_File')
+    b_reach_average_curve_file = get_parameter_name(sl_lines,  'Reach_Average_Curve_File')
     if "True" in b_reach_average_curve_file:
         b_reach_average_curve_file = True
     elif "False" in b_reach_average_curve_file or b_reach_average_curve_file == '':
@@ -2070,7 +2073,6 @@ def Calculate_BankFull_Elevation(i_entry_cell: int, num_increments: int, d_dista
     bank_elev_2 = da_xs_profile2[0]
     
     if xs1_n>=1 and ia_lc_xs1[0]==i_lc_water_value:
-        bank_elev_1 = da_xs_profile1[0]
         for i in range(1, xs1_n):
             if ia_lc_xs1[i]!=i_lc_water_value:
                 bank_elev_1 = da_xs_profile1[i]
@@ -3090,10 +3092,10 @@ def smooth_bathymetry_gaussian_numba(dm_output_bathymetry, window_size=7, sigma=
     return output
 
 
-def main(MIF_Name: str, quiet: bool):
+def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
-    read_main_input_file(MIF_Name)
+    read_main_input_file(MIF_Name, args)
     
     ### Read the Flow Information ###
     COMID, QBaseFlow, QMax = read_flow_file(s_input_flow_file_path, s_flow_file_id, s_flow_file_baseflow, s_flow_file_qmax)
@@ -3644,9 +3646,7 @@ def main(MIF_Name: str, quiet: bool):
 
                 # Aggregate the geometric properties
                 d_a_sum = A1 + A2
-                d_p_sum = P1 + P2
-                d_t_sum = T1 + T2
-                d_q_sum = 0.0
+                d_p_sum = max(P1 + P2, 1e-6)  # Avoid division by zero
 
                 d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
 
