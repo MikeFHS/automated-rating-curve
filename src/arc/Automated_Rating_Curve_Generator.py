@@ -2920,6 +2920,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
     prev_p = 0.0
     prev_q = 0.0
     prev_v = 0.0
+    prev_wse = 0.0
 
     for i_entry_elevation in range(i_number_of_increments):
         d_wse = da_xs_profile1[0] + d_inc_y * i_entry_elevation
@@ -2972,6 +2973,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                         
                 # if we reach the upper bound without finding a solution, let's skip this increment
                 if Q < prev_q:
+                    da_total_wse[i_entry_elevation] = prev_wse
                     da_total_t[i_entry_elevation] = prev_t
                     da_total_a[i_entry_elevation] = prev_a
                     da_total_p[i_entry_elevation] = prev_p
@@ -2993,6 +2995,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
             prev_p = P
             prev_q = Q
             prev_v = V
+            prev_wse = d_wse
 
 
             i_last_elevation_index = i_entry_elevation
