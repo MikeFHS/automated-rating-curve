@@ -10,9 +10,11 @@ __all__ = ['Arc']
 
 class Arc():
     _mifn: str = ""
+    _args: dict = {}
     
-    def __init__(self, mifn: str = "", quiet: bool = False) -> None:
+    def __init__(self, mifn: str = "", args: dict = {}, quiet: bool = False) -> None:
         self._mifn = mifn
+        self._args = args
         self.quiet = quiet
         if quiet:
             self.set_log_level('error')
@@ -27,7 +29,7 @@ class Arc():
         LOG.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
         
         ### User-Defined Main Input File ###
-        if self._mifn:
+        if self._mifn or self._args:
             MIF_Name = self._mifn
             LOG.info('Main Input File Given: ' + MIF_Name)
         else:
@@ -36,7 +38,7 @@ class Arc():
             MIF_Name = r"C:\Projects\2024_FHS_FloodForecasting\ARC_Shields_Nencarta\nencarta_test_wsebathy_clean\yellowstone_wsebathy_clean\ARC_InputFiles\ARC_Input_Shields_Bathy.txt"
             LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
             
-        main(MIF_Name, self.quiet)
+        main(MIF_Name, self._args, self.quiet)
 
     def flood(self):
         with open(self._mifn, 'r') as file:
@@ -71,7 +73,7 @@ class Arc():
 
         Curve2Flood_MainFunction(dem_file, strm_file, '', flow_file, curve_file, vdt_database, flood_map, flood_impact_file, q_fraction, 200, tw_factor, flood_local, 0.1, '', ar_bathy_file, fs_bathy_file, self.quiet)
         
-    def set_log_level(self, log_level: str):
+    def set_log_level(self, log_level: str) -> 'Arc':
         handler = LOG.handlers[0]
         if log_level == 'debug':
             LOG.setLevel(logging.DEBUG)
@@ -92,6 +94,7 @@ class Arc():
             return
             
         LOG.info('Log Level set to ' + log_level)
+        return self
 
 def _main():
     parser = argparse.ArgumentParser(description='Run ARC')
