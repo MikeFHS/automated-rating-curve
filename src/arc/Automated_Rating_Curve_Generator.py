@@ -2028,7 +2028,11 @@ def find_bank_inflection_point(da_xs_profile: np.ndarray, i_cross_section_number
     """
     # Apply smoothing to the cross-section data
     # da_xs_smooth = da_xs_profile
-    da_xs_smooth = savgol_filter(da_xs_profile, window_length=window_length, polyorder=polyorder)
+    try:
+        da_xs_smooth = savgol_filter(da_xs_profile, window_length=window_length, polyorder=polyorder)
+    except np.linalg.LinAlgError:
+        # If the rare case smoothing fails, just use original profile
+        da_xs_smooth = da_xs_profile
     
     return find_bank_inflection_point_helper(da_xs_smooth, i_cross_section_number, d_distance_z)
 
