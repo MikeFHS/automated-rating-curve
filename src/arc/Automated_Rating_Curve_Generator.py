@@ -2102,6 +2102,22 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
     # Return to the calling function
     return i_low_point_index
 
+@njit(cache=True)
+def Create_List_of_Elevations_within_CrossSection(da_xs_1, xs_1_n, da_xs_2, xs_2_n):
+    #Creates a list of ever-increasing elevation points
+    xn_max = max(xs_1_n, xs_2_n)
+    E_List = []
+    max_val = -9999
+    for i in range(xn_max):
+        if i<=xs_1_n and da_xs_1[i]>max_val:
+            max_val = da_xs_1[i]
+            E_List.append(max_val)
+        if i<=xs_2_n and da_xs_2[i]>max_val:
+            max_val = da_xs_2[i]
+            E_List.append(max_val)
+    
+    return np.array(E_List*10)
+
 def Calculate_Bathymetry_Based_on_WSE_or_LC(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z, d_slope_use, 
                                                            ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_lc_water_value,
                                                            dm_elevation, b_FindBanksBasedOnLandCover, b_bathy_use_banks, d_bathymetry_trapzoid_height):
@@ -2886,7 +2902,6 @@ def get_best_xsection_angle(l_angles_to_test, d_xs_direction, d_precompute_angle
     return d_shortest_tw_angle
 
 
-@profile
 def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
@@ -3263,7 +3278,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 else:
                     continue
     
-            if i_number_of_elevations >= ep:
+            if i_number_of_elevations > i_number_of_increments + 1:
                 LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
                 # print("I'm skipping because i_number_of_elevations >= ep")
                 if b_reach_average_curve_file:
@@ -3838,7 +3853,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             
             
             # Check that the number of elevations is reasonable
-            if i_number_of_elevations >= ep:
+            if i_number_of_elevations > i_number_of_increments + 1:
                 LOG.error('ERROR, HAVE TOO MANY ELEVATIONS TO EVALUATE')
 
             for i_entry_elevation in range(1, i_number_of_elevations):
@@ -3888,33 +3903,31 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             # Process each of the elevations to the output file if feasbile values were produced
             da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
             if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-                comid_dict_list.append(i_cell_comid)
-                row_dict_list.append(i_row_cell - i_boundary_number)
-                col_dict_list.append(i_column_cell - i_boundary_number)
-                if len(s_output_ap_database) > 0:
+                if s_output_ap_database:
                     comid_ap_dict_list.append(i_cell_comid)
                     row_ap_dict_list.append(i_row_cell - i_boundary_number)
                     col_ap_dict_list.append(i_column_cell - i_boundary_number)
-                if b_modified_dem:
-                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
-                else:
-                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
-                qbaseflow_dict_list.append(d_q_baseflow)
+                
+                vdt_row = [i_cell_comid, i_row_cell - i_boundary_number, i_column_cell - i_boundary_number]
+                vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
+                vdt_row.append(d_q_baseflow)
+                vdt_list.append(vdt_row)
 
                 # Loop backward through the elevations
                 if s_output_vdt_database:
                     if b_modified_dem:
                         da_total_wse -= 100
-                    for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
-                        o_out_file_dict[q_name].append(da_total_q[i])
-                        o_out_file_dict[v_name].append(da_total_v[i])
-                        o_out_file_dict[t_name].append(da_total_t[i])
-                        o_out_file_dict[wse_name].append(da_total_wse[i])
+
+                    q_list.append(da_total_q[1:])
+                    v_list.append(da_total_v[1:])
+                    t_list.append(da_total_t[1:])
+                    wse_list.append(da_total_wse[1:])
+
                     if b_modified_dem:
                         da_total_wse += 100
         
             if i_number_of_elevations > 0:
-                i_outprint_yes = 1
+                b_outprint_yes = True
 
         # Gather up all the values for the stream cell if we are going to build a reach average curve file
         if b_reach_average_curve_file:
@@ -3963,7 +3976,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
             dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
             dm_manning_n_raster2_str = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
-            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_wse}\t{d_ordinate_dist}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_wse}\t{d_ordinate_dist}\t{dm_manning_n_raster2_str}\n")
+            o_xs_file.write(f"{i_cell_comid}\t{i_row_cell - i_boundary_number}\t{i_column_cell - i_boundary_number}\t{da_xs_profile1_str}\t{d_ordinate_dist}\t{dm_manning_n_raster1_str}\t{da_xs_profile2_str}\t{d_ordinate_dist}\t{dm_manning_n_raster2_str}\n")
 
    
     # Create the output VDT Database file - datatypes are figured out automatically
