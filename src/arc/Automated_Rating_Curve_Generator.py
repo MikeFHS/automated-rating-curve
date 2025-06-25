@@ -3838,10 +3838,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                         if b_modified_dem:
                             da_total_wse -= 100
 
-                        q_list.append(da_total_q[1:])
-                        v_list.append(da_total_v[1:])
-                        t_list.append(da_total_t[1:])
-                        wse_list.append(da_total_wse[1:])
+                        q_list.append(da_total_q[1:].copy())
+                        v_list.append(da_total_v[1:].copy())
+                        t_list.append(da_total_t[1:].copy())
+                        wse_list.append(da_total_wse[1:].copy())
 
                         if b_modified_dem:
                             da_total_wse += 100
@@ -3939,10 +3939,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     if b_modified_dem:
                         da_total_wse -= 100
 
-                    q_list.append(da_total_q[1:])
-                    v_list.append(da_total_v[1:])
-                    t_list.append(da_total_t[1:])
-                    wse_list.append(da_total_wse[1:])
+                    q_list.append(da_total_q[1:].copy())
+                    v_list.append(da_total_v[1:].copy())
+                    t_list.append(da_total_t[1:].copy())
+                    wse_list.append(da_total_wse[1:].copy())
 
                     if b_modified_dem:
                         da_total_wse += 100
