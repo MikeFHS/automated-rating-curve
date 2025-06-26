@@ -4209,7 +4209,9 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         d_d_a_list, d_d_b_list = [], []
 
         # Extract all unique COMID values
-        unique_comids = vdt_df["COMID"].unique()
+        # unique_comids = vdt_df["COMID"].unique()
+        unique_comids = o_out_file_df["COMID"].unique()
+
 
         # Process each unique COMID
         for comid in unique_comids:
