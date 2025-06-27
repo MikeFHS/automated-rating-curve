@@ -3381,6 +3381,9 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             # set this as the default in case we don't find a better one
             d_maxflow_wse_final = -999.0
 
+            # initialize some variables
+            d_q_sum = 0.0
+
             # Define an objective function: the difference between the calculated max flow and d_q_maximum.
             def objective_with_wse(trial_wse):
 
