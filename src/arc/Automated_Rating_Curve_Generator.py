@@ -3084,30 +3084,30 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         XS_c2 = []
 
     
-    # # Create the dictionary and lists that will be used to create our VDT database
-    # vdt_list: list = []
-    # q_list = []
-    # v_list = []
-    # t_list = []
-    # wse_list = []
+    # Create the dictionary and lists that will be used to create our VDT database
+    vdt_list: list = []
+    q_list = []
+    v_list = []
+    t_list = []
+    wse_list = []
 
     # Create the dictionary and lists that will be used to create our VDT database
-    o_out_file_dict: dict[str, list] = {}
-    o_out_file_dict['COMID'] = []
-    o_out_file_dict['Row'] = []
-    o_out_file_dict['Col'] = []
-    o_out_file_dict['Elev'] = []
-    o_out_file_dict['QBaseflow'] = []
-    comid_dict_list = o_out_file_dict['COMID']
-    row_dict_list = o_out_file_dict['Row']
-    col_dict_list = o_out_file_dict['Col']
-    elev_dict_list = o_out_file_dict['Elev']
-    qbaseflow_dict_list = o_out_file_dict['QBaseflow']
-    for i in range(1, i_number_of_increments+1):
-        o_out_file_dict[f'q_{i}'] = []
-        o_out_file_dict[f'v_{i}'] = []
-        o_out_file_dict[f't_{i}'] = []
-        o_out_file_dict[f'wse_{i}'] = [] 
+    # o_out_file_dict: dict[str, list] = {}
+    # o_out_file_dict['COMID'] = []
+    # o_out_file_dict['Row'] = []
+    # o_out_file_dict['Col'] = []
+    # o_out_file_dict['Elev'] = []
+    # o_out_file_dict['QBaseflow'] = []
+    # comid_dict_list = o_out_file_dict['COMID']
+    # row_dict_list = o_out_file_dict['Row']
+    # col_dict_list = o_out_file_dict['Col']
+    # elev_dict_list = o_out_file_dict['Elev']
+    # qbaseflow_dict_list = o_out_file_dict['QBaseflow']
+    # for i in range(1, i_number_of_increments+1):
+    #     o_out_file_dict[f'q_{i}'] = []
+    #     o_out_file_dict[f'v_{i}'] = []
+    #     o_out_file_dict[f't_{i}'] = []
+    #     o_out_file_dict[f'wse_{i}'] = [] 
 
     # Create the dictionary and lists that will be used to create our ATW database
     if s_output_ap_database:
@@ -3142,9 +3142,9 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
 
     # Creating strings takes a lot of time. Let's compute the VDT database column names here
-    vdt_column_names = []
-    for i in range(1, i_number_of_increments+1):
-        vdt_column_names.append((f'q_{i}', f'v_{i}', f't_{i}', f'wse_{i}')) 
+    # vdt_column_names = []
+    # for i in range(1, i_number_of_increments+1):
+    #     vdt_column_names.append((f'q_{i}', f'v_{i}', f't_{i}', f'wse_{i}')) 
 
     # Creating strings takes a lot of time. Let's compute the AWP database column names here
     if len(s_output_ap_database) > 0:
@@ -3872,28 +3872,43 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 # Process each of the elevations to the output file if feasbile values were produced
                 da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
                 if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-                    comid_dict_list.append(i_cell_comid)
-                    row_dict_list.append(i_row_cell - i_boundary_number)
-                    col_dict_list.append(i_column_cell - i_boundary_number)
-                    if len(s_output_ap_database) > 0:
+                    if s_output_ap_database:
                         comid_ap_dict_list.append(i_cell_comid)
                         row_ap_dict_list.append(i_row_cell - i_boundary_number)
                         col_ap_dict_list.append(i_column_cell - i_boundary_number)
-                    if b_modified_dem:
-                        elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
-                    else:
-                        elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
-                    qbaseflow_dict_list.append(d_q_baseflow)
+                    
+                    vdt_row = [i_cell_comid, i_row_cell - i_boundary_number, i_column_cell - i_boundary_number]
+                    vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
+                    vdt_row.append(d_q_baseflow)
+                    vdt_list.append(vdt_row)
+                    # comid_dict_list.append(i_cell_comid)
+                    # row_dict_list.append(i_row_cell - i_boundary_number)
+                    # col_dict_list.append(i_column_cell - i_boundary_number)
+                    # if len(s_output_ap_database) > 0:
+                    #     comid_ap_dict_list.append(i_cell_comid)
+                    #     row_ap_dict_list.append(i_row_cell - i_boundary_number)
+                    #     col_ap_dict_list.append(i_column_cell - i_boundary_number)
+                    # if b_modified_dem:
+                    #     elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
+                    # else:
+                    #     elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+                    # qbaseflow_dict_list.append(d_q_baseflow)
 
                     # Loop backward through the elevations
                     if s_output_vdt_database:
                         if b_modified_dem:
                             da_total_wse -= 100
-                        for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
-                            o_out_file_dict[q_name].append(da_total_q[i])
-                            o_out_file_dict[v_name].append(da_total_v[i])
-                            o_out_file_dict[t_name].append(da_total_t[i])
-                            o_out_file_dict[wse_name].append(da_total_wse[i])
+
+                        q_list.append(da_total_q[1:].copy())
+                        v_list.append(da_total_v[1:].copy())
+                        t_list.append(da_total_t[1:].copy())
+                        wse_list.append(da_total_wse[1:].copy())
+
+                        # for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
+                        #     o_out_file_dict[q_name].append(da_total_q[i])
+                        #     o_out_file_dict[v_name].append(da_total_v[i])
+                        #     o_out_file_dict[t_name].append(da_total_t[i])
+                        #     o_out_file_dict[wse_name].append(da_total_wse[i])
                         if b_modified_dem:
                             da_total_wse += 100
                     
@@ -3972,59 +3987,60 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     dm_out_flood[ia_xc_r2_index_main[np2], ia_xc_c2_index_main[np2]] = 2
                 '''
 
-            # # Process each of the elevations to the output file if feasbile values were produced
-            # da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
-            # if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-            #     if s_output_ap_database:
-            #         comid_ap_dict_list.append(i_cell_comid)
-            #         row_ap_dict_list.append(i_row_cell - i_boundary_number)
-            #         col_ap_dict_list.append(i_column_cell - i_boundary_number)
-                
-            #     vdt_row = [i_cell_comid, i_row_cell - i_boundary_number, i_column_cell - i_boundary_number]
-            #     vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
-            #     vdt_row.append(d_q_baseflow)
-            #     vdt_list.append(vdt_row)
-
-            #     # Loop backward through the elevations
-            #     if s_output_vdt_database:
-            #         if b_modified_dem:
-            #             da_total_wse -= 100
-
-            #         q_list.append(da_total_q[1:])
-            #         v_list.append(da_total_v[1:])
-            #         t_list.append(da_total_t[1:])
-            #         wse_list.append(da_total_wse[1:])
-
-            #         if b_modified_dem:
-            #             da_total_wse += 100
-
             # Process each of the elevations to the output file if feasbile values were produced
             da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
             if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-                comid_dict_list.append(i_cell_comid)
-                row_dict_list.append(i_row_cell - i_boundary_number)
-                col_dict_list.append(i_column_cell - i_boundary_number)
-                if len(s_output_ap_database) > 0:
+                if s_output_ap_database:
                     comid_ap_dict_list.append(i_cell_comid)
                     row_ap_dict_list.append(i_row_cell - i_boundary_number)
                     col_ap_dict_list.append(i_column_cell - i_boundary_number)
-                if b_modified_dem:
-                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
-                else:
-                    elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
-                qbaseflow_dict_list.append(d_q_baseflow)
+                
+                vdt_row = [i_cell_comid, i_row_cell - i_boundary_number, i_column_cell - i_boundary_number]
+                vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
+                vdt_row.append(d_q_baseflow)
+                vdt_list.append(vdt_row)
 
                 # Loop backward through the elevations
                 if s_output_vdt_database:
                     if b_modified_dem:
                         da_total_wse -= 100
-                    for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
-                        o_out_file_dict[q_name].append(da_total_q[i])
-                        o_out_file_dict[v_name].append(da_total_v[i])
-                        o_out_file_dict[t_name].append(da_total_t[i])
-                        o_out_file_dict[wse_name].append(da_total_wse[i])
+
+                    q_list.append(da_total_q[1:].copy())
+                    v_list.append(da_total_v[1:].copy())
+                    t_list.append(da_total_t[1:].copy())
+                    wse_list.append(da_total_wse[1:].copy())
+
                     if b_modified_dem:
-                        da_total_wse += 100 
+                        da_total_wse += 100
+        
+
+            # # Process each of the elevations to the output file if feasbile values were produced
+            # da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
+            # if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+            #     comid_dict_list.append(i_cell_comid)
+            #     row_dict_list.append(i_row_cell - i_boundary_number)
+            #     col_dict_list.append(i_column_cell - i_boundary_number)
+            #     if len(s_output_ap_database) > 0:
+            #         comid_ap_dict_list.append(i_cell_comid)
+            #         row_ap_dict_list.append(i_row_cell - i_boundary_number)
+            #         col_ap_dict_list.append(i_column_cell - i_boundary_number)
+            #     if b_modified_dem:
+            #         elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell]-100)
+            #     else:
+            #         elev_dict_list.append(dm_elevation[i_row_cell, i_column_cell])
+            #     qbaseflow_dict_list.append(d_q_baseflow)
+
+            #     # Loop backward through the elevations
+            #     if s_output_vdt_database:
+            #         if b_modified_dem:
+            #             da_total_wse -= 100
+            #         for i, (q_name, v_name, t_name, wse_name) in enumerate(vdt_column_names[:i_number_of_elevations - 1], start=1):
+            #             o_out_file_dict[q_name].append(da_total_q[i])
+            #             o_out_file_dict[v_name].append(da_total_v[i])
+            #             o_out_file_dict[t_name].append(da_total_t[i])
+            #             o_out_file_dict[wse_name].append(da_total_wse[i])
+            #         if b_modified_dem:
+            #             da_total_wse += 100 
 
             if i_number_of_elevations > 0:
                 b_outprint_yes = True
@@ -4099,57 +4115,56 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             XS_r2.append(r2)
             XS_c2.append(c2)
    
-    # # Create the output VDT Database file - datatypes are figured out automatically
-    # colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow'] + [f"{prefix}_{i}" for i in range(1, i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']]
-    # vdt_df = (pd.concat([pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow']), 
-    #                     pd.DataFrame(q_list, columns=[f'q_{i}' for i in range(1, len(q_list[0]) + 1)]),
-    #                     pd.DataFrame(v_list, columns=[f'v_{i}' for i in range(1, len(v_list[0]) + 1)]),
-    #                     pd.DataFrame(t_list, columns=[f't_{i}' for i in range(1, len(t_list[0]) + 1)]),
-    #                     pd.DataFrame(wse_list, columns=[f'wse_{i}' for i in range(1, len(wse_list[0]) + 1)])], axis=1)
-    #                     .round(3)
-    #                     [colorder] # Reorder columns to match the way Mike had it
-    #                     )
+    # Create the output VDT Database file - datatypes are figured out automatically
+    colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow'] + [f"{prefix}_{i}" for i in range(1, i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']]
+    vdt_df = (pd.concat([pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow']), 
+                        pd.DataFrame(q_list, columns=[f'q_{i}' for i in range(1, len(q_list[0]) + 1)]),
+                        pd.DataFrame(v_list, columns=[f'v_{i}' for i in range(1, len(v_list[0]) + 1)]),
+                        pd.DataFrame(t_list, columns=[f't_{i}' for i in range(1, len(t_list[0]) + 1)]),
+                        pd.DataFrame(wse_list, columns=[f'wse_{i}' for i in range(1, len(wse_list[0]) + 1)])], axis=1)
+                        .round(3)
+                        [colorder] # Reorder columns to match the way Mike had it
+                        )
     
-    # # Remove rows with NaN values
-    # vdt_df = vdt_df.dropna()
-    # # # Remove rows where any column has a negative value except wse or elevation
-    # # Select columns NOT starting with 'wse' or 'Elev'
-    # cols_to_check = [col for col in vdt_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
-    # # Remove rows where any of the selected columns have a negative value
-    # vdt_df = vdt_df.loc[~(vdt_df[cols_to_check] < 0).any(axis=1)]
-    # if s_output_vdt_database.endswith('.parquet'):
-    #     vdt_df.to_parquet(s_output_vdt_database, compression='brotli', index=False) # Brotli does very well with VDT data
-    # else:
-    #     vdt_df.to_csv(s_output_vdt_database, index=False)    
-    # LOG.info('Finished writing ' + str(s_output_vdt_database))
-    # Write the output VDT Database file
-    dtypes = {
-                "COMID": 'int64',
-                "Row": 'int64',
-                "Col": 'int64',
-    }
-    for i in range(1, i_number_of_increments + 1):
-        o_out_file_dict[f'q_{i}'] = np.round(o_out_file_dict[f'q_{i}'], 3)
-        o_out_file_dict[f'v_{i}'] = np.round(o_out_file_dict[f'v_{i}'], 3)
-        o_out_file_dict[f't_{i}'] = np.round(o_out_file_dict[f't_{i}'], 3)
-        o_out_file_dict[f'wse_{i}'] = np.round(o_out_file_dict[f'wse_{i}'], 3)
-
-    o_out_file_dict['Elev'] = np.round(o_out_file_dict['Elev'], 3)
-    o_out_file_dict['QBaseflow'] = np.round(o_out_file_dict['QBaseflow'], 3)
-
-    o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
     # Remove rows with NaN values
-    o_out_file_df = o_out_file_df.dropna()
+    vdt_df = vdt_df.dropna()
     # # Remove rows where any column has a negative value except wse or elevation
     # Select columns NOT starting with 'wse' or 'Elev'
-    cols_to_check = [col for col in o_out_file_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
+    cols_to_check = [col for col in vdt_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
     # Remove rows where any of the selected columns have a negative value
-    o_out_file_df = o_out_file_df.loc[~(o_out_file_df[cols_to_check] < 0).any(axis=1)]
+    vdt_df = vdt_df.loc[~(vdt_df[cols_to_check] < 0).any(axis=1)]
     if s_output_vdt_database.endswith('.parquet'):
-        o_out_file_df.to_parquet(s_output_vdt_database, compression='brotli', index=False) # Brotli does very well with VDT data
+        vdt_df.to_parquet(s_output_vdt_database, compression='brotli', index=False) # Brotli does very well with VDT data
     else:
-        o_out_file_df.to_csv(s_output_vdt_database, index=False)    
+        vdt_df.to_csv(s_output_vdt_database, index=False)    
     LOG.info('Finished writing ' + str(s_output_vdt_database))
+    # dtypes = {
+    #             "COMID": 'int64',
+    #             "Row": 'int64',
+    #             "Col": 'int64',
+    # }
+    # for i in range(1, i_number_of_increments + 1):
+    #     o_out_file_dict[f'q_{i}'] = np.round(o_out_file_dict[f'q_{i}'], 3)
+    #     o_out_file_dict[f'v_{i}'] = np.round(o_out_file_dict[f'v_{i}'], 3)
+    #     o_out_file_dict[f't_{i}'] = np.round(o_out_file_dict[f't_{i}'], 3)
+    #     o_out_file_dict[f'wse_{i}'] = np.round(o_out_file_dict[f'wse_{i}'], 3)
+
+    # o_out_file_dict['Elev'] = np.round(o_out_file_dict['Elev'], 3)
+    # o_out_file_dict['QBaseflow'] = np.round(o_out_file_dict['QBaseflow'], 3)
+
+    # o_out_file_df = pd.DataFrame(o_out_file_dict).astype(dtypes)
+    # # Remove rows with NaN values
+    # o_out_file_df = o_out_file_df.dropna()
+    # # # Remove rows where any column has a negative value except wse or elevation
+    # # Select columns NOT starting with 'wse' or 'Elev'
+    # cols_to_check = [col for col in o_out_file_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
+    # # Remove rows where any of the selected columns have a negative value
+    # o_out_file_df = o_out_file_df.loc[~(o_out_file_df[cols_to_check] < 0).any(axis=1)]
+    # if s_output_vdt_database.endswith('.parquet'):
+    #     o_out_file_df.to_parquet(s_output_vdt_database, compression='brotli', index=False) # Brotli does very well with VDT data
+    # else:
+    #     o_out_file_df.to_csv(s_output_vdt_database, index=False)    
+    # LOG.info('Finished writing ' + str(s_output_vdt_database))
 
     
     # Output the area and wetted perimeter database file if requested
@@ -4194,16 +4209,16 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         # Creating the DataFrame
         reach_average_curvefile_df = pd.DataFrame(data)
 
-        # # Dynamically select columns, starting with prefixes
-        # q_prefixes = [col for col in vdt_df.columns if col.startswith("q_")]
-        # t_prefixes = [col for col in vdt_df.columns if col.startswith("t_")]
-        # v_prefixes = [col for col in vdt_df.columns if col.startswith("v_")]
-        # wse_prefixes = [col for col in vdt_df.columns if col.startswith("wse_")]
         # Dynamically select columns, starting with prefixes
-        q_prefixes = [col for col in o_out_file_df.columns if col.startswith("q_")]
-        t_prefixes = [col for col in o_out_file_df.columns if col.startswith("t_")]
-        v_prefixes = [col for col in o_out_file_df.columns if col.startswith("v_")]
-        wse_prefixes = [col for col in o_out_file_df.columns if col.startswith("wse_")] 
+        q_prefixes = [col for col in vdt_df.columns if col.startswith("q_")]
+        t_prefixes = [col for col in vdt_df.columns if col.startswith("t_")]
+        v_prefixes = [col for col in vdt_df.columns if col.startswith("v_")]
+        wse_prefixes = [col for col in vdt_df.columns if col.startswith("wse_")]
+        # # Dynamically select columns, starting with prefixes
+        # q_prefixes = [col for col in o_out_file_df.columns if col.startswith("q_")]
+        # t_prefixes = [col for col in o_out_file_df.columns if col.startswith("t_")]
+        # v_prefixes = [col for col in o_out_file_df.columns if col.startswith("v_")]
+        # wse_prefixes = [col for col in o_out_file_df.columns if col.startswith("wse_")] 
 
         # Initialize lists to store regression coefficients
         comid_list = []
@@ -4212,14 +4227,14 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         d_d_a_list, d_d_b_list = [], []
 
         # Extract all unique COMID values
-        # unique_comids = vdt_df["COMID"].unique()
-        unique_comids = o_out_file_df["COMID"].unique()
+        unique_comids = vdt_df["COMID"].unique()
+        # unique_comids = o_out_file_df["COMID"].unique()
 
 
         # Process each unique COMID
         for comid in unique_comids:
-            # group = vdt_df[vdt_df["COMID"] == comid]
-            group = o_out_file_df[o_out_file_df["COMID"] == comid]
+            group = vdt_df[vdt_df["COMID"] == comid]
+            # group = o_out_file_df[o_out_file_df["COMID"] == comid]
 
             
             # Create a MultiIndex from the current group's Row and Col for precise matching
