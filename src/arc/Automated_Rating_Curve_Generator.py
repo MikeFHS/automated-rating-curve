@@ -2672,7 +2672,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, da_xs_profile1, da_xs
 @njit(cache=True)
 def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_profile2, xs1_n, xs2_n,
                              d_ordinate_dist, n_x_section_1, n_x_section_2, d_slope_use, da_total_t, da_total_a,
-                             da_total_p, da_total_v, da_total_q, da_total_wse):
+                             da_total_p, da_total_v, da_total_q, da_total_wse, d_q_sum):
 
     i_start_elevation_index, i_last_elevation_index = 0, 0
 
@@ -2711,7 +2711,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                 # set the upper bound for the water surface elevation to the next increment
                 d_wse_upper_bound = da_xs_profile1[0] + d_inc_y * i_entry_elevation+1
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
-                while d_wse_lower_bound < d_wse_upper_bound:
+                while d_wse_lower_bound < d_wse_upper_bound and Q <= d_q_sum:
                     # Calculate the geometry          
                     A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_1)
                     A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_2)
@@ -2734,7 +2734,7 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                         d_wse_lower_bound += 0.01
                         
                 # if we reach the upper bound without finding a solution, let's skip this increment
-                if Q < prev_q:
+                if Q < prev_q or Q < d_q_sum:
                     da_total_wse[i_entry_elevation] = prev_wse
                     da_total_t[i_entry_elevation] = prev_t
                     da_total_a[i_entry_elevation] = prev_a
@@ -3700,7 +3700,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     pass
 
             #This prevents the way-over simulated cells.  These are outliers.
-            if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow:
+            # 20250808 Joseph changeed this
+            if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
 
                 # something isn't good with our results
                 acceptable = False
@@ -3744,7 +3745,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                         trial_slope_use
                     )
                     # Check if d_q_sum is within acceptable bounds
-                    if d_q_baseflow>0.0 and da_total_q[i_start_elevation_index+1] >= 3.0 * d_q_baseflow and d_maxflow_wse_final_test > 0.0:
+                    # 20250808 Joseph changed this
+                    if d_q_sum < d_q_maximum * 1.5 or d_q_sum > d_q_maximum * 0.5:
                         acceptable = True
                         d_slope_use = trial_slope_use
                         d_maxflow_wse_final = d_maxflow_wse_final_test
@@ -3814,6 +3816,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 
                 else:
                     pass
+            
+            # one more check of outliers to make sure we don't have any
+            if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+                acceptable = False
 
             if not acceptable:
                 # print("I'm skipping because d_q_sum is outside acceptable range after varying d_slope_use")
@@ -3840,7 +3846,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                                                                                 d_ordinate_dist, 
                                                                                 n_x_section_1, n_x_section_2, d_slope_use, da_total_t, 
                                                                                 da_total_a, da_total_p, da_total_v, da_total_q, 
-                                                                                da_total_wse)
+                                                                                da_total_wse, d_q_sum)
 
                 if d_q_baseflow>0.001 and da_total_q[i_start_elevation_index+1] >= d_q_baseflow:
                     da_total_q[i_start_elevation_index+1] = d_q_baseflow-0.001
