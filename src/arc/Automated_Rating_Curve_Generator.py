@@ -2709,9 +2709,9 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                 # increase d_wse by 1 cm to try to make sure Q is greater than prev_q
                 d_wse_lower_bound = d_wse + 0.01
                 # set the upper bound for the water surface elevation to the next increment
-                d_wse_upper_bound = da_xs_profile1[0] + d_inc_y * i_entry_elevation+1
+                d_wse_upper_bound = da_xs_profile1[0] + d_inc_y * (i_entry_elevation + 1)
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
-                while d_wse_lower_bound < d_wse_upper_bound and Q <= d_q_sum:
+                while d_wse_lower_bound < d_wse_upper_bound:
                     # Calculate the geometry          
                     A1, P1, R1, np1, T1 = calculate_stream_geometry(da_xs_profile1[:xs1_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_1)
                     A2, P2, R2, np2, T2 = calculate_stream_geometry(da_xs_profile2[:xs2_n], d_wse_lower_bound, d_ordinate_dist, n_x_section_2)
@@ -2723,25 +2723,39 @@ def flood_increments(i_number_of_increments, d_inc_y, da_xs_profile1, da_xs_prof
                     # Estimate mannings n
                     d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
 
-                    # use Manning's equation to estimate the flow
-                    Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * d_slope_use**0.5
-                    V = Q / A
+                    # use a local candidate to avoid reusing stale Q in the while condition
+                    Q_cand = (1.0 / d_composite_n) * A * (A / P) ** (2.0 / 3.0) * d_slope_use ** 0.5
+                    V_cand = Q_cand / A
 
-                    if A > prev_a and P > prev_p and Q > prev_q:
+                    # accept only if it improves AND respects the cap
+                    if (A > prev_a) and (P > prev_p) and (Q_cand > prev_q) and (Q_cand <= d_q_sum):
                         d_wse = d_wse_lower_bound
+                        Q = Q_cand
+                        V = V_cand
                         break
-                    else:
-                        d_wse_lower_bound += 0.01
+
+                    d_wse_lower_bound += 0.01
                         
-                # if we reach the upper bound without finding a solution, let's skip this increment
-                if Q < prev_q or Q < d_q_sum:
-                    da_total_wse[i_entry_elevation] = prev_wse
-                    da_total_t[i_entry_elevation] = prev_t
-                    da_total_a[i_entry_elevation] = prev_a
-                    da_total_p[i_entry_elevation] = prev_p
-                    da_total_q[i_entry_elevation] = prev_q
-                    da_total_v[i_entry_elevation] = prev_v
-                    continue
+            # if we reach the upper bound without a valid candidate, or we overshot, revert
+            if (Q <= prev_q) or (Q > d_q_sum):
+                da_total_wse[i_entry_elevation] = prev_wse
+                da_total_t[i_entry_elevation] = prev_t
+                da_total_a[i_entry_elevation] = prev_a
+                da_total_p[i_entry_elevation] = prev_p
+                da_total_q[i_entry_elevation] = prev_q
+                da_total_v[i_entry_elevation] = prev_v
+                continue
+
+            # also add a top‑level guard before saving the initial (non‑refined) Q
+            # right after computing the first Q/V for this increment:
+            if Q > d_q_sum:
+                da_total_wse[i_entry_elevation] = prev_wse
+                da_total_t[i_entry_elevation] = prev_t
+                da_total_a[i_entry_elevation] = prev_a
+                da_total_p[i_entry_elevation] = prev_p
+                da_total_q[i_entry_elevation] = prev_q
+                da_total_v[i_entry_elevation] = prev_v
+                continue
 
             # Save the values
             da_total_wse[i_entry_elevation] = d_wse
