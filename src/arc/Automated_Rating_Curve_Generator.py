@@ -4136,6 +4136,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             XS_c2.append(c2)
    
     # Create the output VDT Database file - datatypes are figured out automatically
+    if not q_list:
+        LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
+        return
+    
     colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow'] + [f"{prefix}_{i}" for i in range(1, i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']]
     vdt_df = (pd.concat([pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow']), 
                         pd.DataFrame(q_list, columns=[f'q_{i}' for i in range(1, len(q_list[0]) + 1)]),
