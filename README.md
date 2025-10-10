@@ -50,13 +50,13 @@ Follum Hydrologic Solutions, LLC (FHS) has open-sourced the ARC and Curve2Flood 
 
 The owners of FHS also believe that those with the ability to help others have a responsibility to do so. This belief is rooted in our faith and supported by the following scriptures:
 
-• Hebrews 13:16 – “But to do good and to communicate forget not: for with such sacrifices God is well pleased.”
+**Hebrews 13:16** - But to do good and to communicate forget not: for with such sacrifices God is well pleased.
 
-• 1 Timothy 6:18 – “That they do good, that they be rich in good works, ready to distribute, willing to communicate.”
+**1 Timothy 6:18** - That they do good, that they be rich in good works, ready to distribute, willing to communicate.
 
-• James 4:17 – “Therefore to him that knoweth to do good, and doeth it not, to him it is sin.”
+**James 4:17** - Therefore to him that knoweth to do good, and doeth it not, to him it is sin.
 
-• Galatians 6:10 – “As we have therefore opportunity, let us do good unto all men, especially unto them who are of the household of faith.”
+**Galatians 6:10** - As we have therefore opportunity, let us do good unto all men, especially unto them who are of the household of faith.
 
 
 ## License

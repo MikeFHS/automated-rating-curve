@@ -113,12 +113,19 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
     source_linknos = gdf[gdf[Stream_ID_Field].isin(sources)][Stream_ID_Field]
 
     # Function to extract start and end coordinates, excluding confluence points
-    def get_coords(geometry):
+    # here we will assume that if the Stream_ID_Field is "LINKNO" then we are working with GEOGLOWS data and if
+    # the Stream_ID_Field is "COMID" then we are working with the NHDPlus versions to and 
+    # need to reverse the start and end points of the lines
+    def get_coords(geometry, Stream_ID_Field):
         if isinstance(geometry, LineString):
             return [geometry.coords[-1]], [geometry.coords[0]]
         elif isinstance(geometry, MultiLineString):
-            start_coords = [line.coords[-1] for line in geometry.geoms]
-            end_coords = [line.coords[0] for line in geometry.geoms]
+            if Stream_ID_Field == "LINKNO":
+                start_coords = [line.coords[-1] for line in geometry.geoms]
+                end_coords = [line.coords[0] for line in geometry.geoms]
+            elif Stream_ID_Field == "COMID":
+                start_coords = [line.coords[-1] for line in geometry.geoms]
+                end_coords = [line.coords[0] for line in geometry.geoms]
             return start_coords, end_coords
         else:
             raise TypeError("Geometry must be a LineString or MultiLineString")
@@ -129,7 +136,7 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
     linkno_list = []
 
     for geometry, linkno in zip(source_geometries, source_linknos):
-        start_coords, end_coords = get_coords(geometry)
+        start_coords, end_coords = get_coords(geometry, Stream_ID_Field)
         start_coords_list.extend(start_coords)
         end_coords_list.extend(end_coords)
         linkno_list.extend([linkno] * len(start_coords))
