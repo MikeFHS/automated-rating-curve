@@ -16,6 +16,7 @@ import pandas as pd
 from datetime import datetime
 from scipy.optimize import curve_fit, OptimizeWarning, brentq
 from scipy.signal import savgol_filter
+from statistics import median
 from osgeo import gdal
 from numba import njit
 from numba.core.errors import TypingError
@@ -398,6 +399,12 @@ def read_main_input_file(s_mif_name: str, args: dict):
     global s_input_dem_path
     s_input_dem_path = get_parameter_name(sl_lines,  'DEM_File')
 
+    global s_stream_slope_method 
+    s_stream_slope_method = get_parameter_name(sl_lines,  'Stream_Slope_Method')
+    if s_stream_slope_method == '':
+        # Assume degree if not specified in the input efile
+        s_stream_slope_method = 'reach_average'
+
     # Find the path to the stream file
     global s_input_stream_path
     s_input_stream_path = get_parameter_name(sl_lines,  'Stream_File')
@@ -728,8 +735,109 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
     return da_comid, da_base_flow, da_flow_maximum
 
+# @njit(cache=True)
+def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
+    """
+    Calculates the stream slope for each stream cell using the following process:
+
+        1.) Find all stream cells that have the same stream id value
+        2.) Look at the slope of each of the stream cells.
+        3.) Average the slopes to get the overall slope we use in the model.
+
+    Guaranteed to be >= 0.0002 and <= 0.03
+
+    Parameters
+    ----------
+    i_row: int
+        Target cell row index
+    i_column: int
+        Target cell column index
+    dm_dem: ndarray
+        Elevation raster
+    im_streams: ndarray
+        Stream raster
+    d_dx: float
+        Cell resolution in the x direction
+    d_dy: float
+        Cell resolution in the y direction
+
+    Returns
+    -------
+    d_stream_slope: float
+        Average slope from the stream cells in the specified search box
+
+    """
+
+    # Initialize a default stream flow
+    d_stream_slope = 0.0
+
+    # All cells in this reach (global indices)
+    reach_rows, reach_cols = np.where(im_streams == stream_id)
+    n = len(reach_rows)
+
+    if n < 2:
+        # Not enough cells to define a slope
+        return 0.0002
+
+    total_slope = 0.0
+    count = 0
+
+    slope_list = []
+
+    # Loop over all unique pairs (a, b), a < b
+    for a in range(n):
+        ra = reach_rows[a]
+        ca = reach_cols[a]
+        za = dm_dem[ra, ca]
+
+        for b in range(a + 1, n):
+            rb = reach_rows[b]
+            cb = reach_cols[b]
+
+            # Check if within the "box" in row/col space
+            dr = rb - ra
+            dc = cb - ca
+
+            if (dr >= -i_general_slope_distance and dr <= i_general_slope_distance and
+                dc >= -i_general_slope_distance and dc <= i_general_slope_distance):
+
+                zb = dm_dem[rb, cb]
+
+                # Horizontal distance
+                dx = dc * d_dx
+                dy = dr * d_dy
+                dist = math.sqrt(dx * dx + dy * dy)
+
+                if dist > 0.0:
+                    slope = abs(za - zb) / dist
+                    total_slope += slope
+                    count += 1
+                    slope_list.append(slope)
+
+    # remove any outliers using quartiles
+    Q1 = np.percentile(slope_list, 25)
+    Q3 = np.percentile(slope_list, 75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    slope_list = [x for x in slope_list if lower_bound <= x <= upper_bound]
+
+    # Compute average slope
+    if count > 0:
+        d_stream_slope = median(slope_list)
+    else:
+        d_stream_slope = 0.0002
+
+    # Clamp to [0.0002, 0.03]
+    if d_stream_slope < 0.0002:
+        d_stream_slope = 0.0002
+    elif d_stream_slope > 0.03:
+        d_stream_slope = 0.03
+
+    return d_stream_slope
+
 @njit(cache=True)
-def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
+def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
     """
     Calculates the stream slope using the following process:
 
@@ -737,7 +845,7 @@ def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, 
         2.) Look at the slope of each of the stream cells.
         3.) Average the slopes to get the overall slope we use in the model.
 
-    Guaranteed to be >= 0.0002
+    Guaranteed to be >= 0.0002 and <= 0.03
 
     Parameters
     ----------
@@ -799,6 +907,9 @@ def get_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, 
     # if slope is less than the threshold, reset it
     if d_stream_slope < 0.0002:
         d_stream_slope = 0.0002
+    # if slope is greater than the threshold, reset it
+    elif d_stream_slope > 0.03:
+        d_stream_slope = 0.03
 
     # Return the slope to the calling function
     return d_stream_slope
@@ -3077,6 +3188,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         All_BaseElev_curve_list = []
         All_DEM_Elev_curve_list = []
         All_QMax_curve_list = []
+        All_Slope_curve_list = []
     
     # instantiate the lists we will use to create the XS File
     if s_xs_output_file:
@@ -3142,6 +3254,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         COMID_curve_list = []
         Row_curve_list = []
         Col_curve_list = []
+        Slope_curve_list = []
         BaseElev_curve_list = []
         DEM_Elev_curve_list = []
         QMax_curve_list = []
@@ -3166,6 +3279,17 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         for i in range(1, i_number_of_increments+1):
             ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
 
+    # create a reach average slope before we go stream cell by stream cell
+    if s_stream_slope_method == 'reach_average':
+        # create a list of unique stream IDs to loop through
+        unique_stream_ids = np.unique(dm_stream)
+        unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
+        pbar_slopes = tqdm.tqdm(unique_stream_ids, disable=quiet)
+        dict_stream_slopes = {}
+        for stream_id in pbar_slopes:
+            d_slope_use = get_reach_median_stream_slope_information(stream_id, dm_elevation, dm_stream, dx, dy)
+            dict_stream_slopes[stream_id] = d_slope_use
+
     # Solve using the volume fill approach
     i_volume_fill_approach = 1
 
@@ -3175,8 +3299,6 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     ### Begin the stream cell solution loop ###
     pbar = tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet)
     for i_entry_cell in pbar:
-        # i_entry_cell = 3184282
-
 
         # pbar.disable = True
         
@@ -3184,8 +3306,6 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         i_row_cell = ia_valued_row_indices[i_entry_cell]
         i_column_cell = ia_valued_column_indices[i_entry_cell]
         i_cell_comid = dm_stream[i_row_cell,i_column_cell]
-
-
 
         # Get the Flow Rates Associated with the Stream Cell
         try:
@@ -3203,7 +3323,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         #dm_output_streamangles[i_row_cell,i_column_cell] = d_xs_direction * 180.0 / math.pi
 
         # Get the Slope of each Stream Cell. Slope should be in m/m
-        d_slope_use = get_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
+        if s_stream_slope_method == 'local_average':
+            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
+        elif s_stream_slope_method =='reach_average':
+            d_slope_use = dict_stream_slopes[i_cell_comid]
 
         #We now precompute the cross-section ordinates
         if d_xs_direction > np.pi:
@@ -3292,6 +3415,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 All_BaseElev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
                 All_DEM_Elev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
                 All_QMax_curve_list.append(d_q_maximum)
+                All_Slope_curve_list.append(round(d_slope_use, 8))
             continue
 
         # pull the landcover data prior to making the streams cells all water 
@@ -3331,6 +3455,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     All_BaseElev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
                     All_DEM_Elev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
                     All_QMax_curve_list.append(d_q_maximum)
+                    All_Slope_curve_list.append(round(d_slope_use, 8))
                     continue
                 else:
                     continue
@@ -3345,6 +3470,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     All_BaseElev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
                     All_DEM_Elev_curve_list.append(round(dm_elevation[i_row_cell,i_column_cell], 3))
                     All_QMax_curve_list.append(d_q_maximum)
+                    All_Slope_curve_list.append(round(d_slope_use, 8))
                     continue
                 else:
                     continue
@@ -3529,6 +3655,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
             slope_upper = d_slope_use + potential_slope_error
 
+            # if slope is greater than the threshold, let's change it to the threshold
+            if slope_upper > 0.03:
+                slope_upper = 0.03
+
             # Check if the objective function changes sign between the bounds.
             f_lower = objective_with_slope(slope_lower)
             f_upper = objective_with_slope(slope_upper)
@@ -3611,6 +3741,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 # Set lower and upper bounds for the slope search.
                 slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
                 slope_upper = d_slope_use + potential_slope_error
+
+                # if slope is greater than the threshold, let's change it to the threshold
+                if slope_upper > 0.03:
+                    slope_upper = 0.03
 
                 # Check if the objective function changes sign between the bounds.
                 f_lower = objective_with_slope(slope_lower)
@@ -3729,6 +3863,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
                 slope_upper = d_slope_use + potential_slope_error
 
+                # if slope is greater than the threshold, let's change it to the threshold
+                if slope_upper > 0.03:
+                    slope_upper = 0.03
+
                 # Check if the objective function changes sign between the bounds.
                 f_lower = objective_with_slope(slope_lower)
                 f_upper = objective_with_slope(slope_upper)
@@ -3844,6 +3982,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     All_BaseElev_curve_list.append(dm_elevation[i_row_cell, i_column_cell])
                     All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell, i_column_cell])
                     All_QMax_curve_list.append(d_q_maximum)
+                    All_Slope_curve_list.append(round(d_slope_use, 8))
                     continue
                 else:
                     continue
@@ -3900,6 +4039,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     vdt_row = [i_cell_comid, i_row_cell - i_boundary_number, i_column_cell - i_boundary_number]
                     vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
                     vdt_row.append(d_q_baseflow)
+                    vdt_row.append(np.round(d_slope_use, 8))
                     vdt_list.append(vdt_row)
                     # comid_dict_list.append(i_cell_comid)
                     # row_dict_list.append(i_row_cell - i_boundary_number)
@@ -4018,6 +4158,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 vdt_row = [i_cell_comid, i_row_cell - i_boundary_number, i_column_cell - i_boundary_number]
                 vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
                 vdt_row.append(d_q_baseflow)
+                vdt_row.append(np.round(d_slope_use, 8))
                 vdt_list.append(vdt_row)
 
                 # Loop backward through the elevations
@@ -4077,6 +4218,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 All_BaseElev_curve_list.append(np.round(da_xs_profile1[0], 3))
                 All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
             All_QMax_curve_list.append(np.round(d_q_maximum, 3))
+            All_Slope_curve_list.append(np.round(d_slope_use, 8))
 
         # Work on the Regression Equations File
         if b_outprint_yes and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
@@ -4095,6 +4237,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 BaseElev_curve_list.append(np.round(da_xs_profile1[0], 3))
                 DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
             QMax_curve_list.append(np.round(da_total_q[i_last_elevation_index], 3))
+            Slope_curve_list.append(np.round(d_slope_use, 8))
             depth_a_curve_list.append(np.round(d_d_a, 3))
             depth_b_curve_list.append(np.round(d_d_b, 3))
             tw_a_curve_list.append(np.round(d_t_a, 3))
@@ -4140,15 +4283,29 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
         return
     
-    colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow'] + [f"{prefix}_{i}" for i in range(1, i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']]
-    vdt_df = (pd.concat([pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow']), 
-                        pd.DataFrame(q_list, columns=[f'q_{i}' for i in range(1, len(q_list[0]) + 1)]),
-                        pd.DataFrame(v_list, columns=[f'v_{i}' for i in range(1, len(v_list[0]) + 1)]),
-                        pd.DataFrame(t_list, columns=[f't_{i}' for i in range(1, len(t_list[0]) + 1)]),
-                        pd.DataFrame(wse_list, columns=[f'wse_{i}' for i in range(1, len(wse_list[0]) + 1)])], axis=1)
-                        .round(3)
-                        [colorder] # Reorder columns to match the way Mike had it
-                        )
+    colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope'] + [
+        f"{prefix}_{i}" for i in range(1, i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']
+    ]
+
+    # Combine the data first (without rounding yet)
+    vdt_df = pd.concat([
+        pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope']),
+        pd.DataFrame(q_list, columns=[f'q_{i}' for i in range(1, len(q_list[0]) + 1)]),
+        pd.DataFrame(v_list, columns=[f'v_{i}' for i in range(1, len(v_list[0]) + 1)]),
+        pd.DataFrame(t_list, columns=[f't_{i}' for i in range(1, len(t_list[0]) + 1)]),
+        pd.DataFrame(wse_list, columns=[f'wse_{i}' for i in range(1, len(wse_list[0]) + 1)])
+    ], axis=1)
+
+    # Round all numeric columns to 3, except 'Slope'
+    for col in vdt_df.columns:
+        if col != 'Slope':
+            vdt_df[col] = vdt_df[col].round(3)
+
+    # Now round Slope separately to 8
+    vdt_df['Slope'] = vdt_df['Slope'].round(8)
+
+    # Reorder columns
+    vdt_df = vdt_df[colorder]
     
     # Remove rows with NaN values
     vdt_df = vdt_df.dropna()
@@ -4228,6 +4385,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             "BaseElev":  [np.round(num, 3) for num in All_BaseElev_curve_list],
             "DEM_Elev": [np.round(num, 3) for num in All_DEM_Elev_curve_list],
             "QMax": All_QMax_curve_list,
+            "Slope": All_Slope_curve_list,
         }
 
         # Creating the DataFrame
@@ -4359,6 +4517,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                                 'BaseElev': BaseElev_curve_list,
                                 'DEM_Elev': DEM_Elev_curve_list,
                                 'QMax': QMax_curve_list,
+                                'Slope': Slope_curve_list,
                                 'depth_a': depth_a_curve_list,
                                 'depth_b': depth_b_curve_list,
                                 'tw_a': tw_a_curve_list,
