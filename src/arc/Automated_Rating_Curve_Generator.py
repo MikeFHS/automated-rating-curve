@@ -14,8 +14,13 @@ import tqdm
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from pyproj import Geod, CRS
+import geopandas as gpd
+import rasterio
+from rasterio import features
 from scipy.optimize import curve_fit, OptimizeWarning, brentq
 from scipy.signal import savgol_filter
+from shapely.geometry import LineString, MultiLineString, box
 from statistics import median
 from osgeo import gdal
 from numba import njit
@@ -25,6 +30,111 @@ from arc import LOG
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 gdal.UseExceptions()
+
+# def geodesic_length_m(line_geom, dem_projection):
+#     """Return geodesic length of a LineString in meters."""
+#     crs = CRS.from_wkt(dem_projection)
+#     geod = Geod(ellps=crs.name)
+#     coords = list(line_geom.coords)
+#     lons, lats = zip(*coords)
+#     length = geod.line_length(lons, lats)  # meters
+#     return length
+
+def line_slope_from_dem(line_geom, dm_elevation, dem_geotransform, dem_projection, length_m):
+    """
+    Compute slope along a line using a DEM that was read with read_raster_gdal.
+
+    Parameters
+    ----------
+    line_geom : shapely.geometry.LineString or MultiLineString
+        Stream/reach geometry in the same (lon/lat) CRS as the DEM.
+    dm_elevation : np.ndarray
+        DEM values from read_raster_gdal (2D array: [rows, cols]).
+    dem_geotransform : tuple or list
+        GDAL geotransform from read_raster_gdal.
+    length_m : float
+        Length of the line_geom in meters.
+
+    Returns
+    -------
+    slope_pct : float
+    slope_deg : float
+    z_start   : float
+    z_end     : float
+    length_m  : float
+    """
+
+    # Handle None/empty
+    if line_geom is None or line_geom.is_empty:
+        return np.nan, np.nan, np.nan, np.nan, 0.0
+
+    # Handle MultiLineString by choosing longest part
+    if isinstance(line_geom, MultiLineString):
+        if len(line_geom.geoms) == 0:
+            return np.nan, np.nan, np.nan, np.nan, 0.0
+        line_geom = max(line_geom.geoms, key=lambda g: g.length)
+
+    if not isinstance(line_geom, LineString):
+        try:
+            line_geom = LineString(line_geom)
+        except Exception:
+            return np.nan, np.nan, np.nan, np.nan, 0.0
+
+    coords = list(line_geom.coords)
+    if len(coords) < 2:
+        return np.nan, np.nan, np.nan, np.nan, 0.0
+
+    # Start/end coordinates (lon, lat)
+    coord_1 = coords[0]
+    coord_2 = coords[-1]
+
+    # --- helper: convert lon/lat → row/col using GDAL geotransform ---
+    gt0, gt1, gt2, gt3, gt4, gt5 = dem_geotransform
+    nrows, ncols = dm_elevation.shape
+
+    def xy_to_rowcol(x, y):
+        """
+        Convert map coordinates (x,y) to DEM row/col indices.
+        Assumes a north-up grid (gt2 == gt4 == 0).
+        """
+        # column: straightforward with positive pixel width
+        col = int((x - gt0) / gt1)
+
+        # row: geotransform[5] is typically negative for north-up rasters
+        if gt5 < 0:
+            row = int((gt3 - y) / abs(gt5))
+        else:
+            row = int((y - gt3) / gt5)
+
+        # clip to DEM bounds; if outside, return None
+        if row < 0 or row >= nrows or col < 0 or col >= ncols:
+            return None
+        return row, col
+
+    rc1 = xy_to_rowcol(coord_1[0], coord_1[1])
+    rc2 = xy_to_rowcol(coord_2[0], coord_2[1])
+
+    if rc1 is None or rc2 is None:
+        # Line endpoint lies outside DEM extent
+        return np.nan, np.nan, np.nan, np.nan, 0.0
+
+    r1, c1 = rc1
+    r2, c2 = rc2
+
+    # Sample DEM at start and end
+    z_start = float(dm_elevation[r1, c1])
+    z_end   = float(dm_elevation[r2, c2])
+
+    if length_m == 0:
+        return np.nan, np.nan, z_start, z_end, length_m
+
+    rise = abs(z_end - z_start)  # meters
+    slope_fraction = rise / length_m
+    slope_pct = slope_fraction * 100.0
+    slope_deg = math.degrees(math.atan(slope_fraction))
+
+    return slope_pct, slope_deg, z_start, z_end, length_m
+
 
 @njit(cache=True)
 def safe_signs_differ(fa, fb, tol=1e-10):
@@ -403,7 +513,13 @@ def read_main_input_file(s_mif_name: str, args: dict):
     s_stream_slope_method = get_parameter_name(sl_lines,  'Stream_Slope_Method')
     if s_stream_slope_method == '':
         # Assume degree if not specified in the input efile
-        s_stream_slope_method = 'reach_average'
+        s_stream_slope_method = 'local_average'
+    if s_stream_slope_method == 'end_points':
+        # path to the stream shapefile
+        global s_strmshp_path
+        s_strmshp_path = get_parameter_name(sl_lines,  'StrmShp_File')
+        if s_strmshp_path == '':
+            raise AttributeError('You need to specify the shapefile of stream lines if you plan to use the end_points slope method.')
 
     # Find the path to the stream file
     global s_input_stream_path
@@ -735,6 +851,9 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
     return da_comid, da_base_flow, da_flow_maximum
 
+def round_sig(x, sig=3):
+    return float(f"{x:.{sig}g}")
+
 # @njit(cache=True)
 def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
     """
@@ -765,6 +884,10 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
     -------
     d_stream_slope: float
         Average slope from the stream cells in the specified search box
+    d_stream_slope_25: float
+        25th percentile slope from the stream cells in the specified search box
+    d_stream_slope_75: float
+        75th percentile slope from the stream cells in the specified search box
 
     """
 
@@ -809,32 +932,32 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
                 dist = math.sqrt(dx * dx + dy * dy)
 
                 if dist > 0.0:
-                    slope = abs(za - zb) / dist
-                    total_slope += slope
-                    count += 1
-                    slope_list.append(slope)
+                    slope = round(abs(za - zb) / dist, 8)
+                    if slope > 0.0:
+                        total_slope += slope
+                        count += 1
+                        slope_list.append(slope)
 
     # remove any outliers using quartiles
-    Q1 = np.percentile(slope_list, 25)
-    Q3 = np.percentile(slope_list, 75)
-    IQR = Q3 - Q1
-    lower_bound = Q1 - 1.5 * IQR
-    upper_bound = Q3 + 1.5 * IQR
-    slope_list = [x for x in slope_list if lower_bound <= x <= upper_bound]
+    if count > 0:
+        slope_arr = np.array(slope_list)
+        slope_arr = np.vectorize(round_sig)(slope_arr, sig=8)  
+        Q1 = round(np.percentile(slope_arr, 25), 8)
+        Q3 = round(np.percentile(slope_arr, 75), 8)
+        IQR = Q3 - Q1
+        lower_bound = Q1
+        upper_bound = Q3
+        slope_list = [x for x in slope_list if lower_bound <= x <= upper_bound]       
 
-    # Compute average slope
+    # Compute median slope
     if count > 0:
         d_stream_slope = median(slope_list)
     else:
         d_stream_slope = 0.0002
+        lower_bound = 0.0002
+        upper_bound = 0.0002
 
-    # Clamp to [0.0002, 0.03]
-    if d_stream_slope < 0.0002:
-        d_stream_slope = 0.0002
-    elif d_stream_slope > 0.03:
-        d_stream_slope = 0.03
-
-    return d_stream_slope
+    return d_stream_slope, lower_bound, upper_bound
 
 @njit(cache=True)
 def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
@@ -904,12 +1027,12 @@ def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem
         
         #if ia_matching_row_indices has less than 2 values then the slope will be set to the default value
     
-    # if slope is less than the threshold, reset it
-    if d_stream_slope < 0.0002:
-        d_stream_slope = 0.0002
-    # if slope is greater than the threshold, reset it
-    elif d_stream_slope > 0.03:
-        d_stream_slope = 0.03
+    # # if slope is less than the threshold, reset it
+    # if d_stream_slope < 0.0002:
+    #     d_stream_slope = 0.0002
+    # # if slope is greater than the threshold, reset it
+    # elif d_stream_slope > 0.03:
+    #     d_stream_slope = 0.03
 
     # Return the slope to the calling function
     return d_stream_slope
@@ -3280,15 +3403,37 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
 
     # create a reach average slope before we go stream cell by stream cell
-    if s_stream_slope_method == 'reach_average':
+    if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
         # create a list of unique stream IDs to loop through
         unique_stream_ids = np.unique(dm_stream)
         unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
         pbar_slopes = tqdm.tqdm(unique_stream_ids, disable=quiet)
         dict_stream_slopes = {}
+        dict_stream_slopes_25th = {}
+        dict_stream_slopes_75th = {}
         for stream_id in pbar_slopes:
-            d_slope_use = get_reach_median_stream_slope_information(stream_id, dm_elevation, dm_stream, dx, dy)
-            dict_stream_slopes[stream_id] = d_slope_use
+            reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(stream_id, dm_elevation, dm_stream, dx, dy)
+            dict_stream_slopes[stream_id] = reach_slope
+            dict_stream_slopes_25th[stream_id] = reach_slope_25th
+            dict_stream_slopes_75th[stream_id] = reach_slope_75th
+    elif s_stream_slope_method == 'end_points':
+        # create a list of unique stream IDs to loop through
+        unique_stream_ids = np.unique(dm_stream)
+        unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
+        # Load line shapefile
+        gdf_StrmSHP = gpd.read_file(s_strmshp_path)
+        pbar_slopes = tqdm.tqdm(unique_stream_ids, disable=quiet)
+        dict_stream_slopes = {}
+        for stream_id in pbar_slopes:
+            gdf_StrmSHP_filtered = gdf_StrmSHP[gdf_StrmSHP[s_flow_file_id]==stream_id]
+            StrmSHP_geom = gdf_StrmSHP_filtered.geometry
+            utm_crs = gdf_StrmSHP_filtered.estimate_utm_crs()
+            gdf_utm = gdf_StrmSHP_filtered.to_crs(utm_crs)
+            length_m = float(gdf_utm.length.iloc[0])
+            slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(StrmSHP_geom.iloc[0], dm_elevation, dem_geotransform, dem_projection, length_m)
+            dict_stream_slopes[stream_id] = round(slope_pct/100, 8)
+
+
 
     # Solve using the volume fill approach
     i_volume_fill_approach = 1
@@ -3325,8 +3470,18 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         # Get the Slope of each Stream Cell. Slope should be in m/m
         if s_stream_slope_method == 'local_average':
             d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
-        elif s_stream_slope_method =='reach_average':
+        elif s_stream_slope_method =='reach_average' or s_stream_slope_method == 'end_points':
             d_slope_use = dict_stream_slopes[i_cell_comid]
+        elif s_stream_slope_method == 'local_average_corrected':
+            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
+            d_slope_25th = dict_stream_slopes_25th[i_cell_comid]
+            d_slope_75th = dict_stream_slopes_75th[i_cell_comid]
+            # if the corrected slope is less than the streams 25th percentile slope, use the 25th percentile slope
+            if d_slope_use < d_slope_25th:
+                d_slope_use = d_slope_25th
+            # if the corrected slope is greater than the streams 75th percentile slope, use the 75th percentile slope
+            elif d_slope_use > d_slope_75th:
+                d_slope_use = d_slope_75th  
 
         #We now precompute the cross-section ordinates
         if d_xs_direction > np.pi:
