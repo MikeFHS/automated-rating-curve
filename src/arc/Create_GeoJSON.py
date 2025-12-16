@@ -414,6 +414,11 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
         top_width_values = row[top_width_cols].values
         wse_values = row[wse_cols].values
 
+        # Unique by x-value
+        flow_values, idx = np.unique(flow_values, return_index=True)
+        top_width_values = top_width_values[idx]
+        wse_values = wse_values[idx]
+
         # Interpolation functions
         top_width_interp = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')
         wse_interp = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')
@@ -1032,6 +1037,11 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
         flow_values = row[flow_cols].values
         top_width_values = row[top_width_cols].values
         wse_values = row[wse_cols].values
+
+        # Unique by x-value
+        flow_values, idx = np.unique(flow_values, return_index=True)
+        top_width_values = top_width_values[idx]
+        wse_values = wse_values[idx]
 
         # Interpolation functions
         top_width_interp = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')

@@ -939,7 +939,7 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
                         slope_list.append(slope)
 
     # remove any outliers using quartiles
-    if count > 0:
+    if len(slope_list) > 0:
         slope_arr = np.array(slope_list)
         slope_arr = np.vectorize(round_sig)(slope_arr, sig=8)  
         Q1 = round(np.percentile(slope_arr, 25), 8)
@@ -947,15 +947,16 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
         IQR = Q3 - Q1
         lower_bound = Q1
         upper_bound = Q3
-        slope_list = [x for x in slope_list if lower_bound <= x <= upper_bound]       
+        slope_list = [x for x in slope_list if lower_bound <= x <= upper_bound]
 
     # Compute median slope
-    if count > 0:
+    if len(slope_list) > 0:
         d_stream_slope = median(slope_list)
     else:
         d_stream_slope = 0.0002
         lower_bound = 0.0002
         upper_bound = 0.0002
+
 
     return d_stream_slope, lower_bound, upper_bound
 
