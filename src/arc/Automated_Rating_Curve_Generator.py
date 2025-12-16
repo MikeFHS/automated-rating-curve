@@ -3483,6 +3483,9 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             # if the corrected slope is greater than the streams 75th percentile slope, use the 75th percentile slope
             elif d_slope_use > d_slope_75th:
                 d_slope_use = d_slope_75th  
+        else: 
+            #Default to using the 'local_average' method
+            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
 
         #We now precompute the cross-section ordinates
         if d_xs_direction > np.pi:
