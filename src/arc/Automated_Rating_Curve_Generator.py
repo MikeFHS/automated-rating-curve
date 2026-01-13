@@ -900,7 +900,7 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
 
     if n < 2:
         # Not enough cells to define a slope
-        return 0.0002
+        return 0.0002, 0.0002, 0.0002
 
     total_slope = 0.0
     count = 0
