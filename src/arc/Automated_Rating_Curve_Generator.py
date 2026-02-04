@@ -3161,7 +3161,7 @@ def get_best_xsection_angle(l_angles_to_test, d_xs_direction, d_precompute_angle
 
     return d_shortest_tw_angle
 
-@profile
+
 def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
