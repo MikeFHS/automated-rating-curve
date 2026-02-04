@@ -14,17 +14,14 @@ import tqdm
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from pyproj import Geod, CRS
 import geopandas as gpd
-import rasterio
-from rasterio import features
 from scipy.optimize import curve_fit, OptimizeWarning, brentq
 from scipy.signal import savgol_filter
-from shapely.geometry import LineString, MultiLineString, box
+from shapely.geometry import LineString, MultiLineString
 from osgeo import gdal
 from numba import njit, vectorize
 from numba.core.errors import TypingError
-from line_profiler import profile
+
 from arc import LOG
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
