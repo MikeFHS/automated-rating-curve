@@ -14,16 +14,12 @@ import tqdm
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from pyproj import Geod, CRS
 import geopandas as gpd
-import rasterio
-from rasterio import features
 from scipy.optimize import curve_fit, OptimizeWarning, brentq
 from scipy.signal import savgol_filter
-from shapely.geometry import LineString, MultiLineString, box
-from statistics import median
+from shapely.geometry import LineString, MultiLineString
 from osgeo import gdal
-from numba import njit
+from numba import njit, vectorize
 from numba.core.errors import TypingError
 
 from arc import LOG
@@ -851,10 +847,17 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
     return da_comid, da_base_flow, da_flow_maximum
 
+@vectorize(target='cpu', cache=True)
 def round_sig(x, sig=3):
-    return float(f"{x:.{sig}g}")
+    if x == 0.0:
+        return 0.0
+    if not np.isfinite(x):
+        return x
+    exp = int(math.floor(math.log10(abs(x))))
+    factor = 10.0 ** (sig - 1 - exp)
+    return math.floor(x * factor + 0.5) / factor
 
-# @njit(cache=True)
+@njit(cache=True)
 def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
     """
     Calculates the stream slope for each stream cell using the following process:
@@ -898,9 +901,14 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
     reach_rows, reach_cols = np.where(im_streams == stream_id)
     n = len(reach_rows)
 
+
+    d_stream_slope = 0.0002
+    lower_bound = 0.0002
+    upper_bound = 0.0002
+
     if n < 2:
         # Not enough cells to define a slope
-        return 0.0002, 0.0002, 0.0002
+        return d_stream_slope, lower_bound, upper_bound
 
     total_slope = 0.0
     count = 0
@@ -941,7 +949,7 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
     # remove any outliers using quartiles
     if len(slope_list) > 0:
         slope_arr = np.array(slope_list)
-        slope_arr = np.vectorize(round_sig)(slope_arr, sig=8)  
+        slope_arr = round_sig(slope_arr, 8)   
         Q1 = round(np.percentile(slope_arr, 25), 8)
         Q3 = round(np.percentile(slope_arr, 75), 8)
         IQR = Q3 - Q1
@@ -951,11 +959,7 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
 
     # Compute median slope
     if len(slope_list) > 0:
-        d_stream_slope = median(slope_list)
-    else:
-        d_stream_slope = 0.0002
-        lower_bound = 0.0002
-        upper_bound = 0.0002
+        d_stream_slope = np.median(np.array(slope_list))
 
 
     return d_stream_slope, lower_bound, upper_bound
