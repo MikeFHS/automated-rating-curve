@@ -332,7 +332,6 @@ def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_nu
     # Once we're done, close properly the dataset
     o_output_file = None
 
-
 def read_raster_gdal(s_input_filename: str):
     """
     Reads a raster file from disk into memory
@@ -392,6 +391,19 @@ def read_raster_gdal(s_input_filename: str):
 
     # Close the band object
     o_band = None
+
+    # Normalize south-up rasters (pixel height > 0) to north-up arrays.
+    if l_geotransform[5] > 0:
+        LOG.warning('Raster appears south-up (positive pixel height); flipping to north-up: ' + str(s_input_filename))
+        dm_raster_array = np.flipud(dm_raster_array)
+        geotransform = (
+            l_geotransform[0],
+            l_geotransform[1],
+            l_geotransform[2],
+            l_geotransform[3] + l_geotransform[5] * i_number_of_rows,
+            l_geotransform[4],
+            -l_geotransform[5],
+        )
 
     # Extract information from the geotransform
     d_cell_size = l_geotransform[1]
