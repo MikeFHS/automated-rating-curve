@@ -1662,7 +1662,9 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
     dm_elevation: ndarray
         Elevation raster
     i_center_point: int
-        Starting centerpoint distance
+        Starting centerpoint distance. This is essentially the half-way point in the cross-section, in number of indices.
+    i_xs_length_indice: int
+        The length of the cross-section in one direction. Same value as i_center_point unless the cross-section his a boundary of the domain.
     ia_xc_row_index_main: ndarray
         Indices of the first cross section row index
     ia_xc_column_index_main: ndarray
@@ -1690,46 +1692,67 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
         Updated center point value
 
     """
+
+    #i_center_point is effectively half the length of the total cross-section
+    # Therefore, let's set a parameter that is the lenth of the cross-section in indices, then adjust based on the confines of the raster elevation boundaries.
+    i_xs_length_indice = i_center_point
     
-    # Get the limits of the cross-section index
-    a = np.where(ia_xc_row_index_main == i_row_bottom)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # # Get the limits of the cross-section index
+    # a = np.where(ia_xc_row_index_main == i_row_bottom)  #In the potential row indices in the cross-section, find which one (if any) are at the bottom bounds of the elevation raster.
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice: #If there are row indices at the bottom row, see if the indice is smaller than the i_xs_length_indice.  If so, we need to effectively shorten the cross-section we're sampling.
+    #     i_xs_length_indice = int(a[0][0])   #If i_xs_length_indice was 100, but the indice for the bottom row was 57, set the cross-section length (i.e., i_xs_length_indice) to 57
 
-    a = np.where(ia_xc_row_index_second == i_row_bottom)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_row_index_second == i_row_bottom)
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
 
-    a = np.where(ia_xc_row_index_main >= i_row_top)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_row_index_main == i_row_top)   #MLF changed from '>=' to '==' on 20260227
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
 
-    a = np.where(ia_xc_row_index_second >= i_row_top)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_row_index_second == i_row_top)   #MLF changed from '>=' to '==' on 20260227
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
 
-    a = np.where(ia_xc_column_index_main == i_column_bottom)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_column_index_main == i_column_bottom)
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
 
-    a = np.where(ia_xc_column_index_second == i_column_bottom)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_column_index_second == i_column_bottom)
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
 
-    a = np.where(ia_xc_column_index_main >= i_column_top)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_column_index_main == i_column_top)   #MLF changed from '>=' to '==' on 20260227
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
 
-    a = np.where(ia_xc_column_index_second >= i_column_top)
-    if len(a[0]) > 0 and int(a[0][0]) < i_center_point:
-        i_center_point = int(a[0][0])
+    # a = np.where(ia_xc_column_index_second == i_column_top)   #MLF changed from '>=' to '==' on 20260227
+    # if len(a[0]) > 0 and int(a[0][0]) < i_xs_length_indice:
+    #     i_xs_length_indice = int(a[0][0])
+    
 
-    # Set a default value for the profile at the center
-    da_xs_profile[i_center_point] = 99999.9
+    #This approach may be faster using Numba
+    for i in range(i_xs_length_indice):
+        if (
+            ia_xc_row_index_main[i] <= i_row_bottom or
+            ia_xc_row_index_second[i] <= i_row_bottom or
+            ia_xc_row_index_main[i] >= i_row_top or
+            ia_xc_row_index_second[i] >= i_row_top or
+            ia_xc_column_index_main[i] <= i_column_bottom or
+            ia_xc_column_index_second[i] <= i_column_bottom or
+            ia_xc_column_index_main[i] >= i_column_top or
+            ia_xc_column_index_second[i] >= i_column_top
+            ):
+            i_xs_length_indice = i
+            break
+
+
+    # Set a default value for the profile at the end of the cross-section
+    da_xs_profile[i_xs_length_indice] = 99999.9
 
     # Extract the indices and set into the profile
     try:
-        for i in range(i_center_point):
+        for i in range(i_xs_length_indice):
             row_main = ia_xc_row_index_main[i]
             col_main = ia_xc_column_index_main[i]
             row_second = ia_xc_row_index_second[i]
@@ -1741,12 +1764,13 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
                 dm_elevation[row_second, col_second] * da_xc_second_fract[i]
             )
         
-        # Iterate through each index up to i_center_point to avoid advanced indexing
+        # Iterate through each index up to i_xs_length_indice to avoid advanced indexing
         # Also, we don't need to fill land use raster here for finding best stream angle
         if dm_land_use is not None:
-            for i in range(i_center_point):
+            for i in range(i_xs_length_indice):
                 row_main = ia_xc_row_index_main[i]
                 col_main = ia_xc_column_index_main[i]
+                '''
                 row_second = ia_xc_row_index_second[i]
                 col_second = ia_xc_column_index_second[i]
                 
@@ -1755,12 +1779,17 @@ def sample_cross_section_from_dem(i_entry_cell: int, da_xs_profile: np.ndarray, 
                     dm_land_use[row_main, col_main] * da_xc_main_fract_int[i] +
                     dm_land_use[row_second, col_second] * da_xc_second_fract_int[i]
                 )
+                '''
+                #MLF changed on 20260227.  I don't think we want to interpolate the land cover values between main and second.  Just use main.
+                ia_lc_xs[i] = int(
+                    dm_land_use[row_main, col_main]
+                )
 
     except:
         print('Error on Cell ' + str(i_entry_cell))
 
-    # Return the center point to the calling function
-    return i_center_point
+    # Return the length of the cross-section on one side to the calling function (this is the length of the half-cross-section)
+    return i_xs_length_indice
 
 @njit(cache=True)
 def find_bank(da_xs_profile: np.ndarray, i_cross_section_number: int, d_z_target: float, wse: bool = False):
