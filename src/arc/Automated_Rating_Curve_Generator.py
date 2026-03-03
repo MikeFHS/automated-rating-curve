@@ -19,6 +19,7 @@ from scipy.optimize import curve_fit, OptimizeWarning, brentq
 from scipy.signal import savgol_filter
 from shapely.geometry import LineString, MultiLineString
 from osgeo import gdal
+from pyproj import CRS, Geod
 from numba import njit, vectorize
 from numba.core.errors import TypingError
 
@@ -710,130 +711,66 @@ def read_main_input_file(s_mif_name: str, args: dict):
     if len(s_output_curve_file)<1:
         b_reach_average_curve_file = False   #Has to be false because there is no curve file to be used.
 
-def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float):
+def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float, s_dem_projection: str):
     """
-    Determines the x and y cell sizes based on the geographic location
+    Converts DEM cell size to x/y resolution in meters.
+
+    For geographic rasters (degrees), this uses pyproj geodesic distances
+    on the DEM ellipsoid. For projected rasters, it returns the original
+    map-unit cell size for x and y.
 
     Parameters
     ----------
     d_dem_cell_size: float
-        Size of the dem cell
+        DEM cell size (degrees for geographic rasters; map units otherwise)
     d_dem_lower_left: float
-        Lower left corner value
+        Lower-left y value (latitude for geographic rasters)
     d_dem_upper_right: float
-        Upper right corner value
+        Upper-right y value (latitude for geographic rasters)
+    s_dem_projection: str
+        DEM projection WKT/CRS definition
 
     Returns
     -------
     d_x_cell_size: float
-        Resolution of the cells in the x direction
+        Resolution of the cells in x direction (meters for geographic rasters)
     d_y_cell_size: float
-        Resolution of the cells in teh y direction
+        Resolution of the cells in y direction (meters for geographic rasters)
     d_projection_conversion_factor: float
-        Factor to convert to the projection
+        Mean meters-per-degree factor used for conversion
 
     """
 
-    ### Set default values ###
+    # Default output for projected/non-geographic rasters
     d_x_cell_size = d_dem_cell_size
     d_y_cell_size = d_dem_cell_size
     d_projection_conversion_factor = 1
 
-    ### Get the cell size ###
-    d_lat = np.fabs((d_dem_lower_left + d_dem_upper_right) / 2)
+    # Parse DEM CRS and use geodesic conversion for geographic grids.
+    try:
+        o_crs = CRS.from_user_input(s_dem_projection)
+    except Exception as e:
+        raise ValueError("Unable to parse DEM projection for cell-size conversion.") from e
 
-    ### Determine if conversion is needed
-    if d_dem_cell_size > 0.5:
-        # This indicates that the DEM is projected, so no need to convert from geographic into projected.
-        d_x_cell_size = d_dem_cell_size
-        d_y_cell_size = d_dem_cell_size
-        d_projection_conversion_factor = 1
+    if o_crs.is_geographic:
+        d_lat = (d_dem_lower_left + d_dem_upper_right) / 2.0
+        d_lon = 0.0  # Geodesic spacing at a reference longitude
 
-    else:
-        # Reprojection from geographic coordinates is needed
-        assert d_lat > 1e-16, "Please use lat and long values greater than or equal to 0."
-
-        # Determine the latitude range for the model
-        if d_lat >= 0 and d_lat <= 10:
-            d_lat_up = 110.61
-            d_lat_down = 110.57
-            d_lon_up = 109.64
-            d_lon_down = 111.32
-            d_lat_base = 0.0
-
-        elif d_lat > 10 and d_lat <= 20:
-            d_lat_up = 110.7
-            d_lat_down = 110.61
-            d_lon_up = 104.64
-            d_lon_down = 109.64
-            d_lat_base = 10.0
-
-        elif d_lat > 20 and d_lat <= 30:
-            d_lat_up = 110.85
-            d_lat_down = 110.7
-            d_lon_up = 96.49
-            d_lon_down = 104.65
-            d_lat_base = 20.0
-
-        elif d_lat > 30 and d_lat <= 40:
-            d_lat_up = 111.03
-            d_lat_down = 110.85
-            d_lon_up = 85.39
-            d_lon_down = 96.49
-            d_lat_base = 30.0
-
-        elif d_lat > 40 and d_lat <= 50:
-            d_lat_up = 111.23
-            d_lat_down = 111.03
-            d_lon_up = 71.70
-            d_lon_down = 85.39
-            d_lat_base = 40.0
-
-        elif d_lat > 50 and d_lat <= 60:
-            d_lat_up = 111.41
-            d_lat_down = 111.23
-            d_lon_up = 55.80
-            d_lon_down = 71.70
-            d_lat_base = 50.0
-
-        elif d_lat > 60 and d_lat <= 70:
-            d_lat_up = 111.56
-            d_lat_down = 111.41
-            d_lon_up = 38.19
-            d_lon_down = 55.80
-            d_lat_base = 60.0
-
-        elif d_lat > 70 and d_lat <= 80:
-            d_lat_up = 111.66
-            d_lat_down = 111.56
-            d_lon_up = 19.39
-            d_lon_down = 38.19
-            d_lat_base = 70.0
-
-        elif d_lat > 80 and d_lat <= 90:
-            d_lat_up = 111.69
-            d_lat_down = 111.66
-            d_lon_up = 0.0
-            d_lon_down = 19.39
-            d_lat_base = 80.0
-
+        # Build a geodesic calculator from the DEM ellipsoid.
+        o_ellps = o_crs.ellipsoid
+        if o_ellps is not None and o_ellps.semi_major_metre and o_ellps.inverse_flattening:
+            o_geod = Geod(a=o_ellps.semi_major_metre, rf=o_ellps.inverse_flattening)
         else:
-            raise AttributeError('Please use legitimate (0-90) lat and long values.')
+            o_geod = Geod(ellps="WGS84")
 
-        ## Convert the latitude ##
-        d_lat_conv = d_lat_down + (d_lat_up - d_lat_down) * (d_lat - d_lat_base) / 10
-        d_y_cell_size = d_dem_cell_size * d_lat_conv * 1000.0  # Converts from degrees to m
+        # North-south cell spacing (meters)
+        _, _, d_y_cell_size = o_geod.inv(d_lon, d_lat, d_lon, d_lat + d_dem_cell_size)
+        # East-west cell spacing (meters) at midpoint latitude
+        _, _, d_x_cell_size = o_geod.inv(d_lon, d_lat, d_lon + d_dem_cell_size, d_lat)
 
-        ## Longitude Conversion ##
-        d_lon_conv = d_lon_down + (d_lon_up - d_lon_down) * (d_lat - d_lat_base) / 10
-        d_x_cell_size = d_dem_cell_size * d_lon_conv * 1000.0  # Converts from degrees to m
-
-        ## Make sure the values are in bounds ##
-        if d_lat_conv < d_lat_down or d_lat_conv > d_lat_up or d_lon_conv < d_lon_up or d_lon_conv > d_lon_down:
-            raise ArithmeticError("Problem in conversion from geographic to projected coordinates")
-
-        ## Calculate the conversion factor ##
-        d_projection_conversion_factor = 1000.0 * (d_lat_conv + d_lon_conv) / 2.0
+        d_x_cell_size = np.fabs(d_x_cell_size)
+        d_y_cell_size = np.fabs(d_y_cell_size)
+        d_projection_conversion_factor = 0.5 * (d_x_cell_size + d_y_cell_size) / d_dem_cell_size
 
     # Return to the calling function
     return d_x_cell_size, d_y_cell_size, d_projection_conversion_factor
@@ -3341,7 +3278,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     
 
     # Get the cell dx and dy coordinates
-    dx, dy, dproject = convert_cell_size(dcellsize, dyll, dyur)
+    dx, dy, dproject = convert_cell_size(dcellsize, dyll, dyur, dem_projection)
     LOG.info('Cellsize X = ' + str(dx))
     LOG.info('Cellsize Y = ' + str(dy))
 

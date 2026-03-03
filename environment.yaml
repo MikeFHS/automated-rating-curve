@@ -20,5 +20,6 @@ dependencies:
   - fiona
   - shapely
   - s3fs
+  - pyproj
 
 
