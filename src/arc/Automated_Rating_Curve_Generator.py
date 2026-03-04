@@ -438,7 +438,7 @@ def read_raster_gdal(s_input_filename: str):
     return dm_raster_array, i_number_of_columns, i_number_of_rows, d_cell_size, d_y_lower_left, d_y_upper_right, d_x_lower_left, d_x_upper_right, d_latitude, l_geotransform, s_raster_projection, maxx, miny, dy
 
 
-def get_parameter_name(sl_lines: list[str], s_target: str):
+def get_parameter_name(sl_lines: list[str], s_target: str, default_value: str = ''):
     """
     Gets parameter values from a list of strings, assuming that the file is tab delimited and the first characters are the target string.
     The second column is returned as the target value.
@@ -458,7 +458,7 @@ def get_parameter_name(sl_lines: list[str], s_target: str):
     """
 
     # Set the default value of the target
-    d_return_value = ''
+    d_return_value = default_value
 
     # Loop over entries in the list
     for line in sl_lines:
@@ -494,11 +494,11 @@ def read_main_input_file(s_mif_name: str, args: dict):
     s_mif_name: str
         Path to the input file
     args: dict
-        Dictionary of arguments passed to the function. This is used to set the global variables in the function
+        Dictionary of arguments passed to the function.
 
     Returns
     -------
-    None. Global values are used to set values outside of the function for the full program
+    dict        Dictionary of parameters to be used in the model
 
     """
 
@@ -513,203 +513,61 @@ def read_main_input_file(s_mif_name: str, args: dict):
         for key, value in args.items():
             sl_lines.append(f"{key}\t{value}\n")
 
-
-    ### Process the parameters ###
-    # Find the path to the DEM file
-    global s_input_dem_path
-    s_input_dem_path = get_parameter_name(sl_lines,  'DEM_File')
-
-    global s_stream_slope_method 
     s_stream_slope_method = get_parameter_name(sl_lines,  'Stream_Slope_Method')
+    # path to the stream shapefile
+    s_strmshp_path = get_parameter_name(sl_lines,  'StrmShp_File')
     if s_stream_slope_method == '':
         # Assume degree if not specified in the input efile
         s_stream_slope_method = 'local_average'
-    if s_stream_slope_method == 'end_points':
-        # path to the stream shapefile
-        global s_strmshp_path
-        s_strmshp_path = get_parameter_name(sl_lines,  'StrmShp_File')
-        if s_strmshp_path == '':
+    if s_stream_slope_method == 'end_points' and s_strmshp_path == '':
             raise AttributeError('You need to specify the shapefile of stream lines if you plan to use the end_points slope method.')
+        
+    b_bathy_use_banks = get_parameter_name(sl_lines,  'Bathy_Use_Banks', False)
+    if not isinstance(b_bathy_use_banks, bool) and 'True' in b_bathy_use_banks:
+            b_bathy_use_banks = True
 
-    # Find the path to the stream file
-    global s_input_stream_path
-    s_input_stream_path = get_parameter_name(sl_lines,  'Stream_File')
-
-    # Find the path to the land use raster file
-    global s_input_land_use_path
-    s_input_land_use_path = get_parameter_name(sl_lines,  'LU_Raster_SameRes')
-
-    # Find the path to the mannings n file
-    global s_input_mannings_path
-    s_input_mannings_path = get_parameter_name(sl_lines,  'LU_Manning_n')
-
-    # Find the path to the input flow file
-    global s_input_flow_file_path
-    s_input_flow_file_path = get_parameter_name(sl_lines,  'Flow_File')
-
-    # Find the method used to number the streams
-    global s_flow_file_id
-    s_flow_file_id = get_parameter_name(sl_lines,  'Flow_File_ID')
-
-    # Find the flow method
-    global s_flow_file_baseflow
-    s_flow_file_baseflow = get_parameter_name(sl_lines,  'Flow_File_BF')
-
-    # Find the field that determines the maximum flow
-    global s_flow_file_qmax
-    s_flow_file_qmax = get_parameter_name(sl_lines,  'Flow_File_QMax')
-
-    # Find the spatial units
-    global s_spatial_units
-    s_spatial_units = get_parameter_name(sl_lines,  'Spatial_Units')
-
-    if s_spatial_units == '':
-        # Assume degree if not specified in the input efile
-        s_spatial_units = 'deg'
-
-    # Find the x section distance
-    global d_x_section_distance
-    d_x_section_distance = get_parameter_name(sl_lines,  'X_Section_Dist')
-
-    if d_x_section_distance == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        d_x_section_distance = 5000.0
-
-    d_x_section_distance = float(d_x_section_distance)
-
-    # Find the path to the output velocity, depth, and top width file
-    global s_output_vdt_database
-    s_output_vdt_database = get_parameter_name(sl_lines,  'Print_VDT_Database')
-
-    # Find the path to the output area and wetted-perimeter file
-    global s_output_ap_database
-    s_output_ap_database = get_parameter_name(sl_lines,  'Print_AP_Database')
-    
-    global s_output_curve_file
-    s_output_curve_file = get_parameter_name(sl_lines,  'Print_Curve_File')
-    
-    # Find the path to the output metdata file
-    global s_output_meta_file
-    s_output_meta_file = get_parameter_name(sl_lines,  'Meta_File')
-
-    # Find degree manipulation attribute
-    global d_degree_manipulation
-    d_degree_manipulation = get_parameter_name(sl_lines,  'Degree_Manip')
-
-    if d_degree_manipulation == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        d_degree_manipulation = 1.1
-
-    d_degree_manipulation = float(d_degree_manipulation)
-
-    # Find the degree interval attribute
-    global d_degree_interval
-    d_degree_interval = get_parameter_name(sl_lines,  'Degree_Interval')
-
-    if d_degree_interval == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        d_degree_interval = 1.0
-
-    d_degree_interval = float(d_degree_interval)
-
-    # Find the low spot range attribute
-    global i_low_spot_range
-    i_low_spot_range = get_parameter_name(sl_lines,  'Low_Spot_Range')
-
-    if i_low_spot_range == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        i_low_spot_range = 0
-
-    i_low_spot_range = int(i_low_spot_range)
-
-    # Find the general direction distance attribute
-    global i_general_direction_distance
-    i_general_direction_distance= get_parameter_name(sl_lines,  'Gen_Dir_Dist')
-
-    if i_general_direction_distance == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        i_general_direction_distance = 10
-
-    i_general_direction_distance = int(i_general_direction_distance)
-
-    # Find the general slope distance attribute
-    global i_general_slope_distance
-    i_general_slope_distance = get_parameter_name(sl_lines,  'Gen_Slope_Dist')
-
-    if i_general_slope_distance == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        i_general_slope_distance = 0
-
-    i_general_slope_distance = int(i_general_slope_distance)
-
-    # Find the bathymetry trapezoid height attribute
-    global d_bathymetry_trapzoid_height
-    d_bathymetry_trapzoid_height = get_parameter_name(sl_lines,  'Bathy_Trap_H')
-
-    if d_bathymetry_trapzoid_height == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        d_bathymetry_trapzoid_height = 0.2
-
-    d_bathymetry_trapzoid_height = float(d_bathymetry_trapzoid_height)
-
-    # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
-    global b_bathy_use_banks
-    b_bathy_use_banks = get_parameter_name(sl_lines,  'Bathy_Use_Banks')
-    if "True" in b_bathy_use_banks:
-        b_bathy_use_banks = True
-    elif "False" in b_bathy_use_banks or b_bathy_use_banks == '':
-        b_bathy_use_banks = False
-
-    # Find the path to the output bathymetry file
-    global s_output_bathymetry_path
-    s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY')
-
-    if s_output_bathymetry_path == '':
-        # Value does not occur in the input file. Assume a reasonable value
-        s_output_bathymetry_path = get_parameter_name(sl_lines,  'BATHY_Out_File')
-
-    # Find the path to the output depth file
-    global s_output_depth
-    s_output_depth = get_parameter_name(sl_lines,  'AROutDEPTH')
-
-    # Find the path to the output flood file
-    global s_output_flood
-    s_output_flood = get_parameter_name(sl_lines,  'AROutFLOOD')
-
-    # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
-    global s_xs_output_file
-    s_xs_output_file = get_parameter_name(sl_lines,  'XS_Out_File')
-    
-    global i_lc_water_value
-    i_lc_water_value = get_parameter_name(sl_lines,  'LC_Water_Value')
-    if i_lc_water_value =='': 
-        #Value is defaulted to the water value in the ESA land cover dataset
-        i_lc_water_value = 80
-
-    # These are the number of increments of water surface elevation that we will use to construct the VDT database and the curve file
-    global i_number_of_increments
-    i_number_of_increments = get_parameter_name(sl_lines,  'VDT_Database_NumIterations')
-    if i_number_of_increments=='':
-        i_number_of_increments = 15
-    i_number_of_increments  = int(i_number_of_increments)
-    
     #Default is to find the banks of the river based on flat water in the DEM.  However, you can also find the banks using the water surface (please also set i_lc_water_value)
-    global b_FindBanksBasedOnLandCover
-    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines,  'FindBanksBasedOnLandCover')
-    if "True" in b_FindBanksBasedOnLandCover:
+    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines,  'FindBanksBasedOnLandCover', False)
+    if not isinstance(b_FindBanksBasedOnLandCover, bool) and 'True' in b_FindBanksBasedOnLandCover:
         b_FindBanksBasedOnLandCover = True
-    elif "False" in b_FindBanksBasedOnLandCover or b_FindBanksBasedOnLandCover == '':
-        b_FindBanksBasedOnLandCover = False
-    
-    # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate
-    global b_reach_average_curve_file
+
+    # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate. Has to be false if there is no curve file to be used.
     b_reach_average_curve_file = get_parameter_name(sl_lines,  'Reach_Average_Curve_File')
-    if "True" in b_reach_average_curve_file:
+    if not isinstance(b_reach_average_curve_file, bool) and "True" in b_reach_average_curve_file and get_parameter_name(sl_lines,  'Print_Curve_File'):
         b_reach_average_curve_file = True
-    elif "False" in b_reach_average_curve_file or b_reach_average_curve_file == '':
-        b_reach_average_curve_file = False
-    if len(s_output_curve_file)<1:
-        b_reach_average_curve_file = False   #Has to be false because there is no curve file to be used.
+
+    params = {
+        's_input_dem_path': get_parameter_name(sl_lines,  'DEM_File'), # Find the path to the DEM file
+        's_stream_slope_method': s_stream_slope_method,
+        's_strmshp_path'    : s_strmshp_path,
+        's_input_stream_path': get_parameter_name(sl_lines,  'Stream_File'), # Find the path to the stream file
+        's_input_land_use_path': get_parameter_name(sl_lines,  'LU_Raster_SameRes'), # Find the path to the land use raster file
+        's_input_mannings_path': get_parameter_name(sl_lines,  'LU_Manning_n'), # Find the path to the mannings n file
+        's_input_flow_file_path': get_parameter_name(sl_lines,  'Flow_File'), # Find the path to the flow file
+        's_flow_file_id': get_parameter_name(sl_lines,  'Flow_File_ID'), # Find the column name 
+        's_flow_file_baseflow': get_parameter_name(sl_lines,  'Flow_File_BF'), # Find the baseflow column name
+        's_flow_file_qmax': get_parameter_name(sl_lines,  'Flow_File_QMax'), # Find the column name for the maximum flow
+        'd_x_section_distance': float(get_parameter_name(sl_lines,  'X_Section_Dist', 5000.0)), # Find the x section distance
+        's_output_vdt_database': get_parameter_name(sl_lines,  'Print_VDT_Database'), # Find the path to the output velocity, depth, and top width file
+        's_output_ap_database': get_parameter_name(sl_lines,  'Print_AP_Database'), # Find the path to the output area and wetted perimeter file
+        's_output_curve_file': get_parameter_name(sl_lines,  'Print_Curve_File'), # Find the path to the output curve file
+        'd_degree_manipulation': float(get_parameter_name(sl_lines,  'Degree_Manip', 1.1)), # Find the degree manipulation parameter
+        'd_degree_interval': float(get_parameter_name(sl_lines,  'Degree_Interval', 1.0)), # Find the degree interval parameter
+        'i_low_spot_range': int(get_parameter_name(sl_lines,  'Low_Spot_Range', 0)), # Find the low spot range parameter
+        'i_general_direction_distance': int(get_parameter_name(sl_lines,  'Gen_Dir_Dist', 10)), # Find the general direction distance parameter
+        'i_general_slope_distance': int(get_parameter_name(sl_lines,  'Gen_Slope_Dist', 0)), # Find the general slope distance parameter
+        'd_bathymetry_trapzoid_height': float(get_parameter_name(sl_lines,  'Bathy_Trap_H', 0.2)), # Find the bathymetry trapezoid height parameter,
+        'b_bathy_use_banks': b_bathy_use_banks, # Find the true/false variable to use the bank elevations to calculate the depth of the bathymetry estimate
+        's_output_bathymetry_path': get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File')), # Find the path to the output bathymetry file
+        's_output_flood': get_parameter_name(sl_lines,  'AROutFLOOD'), # Find the path to the output flood file
+        's_xs_output_file': get_parameter_name(sl_lines,  'XS_Out_File'), # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
+        'i_lc_water_value': int(get_parameter_name(sl_lines,  'LC_Water_Value', 80)), # Find the value in the land cover dataset that corresponds to water. This is used to find the banks of the river if b_FindBanksBasedOnLandCover is set to True
+        'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
+        'b_FindBanksBasedOnLandCover': b_FindBanksBasedOnLandCover, # Find the true/false variable to find the banks of the river based on the land cover dataset instead of the DEM
+        'b_reach_average_curve_file': b_reach_average_curve_file # Find the true/false variable to use a reach-average curve file
+    }
+
+    return params
 
 def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float, s_dem_projection: str):
     """
@@ -808,7 +666,7 @@ def round_sig(x, sig=3):
     return math.floor(x * factor + 0.5) / factor
 
 @njit(cache=True)
-def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
+def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float, i_general_slope_distance: int):
     """
     Calculates the stream slope for each stream cell using the following process:
 
@@ -832,6 +690,8 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
         Cell resolution in the x direction
     d_dy: float
         Cell resolution in the y direction
+    i_general_slope_distance: int
+        Distance in number of cells to look for slope calculations.
 
     Returns
     -------
@@ -915,7 +775,7 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
     return d_stream_slope, lower_bound, upper_bound
 
 @njit(cache=True)
-def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float):
+def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float, i_general_slope_distance: int):
     """
     Calculates the stream slope using the following process:
 
@@ -939,7 +799,8 @@ def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem
         Cell resolution in the x direction
     d_dy: float
         Cell resolution in the y direction
-
+    i_general_slope_distance: int
+        Distance in number of cells to look for slope calculations.
     Returns
     -------
     d_stream_slope: float
@@ -1073,7 +934,7 @@ def polyfit_linear_plus_angle(x, y):
     return slope, intercept, d_stream_direction
 
 @njit(cache=True)
-def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.ndarray, d_dx: float, d_dy: float):
+def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.ndarray, i_general_direction_distance: int):
     """
     Finds the general direction of the stream following the process:
 
@@ -1094,10 +955,8 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         Column cell index
     im_streams: ndarray
         Stream raster
-    d_dx: float
-        Cell resolution in the x direction
-    d_dy: float
-        Cell resolution in the y direction
+    i_general_direction_distance: int
+        Distance to search for stream cells
 
     Returns
     -------
@@ -3102,7 +2961,7 @@ def get_best_xsection_angle(l_angles_to_test, d_xs_direction, d_precompute_angle
 
     return d_shortest_tw_angle
 
-def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet):
+def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance):
     # create a list of unique stream IDs to loop through
     unique_stream_ids = np.unique(dm_stream)
     unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
@@ -3111,7 +2970,7 @@ def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet):
     dict_stream_slopes_25th = {}
     dict_stream_slopes_75th = {}
     for stream_id in pbar_slopes:
-        reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(stream_id, dm_elevation, dm_stream, dx, dy)
+        reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(stream_id, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
         dict_stream_slopes[stream_id] = reach_slope
         dict_stream_slopes_25th[stream_id] = reach_slope_25th
         dict_stream_slopes_75th[stream_id] = reach_slope_75th
@@ -3196,15 +3055,15 @@ def objective_with_slope(trial_slope: float,
 def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
-    read_main_input_file(MIF_Name, args)
+    params = read_main_input_file(MIF_Name, args)
     
     ### Read the Flow Information ###
-    COMID, QBaseFlow, QMax = read_flow_file(s_input_flow_file_path, s_flow_file_id, s_flow_file_baseflow, s_flow_file_qmax)
+    COMID, QBaseFlow, QMax = read_flow_file(params['s_input_flow_file_path'], params['s_flow_file_id'], params['s_flow_file_baseflow'], params['s_flow_file_qmax'])
 
     ### Read Raster Data ###
-    dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection, dem_maxx, dem_miny, dem_dy = read_raster_gdal(s_input_dem_path)
-    dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection, maxx, miny, dy = read_raster_gdal(s_input_stream_path)
-    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_raster_gdal(s_input_land_use_path)
+    dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection, dem_maxx, dem_miny, dem_dy = read_raster_gdal(params['s_input_dem_path'])
+    dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection, maxx, miny, dy = read_raster_gdal(params['s_input_stream_path'])
+    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_raster_gdal(params['s_input_land_use_path'])
 
 
     # if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
@@ -3226,6 +3085,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
 
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
+    i_general_direction_distance = params['i_general_direction_distance']
+    i_general_slope_distance = params['i_general_slope_distance']
     i_boundary_number = max(1, i_general_slope_distance, i_general_direction_distance)
 
     dm_stream = np.pad(dm_stream, i_boundary_number, mode='constant', constant_values=0).astype(np.int64)
@@ -3237,6 +3098,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
     ##### Begin Calculations #####
     # Create working matrices
+    i_number_of_increments = params['i_number_of_increments']
     da_total_t = np.zeros(i_number_of_increments + 1, dtype=float)
     da_total_a = np.zeros(i_number_of_increments + 1, dtype=float)
     da_total_p = np.zeros(i_number_of_increments + 1, dtype=float)
@@ -3252,7 +3114,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         dtype=np.float32  # Optional: Specify dtype if needed
     )
     
-    if len(s_output_flood) > 1:
+    s_output_flood = params['s_output_flood']
+    if s_output_flood:
         dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2)).astype(int)
 
     # Get the list of stream locations
@@ -3264,13 +3127,14 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     dm_land_use_before_streams = dm_land_use
     
     # Make all Land Cover that is a stream look like water
+    i_lc_water_value = params['i_lc_water_value']
     dm_land_use[ia_valued_row_indices,ia_valued_column_indices] = i_lc_water_value
     
     
     #Assing Manning n Values
     ### Read in the Manning Table ###
     dm_manning_n_raster = np.copy(dm_land_use)
-    dm_manning_n_raster = read_manning_table(s_input_mannings_path, dm_manning_n_raster)
+    dm_manning_n_raster = read_manning_table(params['s_input_mannings_path'], dm_manning_n_raster)
 
     # Correct the mannings values here
     dm_manning_n_raster[dm_manning_n_raster > 0.3] = 0.035
@@ -3286,7 +3150,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     d_precompute_angles = np.pi / i_precompute_angles
     
     # Pull cross sections
-    i_center_point = int((d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
+    i_center_point = int((params['d_x_section_distance'] / (sum([dx, dy]) * 0.5)) / 2.0) + 1
     da_xs_profile1 = np.zeros(i_center_point + 1)
     da_xs_profile2 = np.zeros(i_center_point + 1)
     ia_lc_xs1 = np.zeros(i_center_point + 1)
@@ -3310,7 +3174,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     # Find all the different angle increments to test
     l_angles_to_test = [0.0]
     d_increments = 0
-
+    d_degree_manipulation = params['d_degree_manipulation']
+    d_degree_interval = params['d_degree_interval']
     if d_degree_manipulation > 0.0 and d_degree_interval > 0.0:
         # Calculate the increment
         d_increments = int(d_degree_manipulation / (2.0 * d_degree_interval))
@@ -3336,7 +3201,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     # These are the number of increments of water surface elevation that we will use to construct the VDT database and the 
 
     # Here we will capture a list of all stream cell values that will be used if we build a reach average curve file
-    if len(s_output_curve_file)>0 and b_reach_average_curve_file:
+    if params['s_output_curve_file'] and params['b_reach_average_curve_file']:
         All_COMID_curve_list = []
         All_Row_curve_list = []
         All_Col_curve_list = []
@@ -3346,6 +3211,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         All_Slope_curve_list = []
     
     # instantiate the lists we will use to create the XS File
+    s_xs_output_file = params['s_xs_output_file']
     if s_xs_output_file:
         XS_COMID_List = []
         XS_Row_List = []
@@ -3372,7 +3238,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     wse_list = []
 
     # Create the dictionary and lists that will be used to create our ATW database
-    if s_output_ap_database:
+    if params['s_output_ap_database']:
         o_ap_file_dict: dict[str, list] = {}
         o_ap_file_dict['COMID'] = []
         o_ap_file_dict['Row'] = []
@@ -3386,7 +3252,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             o_ap_file_dict[f'p_{i}'] = []
     
     #Create the list that we will use to generate the output Curve file
-    if len(s_output_curve_file)>0:
+    if params['s_output_curve_file']:
         COMID_curve_list = []
         Row_curve_list = []
         Col_curve_list = []
@@ -3405,16 +3271,24 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
 
     # Creating strings takes a lot of time. Let's compute the AWP database column names here
-    if len(s_output_ap_database) > 0:
+    if params['s_output_ap_database']:
         ap_column_names = []
         for i in range(1, i_number_of_increments+1):
             ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
 
     # create a reach average slope before we go stream cell by stream cell
+    s_stream_slope_method = params['s_stream_slope_method']
     if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
-        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet)
+        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance)
     elif s_stream_slope_method == 'end_points':
-        dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, s_strmshp_path, s_flow_file_id, quiet)
+        dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
+
+    # Extract some parameters
+    d_bathymetry_trapzoid_height = params['d_bathymetry_trapzoid_height']
+    b_bathy_use_banks = params['b_bathy_use_banks']
+    s_output_bathymetry_path = params['s_output_bathymetry_path']
+    b_FindBanksBasedOnLandCover = params['b_FindBanksBasedOnLandCover']
+    b_reach_average_curve_file = params['b_reach_average_curve_file']
 
     # Solve using the volume fill approach
     i_volume_fill_approach = 1
@@ -3445,16 +3319,16 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             continue
 
         # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
-        d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, dx, dy)
+        d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, i_general_direction_distance)
         #dm_output_streamangles[i_row_cell,i_column_cell] = d_xs_direction * 180.0 / math.pi
 
         # Get the Slope of each Stream Cell. Slope should be in m/m
         if s_stream_slope_method == 'local_average':
-            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
+            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
         elif s_stream_slope_method =='reach_average' or s_stream_slope_method == 'end_points':
             d_slope_use = dict_stream_slopes[i_cell_comid]
         elif s_stream_slope_method == 'local_average_corrected':
-            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
+            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
             d_slope_25th = dict_stream_slopes_25th[i_cell_comid]
             d_slope_75th = dict_stream_slopes_75th[i_cell_comid]
             # if the corrected slope is less than the streams 25th percentile slope, use the 25th percentile slope
@@ -3465,7 +3339,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 d_slope_use = d_slope_75th  
         else: 
             #Default to using the 'local_average' method
-            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy)
+            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
 
         #We now precompute the cross-section ordinates
         if d_xs_direction > np.pi:
@@ -3488,6 +3362,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         # Adjust to the lowest-point in the Cross-Section
         i_lowest_point_index_offset=0
         d_dem_low_point_elev = da_xs_profile1[0]
+        i_low_spot_range = params['i_low_spot_range']
         if i_low_spot_range > 0:
             i_lowest_point_index_offset = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
                                                                             ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, i_low_spot_range)
@@ -4021,7 +3896,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 # Process each of the elevations to the output file if feasbile values were produced
                 da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
                 if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-                    if s_output_ap_database:
+                    if params['s_output_ap_database']:
                         comid_ap_dict_list.append(i_cell_comid)
                         row_ap_dict_list.append(i_row_cell - i_boundary_number)
                         col_ap_dict_list.append(i_column_cell - i_boundary_number)
@@ -4033,7 +3908,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     vdt_list.append(vdt_row)
 
                     # Loop backward through the elevations
-                    if s_output_vdt_database:
+                    if params['s_output_vdt_database']:
                         if b_modified_dem:
                             da_total_wse -= 100
 
@@ -4045,7 +3920,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                         if b_modified_dem:
                             da_total_wse += 100
                     
-                    if s_output_ap_database:
+                    if params['s_output_ap_database']:
                         for i, (q_name, a_name, p_name) in enumerate(ap_column_names[:i_number_of_elevations - 1], start=1):
                             o_ap_file_dict[q_name].append(da_total_q[i])
                             o_ap_file_dict[a_name].append(da_total_a[i])
@@ -4070,7 +3945,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             All_Slope_curve_list.append(np.round(d_slope_use, 8))
 
         # Work on the Regression Equations File
-        if b_outprint_yes and len(s_output_curve_file)>0 and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
+        if b_outprint_yes and params['s_output_curve_file'] and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
             # Not needed here, but [::-1] basically reverses the order of the array
             (d_t_a, d_t_b, d_t_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_t[i_start_elevation_index:i_last_elevation_index + 1][1:], [12, 0.3])
             (d_v_a, d_v_b, d_v_R2) = linear_regression_power_function(da_total_q[i_start_elevation_index:i_last_elevation_index + 1][1:], da_total_v[i_start_elevation_index:i_last_elevation_index + 1][1:], [1, 0.3])
@@ -4163,6 +4038,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     cols_to_check = [col for col in vdt_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
     # Remove rows where any of the selected columns have a negative value
     vdt_df = vdt_df.loc[~(vdt_df[cols_to_check] < 0).any(axis=1)]
+    s_output_vdt_database = params['s_output_vdt_database']
     if s_output_vdt_database.endswith('.parquet'):
         vdt_df.to_parquet(s_output_vdt_database, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with VDT data
     else:
@@ -4198,7 +4074,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
     
     # Output the area and wetted perimeter database file if requested
-    if len(s_output_ap_database) > 0:
+    if params['s_output_ap_database']:
         # Write the output VDT Database file
         dtypes = {
                     "COMID": 'int64',
@@ -4218,6 +4094,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         cols_to_check = [col for col in o_ap_file_df.columns if (col.startswith('q') or col.startswith('a') or col.startswith('p'))]
         # Remove rows where any of the selected columns have a negative value
         o_ap_file_df = o_ap_file_df.loc[~(o_ap_file_df[cols_to_check] < 0).any(axis=1)]
+        s_output_ap_database = params['s_output_ap_database']
         if s_output_ap_database.endswith('.parquet'):
             o_ap_file_df.to_parquet(s_output_ap_database, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with AP data
         else:
@@ -4350,6 +4227,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         reach_average_curvefile_df = reach_average_curvefile_df.dropna()
 
         # Write the output file
+        s_output_curve_file = params['s_output_curve_file']
         if s_output_curve_file.endswith('.parquet'):
             reach_average_curvefile_df.to_parquet(s_output_curve_file, compression='brotli', index=False, engine='fastparquet')
         else:
@@ -4357,9 +4235,9 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         LOG.info('Finished writing ' + str(s_output_curve_file))
 
     else:
-    
+        s_output_curve_file = params['s_output_curve_file']
         # Write the output Curve file
-        if len(s_output_curve_file)>0:
+        if s_output_curve_file:
             o_curve_file_dict = {'COMID': COMID_curve_list,
                                 'Row': Row_curve_list,
                                 'Col': Col_curve_list,
