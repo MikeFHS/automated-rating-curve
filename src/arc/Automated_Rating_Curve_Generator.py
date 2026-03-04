@@ -4164,7 +4164,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     # Remove rows where any of the selected columns have a negative value
     vdt_df = vdt_df.loc[~(vdt_df[cols_to_check] < 0).any(axis=1)]
     if s_output_vdt_database.endswith('.parquet'):
-        vdt_df.to_parquet(s_output_vdt_database, compression='brotli', index=False) # Brotli does very well with VDT data
+        vdt_df.to_parquet(s_output_vdt_database, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with VDT data
     else:
         vdt_df.to_csv(s_output_vdt_database, index=False)    
     LOG.info('Finished writing ' + str(s_output_vdt_database))
@@ -4219,7 +4219,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         # Remove rows where any of the selected columns have a negative value
         o_ap_file_df = o_ap_file_df.loc[~(o_ap_file_df[cols_to_check] < 0).any(axis=1)]
         if s_output_ap_database.endswith('.parquet'):
-            o_ap_file_df.to_parquet(s_output_ap_database, compression='brotli', index=False)
+            o_ap_file_df.to_parquet(s_output_ap_database, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with AP data
         else:
             o_ap_file_df.to_csv(s_output_ap_database, index=False)
         LOG.info('Finished writing ' + str(s_output_ap_database))
@@ -4351,7 +4351,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
         # Write the output file
         if s_output_curve_file.endswith('.parquet'):
-            reach_average_curvefile_df.to_parquet(s_output_curve_file, compression='brotli', index=False)
+            reach_average_curvefile_df.to_parquet(s_output_curve_file, compression='brotli', index=False, engine='fastparquet')
         else:
             reach_average_curvefile_df.to_csv(s_output_curve_file, index=False)        
         LOG.info('Finished writing ' + str(s_output_curve_file))
@@ -4379,7 +4379,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             # # Remove rows where any column has negative a coefficient value
             o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
             if s_output_curve_file.endswith('.parquet'):
-                o_curve_file_df.to_parquet(s_output_curve_file, compression='brotli', index=False)
+                o_curve_file_df.to_parquet(s_output_curve_file, compression='brotli', index=False, engine='fastparquet')
             else:
                 o_curve_file_df.to_csv(s_output_curve_file, index=False)            
             LOG.info('Finished writing ' + str(s_output_curve_file))

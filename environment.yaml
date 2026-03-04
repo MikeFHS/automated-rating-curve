@@ -5,6 +5,7 @@ dependencies:
   - python
   - numpy
   - pandas
+  - fastparquet
   - geopandas
   - gdal
   - pip
