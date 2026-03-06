@@ -485,6 +485,12 @@ def get_parameter_name(sl_lines: list[str], s_target: str, default_value: str = 
     # Return value to the calling function
     return d_return_value
 
+def to_bool(val):
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(val)
 
 def read_main_input_file(s_mif_name: str, args: dict):
     """
@@ -522,19 +528,16 @@ def read_main_input_file(s_mif_name: str, args: dict):
     if s_stream_slope_method == 'end_points' and s_strmshp_path == '':
             raise AttributeError('You need to specify the shapefile of stream lines if you plan to use the end_points slope method.')
         
-    b_bathy_use_banks = get_parameter_name(sl_lines,  'Bathy_Use_Banks', False)
-    if not isinstance(b_bathy_use_banks, bool) and 'True' in b_bathy_use_banks:
-            b_bathy_use_banks = True
+    b_bathy_use_banks = to_bool(get_parameter_name(sl_lines, 'Bathy_Use_Banks', False))
 
-    #Default is to find the banks of the river based on flat water in the DEM.  However, you can also find the banks using the water surface (please also set i_lc_water_value)
-    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines,  'FindBanksBasedOnLandCover', False)
-    if not isinstance(b_FindBanksBasedOnLandCover, bool) and 'True' in b_FindBanksBasedOnLandCover:
-        b_FindBanksBasedOnLandCover = True
+    b_FindBanksBasedOnLandCover = to_bool(
+        get_parameter_name(sl_lines, 'FindBanksBasedOnLandCover', False)
+    )
 
-    # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate. Has to be false if there is no curve file to be used.
-    b_reach_average_curve_file = get_parameter_name(sl_lines,  'Reach_Average_Curve_File')
-    if not isinstance(b_reach_average_curve_file, bool) and "True" in b_reach_average_curve_file and get_parameter_name(sl_lines,  'Print_Curve_File'):
-        b_reach_average_curve_file = True
+    curve_file = get_parameter_name(sl_lines, 'Print_Curve_File')
+    b_reach_average_curve_file = to_bool(
+        get_parameter_name(sl_lines, 'Reach_Average_Curve_File', False)
+    ) and curve_file
 
     params = {
         's_input_dem_path': get_parameter_name(sl_lines,  'DEM_File'), # Find the path to the DEM file
@@ -550,7 +553,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'd_x_section_distance': float(get_parameter_name(sl_lines,  'X_Section_Dist', 5000.0)), # Find the x section distance
         's_output_vdt_database': get_parameter_name(sl_lines,  'Print_VDT_Database'), # Find the path to the output velocity, depth, and top width file
         's_output_ap_database': get_parameter_name(sl_lines,  'Print_AP_Database'), # Find the path to the output area and wetted perimeter file
-        's_output_curve_file': get_parameter_name(sl_lines,  'Print_Curve_File'), # Find the path to the output curve file
+        's_output_curve_file': curve_file, # Find the path to the output curve file
         'd_degree_manipulation': float(get_parameter_name(sl_lines,  'Degree_Manip', 1.1)), # Find the degree manipulation parameter
         'd_degree_interval': float(get_parameter_name(sl_lines,  'Degree_Interval', 1.0)), # Find the degree interval parameter
         'i_low_spot_range': int(get_parameter_name(sl_lines,  'Low_Spot_Range', 0)), # Find the low spot range parameter
