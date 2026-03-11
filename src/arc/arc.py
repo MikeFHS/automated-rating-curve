@@ -4,7 +4,6 @@ from datetime import datetime
 
 from arc import LOG
 from arc.Automated_Rating_Curve_Generator import main, get_parameter_name
-from arc.Curve2Flood import Curve2Flood_MainFunction
 
 __all__ = ['Arc']
 
@@ -70,8 +69,6 @@ class Arc():
         if not flood_map:
             LOG.error('Flood map file not found')
             return
-
-        Curve2Flood_MainFunction(dem_file, strm_file, '', flow_file, curve_file, vdt_database, flood_map, flood_impact_file, q_fraction, 200, tw_factor, flood_local, 0.1, '', ar_bathy_file, fs_bathy_file, self.quiet)
         
     def set_log_level(self, log_level: str) -> 'Arc':
         handler = LOG.handlers[0]

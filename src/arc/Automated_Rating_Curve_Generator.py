@@ -485,6 +485,12 @@ def get_parameter_name(sl_lines: list[str], s_target: str, default_value: str = 
     # Return value to the calling function
     return d_return_value
 
+def to_bool(val):
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(val)
 
 def read_main_input_file(s_mif_name: str, args: dict):
     """
@@ -522,19 +528,18 @@ def read_main_input_file(s_mif_name: str, args: dict):
     if s_stream_slope_method == 'end_points' and s_strmshp_path == '':
             raise AttributeError('You need to specify the shapefile of stream lines if you plan to use the end_points slope method.')
         
-    b_bathy_use_banks = get_parameter_name(sl_lines,  'Bathy_Use_Banks', False)
-    if not isinstance(b_bathy_use_banks, bool) and 'True' in b_bathy_use_banks:
-            b_bathy_use_banks = True
+    b_bathy_use_banks = to_bool(get_parameter_name(sl_lines, 'Bathy_Use_Banks', False))
 
     #Default is to find the banks of the river based on flat water in the DEM.  However, you can also find the banks using the water surface (please also set i_lc_water_value)
-    b_FindBanksBasedOnLandCover = get_parameter_name(sl_lines,  'FindBanksBasedOnLandCover', False)
-    if not isinstance(b_FindBanksBasedOnLandCover, bool) and 'True' in b_FindBanksBasedOnLandCover:
-        b_FindBanksBasedOnLandCover = True
+    b_FindBanksBasedOnLandCover = to_bool(
+        get_parameter_name(sl_lines, 'FindBanksBasedOnLandCover', False)
+    )
 
     # Find the True/False variable to use the bank elevations to calculate the depth of the bathymetry estimate. Has to be false if there is no curve file to be used.
-    b_reach_average_curve_file = get_parameter_name(sl_lines,  'Reach_Average_Curve_File')
-    if not isinstance(b_reach_average_curve_file, bool) and "True" in b_reach_average_curve_file and get_parameter_name(sl_lines,  'Print_Curve_File'):
-        b_reach_average_curve_file = True
+    curve_file = get_parameter_name(sl_lines, 'Print_Curve_File')
+    b_reach_average_curve_file = to_bool(
+        get_parameter_name(sl_lines, 'Reach_Average_Curve_File', False)
+    ) and curve_file
 
     params = {
         's_input_dem_path': get_parameter_name(sl_lines,  'DEM_File'), # Find the path to the DEM file
@@ -550,7 +555,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'd_x_section_distance': float(get_parameter_name(sl_lines,  'X_Section_Dist', 5000.0)), # Find the x section distance
         's_output_vdt_database': get_parameter_name(sl_lines,  'Print_VDT_Database'), # Find the path to the output velocity, depth, and top width file
         's_output_ap_database': get_parameter_name(sl_lines,  'Print_AP_Database'), # Find the path to the output area and wetted perimeter file
-        's_output_curve_file': get_parameter_name(sl_lines,  'Print_Curve_File'), # Find the path to the output curve file
+        's_output_curve_file': curve_file, # Find the path to the output curve file
         'd_degree_manipulation': float(get_parameter_name(sl_lines,  'Degree_Manip', 1.1)), # Find the degree manipulation parameter
         'd_degree_interval': float(get_parameter_name(sl_lines,  'Degree_Interval', 1.0)), # Find the degree interval parameter
         'i_low_spot_range': int(get_parameter_name(sl_lines,  'Low_Spot_Range', 0)), # Find the low spot range parameter
@@ -569,7 +574,13 @@ def read_main_input_file(s_mif_name: str, args: dict):
 
     return params
 
-def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upper_right: float, s_dem_projection: str):
+def convert_cell_size(
+    d_dem_cell_size_x: float,
+    d_dem_cell_size_y: float,
+    d_dem_lower_left: float,
+    d_dem_upper_right: float,
+    s_dem_projection: str
+):
     """
     Converts DEM cell size to x/y resolution in meters.
 
@@ -579,8 +590,10 @@ def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upp
 
     Parameters
     ----------
-    d_dem_cell_size: float
-        DEM cell size (degrees for geographic rasters; map units otherwise)
+    d_dem_cell_size_x: float
+        DEM x cell size (degrees for geographic rasters; map units otherwise)
+    d_dem_cell_size_y: float
+        DEM y cell size (degrees for geographic rasters; map units otherwise)
     d_dem_lower_left: float
         Lower-left y value (latitude for geographic rasters)
     d_dem_upper_right: float
@@ -600,8 +613,10 @@ def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upp
     """
 
     # Default output for projected/non-geographic rasters
-    d_x_cell_size = d_dem_cell_size
-    d_y_cell_size = d_dem_cell_size
+    d_dem_cell_size_x = np.fabs(d_dem_cell_size_x)
+    d_dem_cell_size_y = np.fabs(d_dem_cell_size_y)
+    d_x_cell_size = d_dem_cell_size_x
+    d_y_cell_size = d_dem_cell_size_y
     d_projection_conversion_factor = 1
 
     # Parse DEM CRS and use geodesic conversion for geographic grids.
@@ -622,13 +637,23 @@ def convert_cell_size(d_dem_cell_size: float, d_dem_lower_left: float, d_dem_upp
             o_geod = Geod(ellps="WGS84")
 
         # North-south cell spacing (meters)
-        _, _, d_y_cell_size = o_geod.inv(d_lon, d_lat, d_lon, d_lat + d_dem_cell_size)
+        _, _, d_y_cell_size = o_geod.inv(d_lon, d_lat, d_lon, d_lat + d_dem_cell_size_y)
         # East-west cell spacing (meters) at midpoint latitude
-        _, _, d_x_cell_size = o_geod.inv(d_lon, d_lat, d_lon + d_dem_cell_size, d_lat)
+        _, _, d_x_cell_size = o_geod.inv(d_lon, d_lat, d_lon + d_dem_cell_size_x, d_lat)
 
         d_x_cell_size = np.fabs(d_x_cell_size)
         d_y_cell_size = np.fabs(d_y_cell_size)
-        d_projection_conversion_factor = 0.5 * (d_x_cell_size + d_y_cell_size) / d_dem_cell_size
+        d_projection_conversion_factor = 0.5 * (
+            (d_x_cell_size / max(d_dem_cell_size_x, 1e-12))
+            + (d_y_cell_size / max(d_dem_cell_size_y, 1e-12))
+        )
+    # if the raster is projected, we assume the cell size is already in meters and use it directly
+    elif o_crs.is_projected:
+        # For projected rasters, x/y map units are already meters based on CRS checks in main().
+        d_x_cell_size = d_dem_cell_size_x
+        d_y_cell_size = d_dem_cell_size_y
+        d_projection_conversion_factor = 1.0
+
 
     # Return to the calling function
     return d_x_cell_size, d_y_cell_size, d_projection_conversion_factor
@@ -3065,12 +3090,21 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection, maxx, miny, dy = read_raster_gdal(params['s_input_stream_path'])
     dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_raster_gdal(params['s_input_land_use_path'])
 
+    ### Determine if the rasters are in a projected coordinate system (units in meters) or geographic coordinate system (units in degrees)
+    if 'PROJCS' in dem_projection:
+        LOG.info('Rasters are in a projected coordinate system with units in meters.')
+        # set a flag to indicate that the rasters are in a projected coordinate system
+        b_projected = True
+    elif 'GEOGCS' in dem_projection:
+        LOG.info('Rasters are in a geographic coordinate system with units in degrees.')
+        # set a flag to indicate that the rasters are in a geographic coordinate system
+        b_projected = False
 
-    # if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
+    ### if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
     b_modified_dem = False
     dm_elevation, b_modified_dem = modify_array(dm_elevation, b_modified_dem)
 
-
+    ### make sure the rasters are all the same size and aligned and if not, end with log an error message and stop processing
     if dnrows != snrows or dnrows != lnrows:
         LOG.error('Rows do not Match!')
         return
@@ -3082,6 +3116,38 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         return
     else:
         ncols = dncols
+
+    ### check the coordinate system of the rasters and if they are not in meters or degrees, end with log an error message and stop processing
+    unit_aliases = {
+        'meter': 'meter',
+        'meters': 'meter',
+        'metre': 'meter',
+        'metres': 'meter',
+        'degree': 'degree',
+        'degrees': 'degree'
+    }
+    raster_projections = {
+        'DEM': dem_projection,
+        'STREAM': strm_projection,
+        'LAND_USE': land_projection
+    }
+    for raster_name, raster_projection in raster_projections.items():
+        try:
+            raster_crs = CRS.from_wkt(raster_projection)
+        except Exception as ex:
+            LOG.error(f'Unable to parse CRS for {raster_name} raster: {ex}')
+            return
+
+        axis_units = {(axis.unit_name or '').strip().lower() for axis in raster_crs.axis_info if axis is not None}
+        axis_units.discard('')
+        if not axis_units:
+            LOG.error(f'Unable to determine CRS units for {raster_name} raster.')
+            return
+
+        invalid_units = [u for u in sorted(axis_units) if unit_aliases.get(u) not in {'meter', 'degree'}]
+        if invalid_units:
+            LOG.error(f'{raster_name} raster CRS units are not meters or degrees: {", ".join(invalid_units)}')
+            return
 
 
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
@@ -3142,7 +3208,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     
 
     # Get the cell dx and dy coordinates
-    dx, dy, dproject = convert_cell_size(dcellsize, dyll, dyur, dem_projection)
+    dx, dy, dproject = convert_cell_size(dcellsize, dem_dy, dyll, dyur, dem_projection)
     LOG.info('Cellsize X = ' + str(dx))
     LOG.info('Cellsize Y = ' + str(dy))
 
