@@ -37,7 +37,7 @@ gdal.UseExceptions()
 #     length = geod.line_length(lons, lats)  # meters
 #     return length
 
-def line_slope_from_dem(line_geom, dm_elevation, dem_geotransform, dem_projection, length_m):
+def line_slope_from_dem(line_geom, dm_elevation, dem_geotransform, length_m):
     """
     Compute slope along a line using a DEM that was read with read_raster_gdal.
 
@@ -3011,12 +3011,12 @@ def dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform,
     pbar_slopes = tqdm.tqdm(unique_stream_ids, disable=quiet)
     dict_stream_slopes = {}
     for stream_id in pbar_slopes:
-        gdf_StrmSHP_filtered = gdf_StrmSHP[gdf_StrmSHP[s_flow_file_id]==stream_id]
-        StrmSHP_geom = gdf_StrmSHP_filtered.geometry
+        gdf_StrmSHP_filtered: gpd.GeoDataFrame = gdf_StrmSHP[gdf_StrmSHP[s_flow_file_id]==stream_id]
         utm_crs = gdf_StrmSHP_filtered.estimate_utm_crs()
         gdf_utm = gdf_StrmSHP_filtered.to_crs(utm_crs)
+        StrmSHP_geom = gdf_StrmSHP_filtered.to_crs(dem_projection).geometry
         length_m = float(gdf_utm.length.iloc[0])
-        slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(StrmSHP_geom.iloc[0], dm_elevation, dem_geotransform, dem_projection, length_m)
+        slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(StrmSHP_geom.iloc[0], dm_elevation, dem_geotransform, length_m)
         dict_stream_slopes[stream_id] = round(slope_pct/100, 8)
 
     return dict_stream_slopes
@@ -3203,8 +3203,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     dm_manning_n_raster = read_manning_table(params['s_input_mannings_path'], dm_manning_n_raster)
 
     # Correct the mannings values here
-    dm_manning_n_raster[dm_manning_n_raster > 0.3] = 0.035
-    dm_manning_n_raster[dm_manning_n_raster < 0.005] = 0.005
+    dm_manning_n_raster[dm_manning_n_raster > 10] = 0.035
+    dm_manning_n_raster[dm_manning_n_raster <= 0.0] = 0.005
     
 
     # Get the cell dx and dy coordinates
