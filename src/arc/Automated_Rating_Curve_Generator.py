@@ -40,11 +40,14 @@ gdal.UseExceptions()
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, step_fraction=0.02):
     """
     Walk along a line until a valid DEM value is found.
+    Returns elevation and distance along the line (meters).
     """
+    line_len = line.length
     nsteps = int(1 / step_fraction) + 1
 
     for i in range(nsteps):
-        pt = line.interpolate(i * step_fraction, normalized=True)
+        frac = i * step_fraction
+        pt = line.interpolate(frac, normalized=True)
         rc = xy_to_rowcol(pt.x, pt.y)
 
         if rc is None:
@@ -54,9 +57,10 @@ def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_ro
         z = dm_elevation[r, c]
 
         if z > -9999:
-            return z
+            dist = frac * line_len
+            return z, dist
 
-    return np.nan
+    return np.nan, np.nan
 
 def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geotransform, length_m):
     """
@@ -135,18 +139,27 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
     if rc1 is None or rc2 is None:
         if rc1 is None and rc2 is None:
             return np.nan, np.nan, np.nan, np.nan, length_m
-        
-        z_start = sample_line_for_valid_z(line_geom, dm_elevation, xy_to_rowcol)
-        z_end = sample_line_for_valid_z(
+
+        z_start, dist_start = sample_line_for_valid_z(
+            line_geom,
+            dm_elevation,
+            xy_to_rowcol
+        )
+
+        z_end, dist_from_end = sample_line_for_valid_z(
             LineString(list(line_geom.coords)[::-1]),
             dm_elevation,
             xy_to_rowcol
         )
+
+        if np.isnan(z_start) or np.isnan(z_end):
+            return np.nan, np.nan, z_start, z_end, length_m
+
+        dist_end = length_m - dist_from_end
+        length_m = abs(dist_end - dist_start)
     else:
         r1, c1 = rc1
         r2, c2 = rc2
-
-        # Sample DEM at start and end
         z_start = float(dm_elevation[r1, c1])
         z_end   = float(dm_elevation[r2, c2])
 
