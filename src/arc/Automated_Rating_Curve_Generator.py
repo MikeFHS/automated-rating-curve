@@ -37,12 +37,11 @@ gdal.UseExceptions()
 #     length = geod.line_length(lons, lats)  # meters
 #     return length
 
-def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, step_fraction=0.02):
+def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
     """
     Walk along a line until a valid DEM value is found.
     Returns elevation and distance along the line (meters).
     """
-    line_len = line.length
     nsteps = int(1 / step_fraction) + 1
 
     for i in range(nsteps):
@@ -57,7 +56,7 @@ def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_ro
         z = dm_elevation[r, c]
 
         if z > -9999:
-            dist = frac * line_len
+            dist = frac * length_m
             return z, dist
 
     return np.nan, np.nan
