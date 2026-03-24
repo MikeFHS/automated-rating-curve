@@ -2243,6 +2243,8 @@ def adjust_cross_section_to_lowest_point(i_low_point_index, d_dem_low_point_elev
     """
     # Loop on the search range for the low point
     for i_entry in range(i_low_spot_range):
+        if i_entry >= da_xs_profile_one.shape[0] or i_entry >= da_xs_profile_two.shape[0]:
+            break
         # Look in the first profile
         if da_xs_profile_one[i_entry] > 0.0 and da_xs_profile_one[i_entry] < d_dem_low_point_elev:
             # New low point was found. Update the index.
