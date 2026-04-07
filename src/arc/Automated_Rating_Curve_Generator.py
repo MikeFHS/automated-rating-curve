@@ -3998,8 +3998,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                                                                                 da_total_a, da_total_p, da_total_v, da_total_q, 
                                                                                 da_total_wse, d_q_sum)
 
-                if d_q_baseflow>0.001 and da_total_q[i_start_elevation_index+1] >= d_q_baseflow:
-                    da_total_q[i_start_elevation_index+1] = d_q_baseflow-0.001
+                if d_q_baseflow > 0.001:
+                    idx = i_start_elevation_index + 1
+                    if idx < len(da_total_q) and da_total_q[idx] >= d_q_baseflow:
+                        da_total_q[idx] = d_q_baseflow - 0.001
                     
                 # Process each of the elevations to the output file if feasbile values were produced
                 da_total_q_half_sum = sum(da_total_q[0 : int(i_number_of_elevations / 2.0)])
