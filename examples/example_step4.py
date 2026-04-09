@@ -33,24 +33,7 @@ if __name__ == "__main__":
     # True/False of whether or not to filter the output GeoJSON
     Thin_Output = True
     # Path to the DEM raster file (TIFF).
-    DEM_Raster_File = r"C:\Users\jlgut\OneDrive\Desktop\Shields_TestCase\DEM\DEM.tif"
-
-        
-    # # here is what you need to run if you're using the stream raster to find your SEED locations
-    # # here we're passing the creation of the SEED file to the function if that file exists
-    # if os.path.exists(SEED_Output_Text_File):
-    #     pass
-    # else:
-    #     Write_SEED_Data_To_File_Using_Stream_Raster(
-    #                                                 STRM_Raster_File,
-    #                                                 DEM_Raster_File,
-    #                                                 SEED_Output_Text_File)
-    # # read in the SEED file
-    # SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev = GetSEED_Data_From_File(SEED_Output_Text_File)
-    # Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon,
-    #                                                 SEED_COMID, SEED_r, SEED_c, Thin_Output)    
-
-    
+    DEM_Raster_File = r"C:\Users\jlgut\OneDrive\Desktop\Shields_TestCase\DEM\DEM.tif"    
 
     # here is what you need to run if you're using the stream vector to find your SEED locations
     Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster_File, OutGeoJSON_File, 

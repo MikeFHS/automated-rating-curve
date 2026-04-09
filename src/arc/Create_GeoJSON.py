@@ -19,6 +19,7 @@ from geojson import Point, Feature, FeatureCollection
 import pandas as pd
 import networkx as nx
 from shapely.geometry import Point, LineString, MultiLineString
+from pyproj import CRS
 
 # local imports
 # from streamflow_processing import Get_Raster_Details, Read_Raster_GDAL
@@ -74,6 +75,48 @@ def Read_Raster_GDAL(InRAST_Name):
     print('   xur = ' + str(xur))
     return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
 
+def Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection):
+    """
+    Parse the stream raster CRS so points derived from raster row/column indices
+    always inherit the raster's true coordinate system.
+    """
+    if not Rast_Projection:
+        raise ValueError(f"Stream raster '{STRM_Raster_File}' does not define a coordinate system.")
+
+    try:
+        return CRS.from_user_input(Rast_Projection)
+    except Exception as exc:
+        raise ValueError(f"Unable to parse the coordinate system from '{STRM_Raster_File}'.") from exc
+
+def Get_Distance_CRS(stream_raster_crs):
+    """
+    Use the raster CRS directly when it is already projected. For geographic
+    rasters, switch to a projected CRS so nearest-distance calculations are in
+    linear units instead of degrees.
+    """
+    if stream_raster_crs.is_geographic:
+        return CRS.from_epsg(6933)
+    return stream_raster_crs
+
+def Build_Stream_Point_GDF(source_df, x_column, y_column, stream_raster_crs):
+    """
+    Build point geometries from raster-centered x/y coordinates and attach the
+    stream raster CRS at creation time so the coordinates are never relabeled.
+    """
+    geometry = [Point(xy) for xy in zip(source_df[x_column], source_df[y_column])]
+    return gpd.GeoDataFrame(source_df, geometry=geometry, crs=stream_raster_crs)
+
+def Reproject_GDF_If_Needed(gdf, target_crs):
+    """
+    Keep geodataframes in a common CRS for spatial joins, only reprojecting
+    when the current CRS differs from the requested target CRS.
+    """
+    if gdf.crs is None:
+        raise ValueError("GeoDataFrame is missing a coordinate system.")
+    if CRS.from_user_input(gdf.crs) == CRS.from_user_input(target_crs):
+        return gdf
+    return gdf.to_crs(target_crs)
+
 def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
     """
     Finds the locations of SEED points, or the most upstream locations in our modeling domain, using the topology in the stream shapefile
@@ -98,58 +141,227 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
     # Load the hydrographic network data
     gdf = gpd.read_file(StrmShp)
 
-    # Build the graph using LINKNO and DSLINKNO
-    G = nx.DiGraph()
+    # Keep one geometry per stream identifier so downstream lookups are stable
+    # even if the source file contains duplicate rows for the same reach.
+    reach_gdf = gdf.drop_duplicates(subset=[Stream_ID_Field]).copy()
+    reach_geometry_lookup = reach_gdf.set_index(Stream_ID_Field).geometry.to_dict()
 
-    for idx, row in gdf.iterrows():
-        if not pd.isna(row[Downstream_ID_Field]):
-            G.add_edge(row[Stream_ID_Field], row[Downstream_ID_Field])
+    # Identify the uppermost reaches directly from the stream identifiers. A
+    # reach is a SEED candidate only if its stream ID never appears as the
+    # downstream target of another reach in the local network.
+    downstream_reach_ids = set(reach_gdf[Downstream_ID_Field].dropna())
+    source_reach_gdf = reach_gdf[~reach_gdf[Stream_ID_Field].isin(downstream_reach_ids)].copy()
 
-    # Find all source nodes (uppermost locations)
-    sources = [node for node in G.nodes() if G.in_degree(node) == 0]
+    def get_terminal_points(geometry):
+        """
+        Return the candidate terminal points for a reach without assuming the
+        stored coordinate order identifies upstream versus downstream.
 
-    # Filter the source geometries
-    source_geometries = gdf[gdf[Stream_ID_Field].isin(sources)].geometry
-    source_linknos = gdf[gdf[Stream_ID_Field].isin(sources)][Stream_ID_Field]
+        For a single LineString, use the line boundary to get its two terminal
+        endpoints. For a MultiLineString, evaluate each component line
+        separately and collect the terminal boundary points from each segment.
+        """
+        if geometry is None or geometry.is_empty:
+            return []
 
-    # Function to extract start and end coordinates, excluding confluence points
-    # here we will assume that if the Stream_ID_Field is "LINKNO" then we are working with GEOGLOWS data and if
-    # the Stream_ID_Field is "COMID" then we are working with the NHDPlus versions to and 
-    # need to reverse the start and end points of the lines
-    def get_coords(geometry, Stream_ID_Field):
+        def boundary_points_for_line(line):
+            """
+            Extract the exposed terminal points from one line segment using the
+            geometry boundary so no directional assumption is made about the
+            coordinate sequence.
+            """
+            boundary = line.boundary
+            if boundary.is_empty:
+                return []
+            if isinstance(boundary, Point):
+                return [boundary]
+            if boundary.geom_type == "MultiPoint":
+                return list(boundary.geoms)
+            raise TypeError("Line boundary must resolve to Point or MultiPoint")
+
         if isinstance(geometry, LineString):
-            return [geometry.coords[-1]], [geometry.coords[0]]
+            candidate_points = boundary_points_for_line(geometry)
         elif isinstance(geometry, MultiLineString):
-            if Stream_ID_Field == "LINKNO":
-                start_coords = [line.coords[-1] for line in geometry.geoms]
-                end_coords = [line.coords[0] for line in geometry.geoms]
-            elif Stream_ID_Field == "COMID":
-                start_coords = [line.coords[-1] for line in geometry.geoms]
-                end_coords = [line.coords[0] for line in geometry.geoms]
-            return start_coords, end_coords
+            # Collect the terminal boundary points from every component line so
+            # the downstream comparison works from the original multipart
+            # geometry instead of a merged surrogate.
+            candidate_points = []
+            for line in geometry.geoms:
+                if line.is_empty:
+                    continue
+                candidate_points.extend(boundary_points_for_line(line))
         else:
             raise TypeError("Geometry must be a LineString or MultiLineString")
 
-    # Extract the start and end coordinates
-    start_coords_list = []
-    end_coords_list = []
-    linkno_list = []
+        # Remove duplicate coordinates so shared junctions inside a multipart
+        # reach are only considered once when scoring candidate endpoints.
+        unique_points = []
+        seen_coords = set()
+        for point in candidate_points:
+            coord_key = tuple(point.coords[0])
+            if coord_key in seen_coords:
+                continue
+            seen_coords.add(coord_key)
+            unique_points.append(point)
 
-    for geometry, linkno in zip(source_geometries, source_linknos):
-        start_coords, end_coords = get_coords(geometry, Stream_ID_Field)
-        start_coords_list.extend(start_coords)
-        end_coords_list.extend(end_coords)
-        linkno_list.extend([linkno] * len(start_coords))
+        return unique_points
 
-    # Convert end_coords to a set for efficient lookup
-    end_coords_set = set(end_coords_list)
+    def prune_downstream_points_within_multiline(geometry, candidate_points, downstream_connection_points):
+        """
+        Remove candidate seed points that are downstream of other candidate seed
+        points inside the same MultiLineString.
 
-    # Filter start_coords to exclude any coordinates present in end_coords
-    filtered_seed_coords = [(coord, linkno) for coord, linkno in zip(start_coords_list, linkno_list) if coord not in end_coords_set]
+        The multipart reach is converted into an undirected endpoint graph using
+        the original component lines. Distances to the downstream connection
+        point(s) are then used to orient that graph in the downstream
+        direction. Any candidate point reachable from another candidate point in
+        that downstream-directed graph is removed because it sits farther
+        downstream within the same multipart reach.
+        """
+        if not isinstance(geometry, MultiLineString):
+            return candidate_points
+        if len(candidate_points) <= 1 or not downstream_connection_points:
+            return candidate_points
 
-    # Convert the filtered start coordinates to Point geometries and keep the LINKNO field
-    seed_points = [Point(coords) for coords, _ in filtered_seed_coords]
-    seed_linknos = [linkno for _, linkno in filtered_seed_coords]
+        def point_key(point):
+            return tuple(point.coords[0])
+
+        # Build an undirected graph from the component line endpoints so the
+        # multipart reach topology is evaluated without assuming any stored line
+        # direction.
+        multipart_graph = nx.Graph()
+        for line in geometry.geoms:
+            if line.is_empty:
+                continue
+
+            line_boundary_points = line.boundary
+            if line_boundary_points.is_empty:
+                continue
+            if isinstance(line_boundary_points, Point):
+                boundary_points = [line_boundary_points]
+            elif line_boundary_points.geom_type == "MultiPoint":
+                boundary_points = list(line_boundary_points.geoms)
+            else:
+                continue
+
+            if len(boundary_points) < 2:
+                continue
+
+            start_key = point_key(boundary_points[0])
+            end_key = point_key(boundary_points[1])
+            multipart_graph.add_node(start_key)
+            multipart_graph.add_node(end_key)
+            multipart_graph.add_edge(start_key, end_key, weight=line.length)
+
+        candidate_point_lookup = {point_key(point): point for point in candidate_points}
+        downstream_keys = [point_key(point) for point in downstream_connection_points if point_key(point) in multipart_graph.nodes]
+
+        if multipart_graph.number_of_nodes() == 0 or not downstream_keys:
+            return candidate_points
+
+        # Measure graph distance from every node to the downstream connection.
+        # Nodes with smaller values are farther downstream.
+        distance_to_downstream = nx.multi_source_dijkstra_path_length(
+            multipart_graph,
+            downstream_keys,
+            weight='weight'
+        )
+
+        # Orient the multipart graph toward the downstream connection using the
+        # graph distances. Edges point from upstream nodes to downstream nodes.
+        downstream_graph = nx.DiGraph()
+        for start_key, end_key in multipart_graph.edges():
+            if start_key not in distance_to_downstream or end_key not in distance_to_downstream:
+                continue
+
+            start_distance = distance_to_downstream[start_key]
+            end_distance = distance_to_downstream[end_key]
+            distance_tolerance = max(1e-9, max(start_distance, end_distance) * 1e-9)
+
+            if start_distance > (end_distance + distance_tolerance):
+                downstream_graph.add_edge(start_key, end_key)
+            elif end_distance > (start_distance + distance_tolerance):
+                downstream_graph.add_edge(end_key, start_key)
+
+        # Keep only candidate points that are not reachable downstream from
+        # another candidate point in the same multipart reach.
+        candidate_keys = [key for key in candidate_point_lookup if key in downstream_graph.nodes or key in multipart_graph.nodes]
+        downstream_candidate_keys = set()
+        for candidate_key in candidate_keys:
+            for other_candidate_key in candidate_keys:
+                if candidate_key == other_candidate_key:
+                    continue
+                if nx.has_path(downstream_graph, other_candidate_key, candidate_key):
+                    downstream_candidate_keys.add(candidate_key)
+                    break
+
+        retained_keys = [key for key in candidate_keys if key not in downstream_candidate_keys]
+        if not retained_keys:
+            return candidate_points
+
+        return [candidate_point_lookup[key] for key in retained_keys]
+
+    seed_points = []
+    seed_linknos = []
+
+    # Walk only the uppermost reaches and infer which terminal endpoint is
+    # upstream by comparing the reach endpoints to the downstream-connected
+    # geometry.
+    for _, row in source_reach_gdf.iterrows():
+        reach_id = row[Stream_ID_Field]
+        terminal_points = get_terminal_points(row.geometry)
+
+        if not terminal_points:
+            continue
+
+        downstream_id = row[Downstream_ID_Field]
+        downstream_geometry = None
+        if not pd.isna(downstream_id):
+            downstream_geometry = reach_geometry_lookup.get(downstream_id)
+
+        if downstream_geometry is not None and not downstream_geometry.is_empty:
+            # Measure every terminal against the downstream-connected reach. Any
+            # terminal with the minimum distance is treated as the downstream
+            # connection point, and all other terminals are preserved as SEED
+            # locations. This allows a MultiLineString source reach to produce
+            # multiple SEED points when it contains multiple headwater branches.
+            distances_to_downstream = [point.distance(downstream_geometry) for point in terminal_points]
+            min_distance = min(distances_to_downstream)
+            distance_tolerance = max(1e-9, min_distance * 1e-9)
+            downstream_connection_points = [
+                point for point, distance in zip(terminal_points, distances_to_downstream)
+                if distance <= (min_distance + distance_tolerance)
+            ]
+            upstream_points = [
+                point for point, distance in zip(terminal_points, distances_to_downstream)
+                if distance > (min_distance + distance_tolerance)
+            ]
+
+            # If every terminal is effectively tied to the downstream geometry,
+            # retain the farthest terminal so the reach still produces one SEED
+            # point instead of none.
+            if not upstream_points:
+                upstream_points = [terminal_points[int(np.argmax(distances_to_downstream))]]
+
+            # Remove any remaining candidate seed points that are downstream of
+            # other candidates within the same multipart reach.
+            upstream_points = prune_downstream_points_within_multiline(
+                row.geometry,
+                upstream_points,
+                downstream_connection_points
+            )
+        else:
+            # If the downstream reach is missing from the local network, keep
+            # every terminal point. This preserves the headwater termini from a
+            # MultiLineString source reach rather than collapsing them to one
+            # arbitrary point.
+            upstream_points = terminal_points
+
+        # Write one SEED point for each upstream terminal that survived the
+        # downstream-connection filter.
+        for upstream_point in upstream_points:
+            seed_points.append(upstream_point)
+            seed_linknos.append(reach_id)
 
     # Create a new GeoDataFrame for the starting locations
     seed_gdf = gpd.GeoDataFrame({'LINKNO': seed_linknos, 'geometry': seed_points}, crs=gdf.crs)
@@ -161,7 +373,7 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
     
     return (seed_gdf)
 
-def FindClosestSEEDPoints(seed_gdf, curve_data_gdf):
+def FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs):
     """
     Compares stream cell locations to SEED point locations (i.e., the uppermost headwater extents of the ARC model domain) and finds the closest stream cell for each SEED point 
 
@@ -171,14 +383,19 @@ def FindClosestSEEDPoints(seed_gdf, curve_data_gdf):
         A geodataframe of all SEED locations in your model domain, created using the find_SEED_locations function
     curve_data_gdf: geodataframe
         A geodataframe of all stream cell locations in the ARC model with depth, top-width, and velocity, all estimated using the ARC synthetic rating curves
+    distance_crs: pyproj.CRS | str
+        The projected coordinate system used when measuring distances between
+        SEED points and stream-cell points
 
     Returns
     -------
     curve_data_gdf: geodataframe
         A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
     """
-    # Reproject to a projected coordinate system so that we can accurately measure distances
-    seed_gdf = seed_gdf.to_crs(epsg=6933) 
+    # Reproject both layers into the same projected CRS before the nearest-
+    # neighbor search so distances are evaluated in linear units.
+    seed_gdf = Reproject_GDF_If_Needed(seed_gdf, distance_crs)
+    curve_data_gdf = Reproject_GDF_If_Needed(curve_data_gdf, distance_crs)
 
     # Prefill the curve data file with a SEED value, this will be set to 1 if the column is designated as a SEED column
     curve_data_gdf['SEED'] = "0"
@@ -265,6 +482,14 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     print(cellsize_x)
     print(cellsize_y)
 
+    # Determine the stream raster CRS once so every point created from raster
+    # row and column indices is tagged with the raster's true source CRS.
+    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+
+    # When the raster is geographic, switch to a projected CRS for distance
+    # calculations. When it is already projected, keep the native raster CRS.
+    distance_crs = Get_Distance_CRS(stream_raster_crs)
+
     # Reading with pandas
     curve_data_df = pd.read_csv(CurveParam_File, 
                                 dtype={'COMID': 'int64', 'Row': 'int64', 'Col': 'int64',
@@ -277,17 +502,10 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     curve_data_df['CP_LAT'] = lat_base - curve_data_df['Row'] * cellsize_y
     curve_data_df['CP_LON'] = lon_base + curve_data_df['Col'] * cellsize_x
 
-    # Create a GeoSeries from the latitude and longitude values
-    geometry = [Point(xy) for xy in zip(curve_data_df['CP_LON'], curve_data_df['CP_LAT'])]
-
-    # Create a GeoDataFrame
-    curve_data_gdf = gpd.GeoDataFrame(curve_data_df, geometry=geometry)
-
-    # set the coordinate system for the geodataframe
-    curve_data_gdf = curve_data_gdf.set_crs(OutProjection, inplace=True)
-
-    # Reproject to a projected coordinate system so that we can accurately measure distances
-    curve_data_gdf = curve_data_gdf.to_crs(epsg=6933)
+    # Build the stream-cell points in the raster CRS, then move them into the
+    # projected distance CRS only when the raster started in geographic units.
+    curve_data_gdf = Build_Stream_Point_GDF(curve_data_df, 'CP_LON', 'CP_LAT', stream_raster_crs)
+    curve_data_gdf = Reproject_GDF_If_Needed(curve_data_gdf, distance_crs)
 
     # Merge using 'CP_COMID' from gdf and 'COMID_List' from df
     curve_data_gdf = curve_data_gdf.merge(comid_q_df, on="COMID")
@@ -326,7 +544,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
         seed_gdf = gpd.read_file(SEED_Output_File)
     else:
         seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
-    curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf)
+    curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs)
 
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
@@ -394,6 +612,14 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     print(cellsize_x)
     print(cellsize_y)
 
+    # Determine the stream raster CRS once so every point created from raster
+    # row and column indices is tagged with the raster's true source CRS.
+    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+
+    # When the raster is geographic, switch to a projected CRS for distance
+    # calculations. When it is already projected, keep the native raster CRS.
+    distance_crs = Get_Distance_CRS(stream_raster_crs)
+
     # Reading with pandas
     vdt_df = pd.read_csv(VDTDatabaseFileName)
     
@@ -451,20 +677,15 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     vdt_df['CP_LAT'] = lat_base - vdt_df['Row'] * cellsize_y
     vdt_df['CP_LON'] = lon_base + vdt_df['Col'] * cellsize_x
 
-    # Create a GeoSeries from the latitude and longitude values
-    geometry = [Point(xy) for xy in zip(vdt_df['CP_LON'], vdt_df['CP_LAT'])]
-
-    # Create a GeoDataFrame
-    vdt_gdf = gpd.GeoDataFrame(vdt_df, geometry=geometry)
+    # Build the stream-cell points in the raster CRS, then move them into the
+    # projected distance CRS only when the raster started in geographic units.
+    vdt_gdf = Build_Stream_Point_GDF(vdt_df, 'CP_LON', 'CP_LAT', stream_raster_crs)
 
     # delete the VDT dataframe, we don't need it now
     del(vdt_df)
 
-    # set the coordinate system for the geodataframe
-    vdt_gdf = vdt_gdf.set_crs(OutProjection, inplace=True)
-
-    # Reproject to a projected coordinate system so that we can accurately measure distances
-    vdt_gdf = vdt_gdf.to_crs(epsg=6933)
+    # Keep the stream cells in a projected CRS for the nearest-distance work.
+    vdt_gdf = Reproject_GDF_If_Needed(vdt_gdf, distance_crs)
 
     # Merge using 'CP_COMID' from gdf and 'COMID_List' from df
     vdt_gdf = vdt_gdf.merge(comid_q_df, on="COMID")
@@ -488,9 +709,10 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     if os.path.isfile(SEED_Output_File):
         print("SEED file exists, we're using it...")
         seed_gdf = gpd.read_file(SEED_Output_File)
+        
     else:
         seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
-    vdt_gdf = FindClosestSEEDPoints(seed_gdf, vdt_gdf)
+    vdt_gdf = FindClosestSEEDPoints(seed_gdf, vdt_gdf, distance_crs)
 
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, vdt_gdf)
@@ -745,7 +967,8 @@ def Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf):
     selected_columns = ['WaterSurfaceElev_m', 'SEED', 'geometry']
     curve_data_gdf = curve_data_gdf[selected_columns]
 
-    # Reproject to a projected coordinate system so that we can accurately measure distances
+    # Reproject the finished output into the caller's requested CRS before
+    # writing the GeoJSON.
     curve_data_gdf = curve_data_gdf.to_crs(OutProjection)
 
     # Save the converted GeoDataFrame to a new file
@@ -753,7 +976,7 @@ def Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf):
 
     return
 
-def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, OutProjection, elev_column_name='BaseElev'):
+def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, stream_raster_crs, distance_crs, elev_column_name='BaseElev'):
     """
     Compares stream cell locations to SEED point locations (i.e., the uppermost headwater extents of the ARC model domain) and finds the closest stream cell for each SEED point 
 
@@ -771,8 +994,12 @@ def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_
         A list of integer values that represent the column in stream and DEM raster where the SEED location is
     curve_data_gdf: geodataframe
         A geodataframe of all stream cell locations in the ARC model with depth, top-width, and velocity, all estimated using the ARC synthetic rating curves
-    OutProjection: str
-        A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
+    stream_raster_crs: pyproj.CRS | str
+        The source coordinate system of the stream raster used to create the
+        stream-cell and SEED point coordinates
+    distance_crs: pyproj.CRS | str
+        The projected coordinate system used when measuring distances between
+        SEED points and stream-cell points
     elev_column_name: str
         Represents the name of the column which represents the elevation of the stream cell
     
@@ -792,17 +1019,14 @@ def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_
     }
     df = pd.DataFrame(data)
 
-    # Create a GeoSeries from the latitude and longitude values
-    geometry = [Point(xy) for xy in zip(df['SEED_Lon'], df['SEED_Lat'])]
+    # Build the SEED points in the raster CRS because these coordinates were
+    # derived from raster cells, not from the requested output projection.
+    seed_gdf = Build_Stream_Point_GDF(df, 'SEED_Lon', 'SEED_Lat', stream_raster_crs)
 
-    # Create a GeoDataFrame
-    seed_gdf = gpd.GeoDataFrame(df, geometry=geometry)
-
-    # Set the coordinate reference system (CRS)
-    seed_gdf.set_crs(OutProjection, inplace=True)  
-
-    # Reproject to a projected coordinate system so that we can accurately measure distances
-    seed_gdf = seed_gdf.to_crs(epsg=6933) 
+    # Reproject both layers into the same projected CRS before measuring
+    # distances so the nearest-neighbor search uses linear units.
+    seed_gdf = Reproject_GDF_If_Needed(seed_gdf, distance_crs)
+    curve_data_gdf = Reproject_GDF_If_Needed(curve_data_gdf, distance_crs)
 
     # Prefill the curve data file with a SEED value, this will be set to 1 if the column is designated as a SEED column
     curve_data_gdf['SEED'] = "0"
@@ -896,6 +1120,14 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     print(cellsize_x)
     print(cellsize_y)
 
+    # Determine the stream raster CRS once so every point created from raster
+    # row and column indices is tagged with the raster's true source CRS.
+    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+
+    # When the raster is geographic, switch to a projected CRS for distance
+    # calculations. When it is already projected, keep the native raster CRS.
+    distance_crs = Get_Distance_CRS(stream_raster_crs)
+
     # Reading with pandas
     curve_data_df = pd.read_csv(CurveParam_File, 
                                 dtype={'COMID': 'int64', 'Row': 'int64', 'Col': 'int64',
@@ -908,17 +1140,10 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     curve_data_df['CP_LAT'] = lat_base - curve_data_df['Row'] * cellsize_y
     curve_data_df['CP_LON'] = lon_base + curve_data_df['Col'] * cellsize_x
 
-    # Create a GeoSeries from the latitude and longitude values
-    geometry = [Point(xy) for xy in zip(curve_data_df['CP_LON'], curve_data_df['CP_LAT'])]
-
-    # Create a GeoDataFrame
-    curve_data_gdf = gpd.GeoDataFrame(curve_data_df, geometry=geometry)
-
-    # set the coordinate system for the geodataframe
-    curve_data_gdf = curve_data_gdf.set_crs(OutProjection, inplace=True)
-
-    # Reproject to a projected coordinate system so that we can accurately measure distances
-    curve_data_gdf = curve_data_gdf.to_crs(epsg=6933)
+    # Build the stream-cell points in the raster CRS, then move them into the
+    # projected distance CRS only when the raster started in geographic units.
+    curve_data_gdf = Build_Stream_Point_GDF(curve_data_df, 'CP_LON', 'CP_LAT', stream_raster_crs)
+    curve_data_gdf = Reproject_GDF_If_Needed(curve_data_gdf, distance_crs)
 
     # Merge using 'CP_COMID' from gdf and 'COMID_List' from df
     curve_data_gdf = curve_data_gdf.merge(comid_q_df, on="COMID")
@@ -952,7 +1177,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
         curve_data_gdf = Thin_Curve_data(curve_data_gdf)
 
     # find the SEED locations 
-    curve_data_gdf = FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, OutProjection)
+    curve_data_gdf = FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, stream_raster_crs, distance_crs)
 
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
@@ -1018,6 +1243,14 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     print(cellsize_x)
     print(cellsize_y)
 
+    # Determine the stream raster CRS once so every point created from raster
+    # row and column indices is tagged with the raster's true source CRS.
+    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+
+    # When the raster is geographic, switch to a projected CRS for distance
+    # calculations. When it is already projected, keep the native raster CRS.
+    distance_crs = Get_Distance_CRS(stream_raster_crs)
+
     # Reading with pandas
     vdt_df = pd.read_csv(VDTDatabaseFileName)
     
@@ -1075,20 +1308,15 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     vdt_df['CP_LAT'] = lat_base - vdt_df['Row'] * cellsize_y
     vdt_df['CP_LON'] = lon_base + vdt_df['Col'] * cellsize_x
 
-    # Create a GeoSeries from the latitude and longitude values
-    geometry = [Point(xy) for xy in zip(vdt_df['CP_LON'], vdt_df['CP_LAT'])]
-
-    # Create a GeoDataFrame
-    vdt_gdf = gpd.GeoDataFrame(vdt_df, geometry=geometry)
+    # Build the stream-cell points in the raster CRS, then move them into the
+    # projected distance CRS only when the raster started in geographic units.
+    vdt_gdf = Build_Stream_Point_GDF(vdt_df, 'CP_LON', 'CP_LAT', stream_raster_crs)
 
     # delete the VDT dataframe, we don't need it now
     del(vdt_df)
 
-    # set the coordinate system for the geodataframe
-    vdt_gdf = vdt_gdf.set_crs(OutProjection, inplace=True)
-
-    # Reproject to a projected coordinate system so that we can accurately measure distances
-    vdt_gdf = vdt_gdf.to_crs(epsg=6933)
+    # Keep the stream cells in a projected CRS for the nearest-distance work.
+    vdt_gdf = Reproject_GDF_If_Needed(vdt_gdf, distance_crs)
 
     # Merge using 'CP_COMID' from gdf and 'COMID_List' from df
     vdt_gdf = vdt_gdf.merge(comid_q_df, on="COMID")
@@ -1109,7 +1337,7 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
         vdt_gdf = Thin_Curve_data(vdt_gdf, False)
 
     # find the SEED locations 
-    vdt_gdf = FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, vdt_gdf, OutProjection, elev_column_name="Elev")
+    vdt_gdf = FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, vdt_gdf, stream_raster_crs, distance_crs, elev_column_name="Elev")
 
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, vdt_gdf)
