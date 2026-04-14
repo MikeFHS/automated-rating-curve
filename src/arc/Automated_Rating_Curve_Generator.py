@@ -3317,6 +3317,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         All_DEM_Elev_curve_list = []
         All_QMax_curve_list = []
         All_Slope_curve_list = []
+        All_XS_Angle_curve_list = []
     
     # instantiate the lists we will use to create the XS File
     s_xs_output_file = params['s_xs_output_file']
@@ -3365,6 +3366,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         Row_curve_list = []
         Col_curve_list = []
         Slope_curve_list = []
+        XS_Angle_curve_list = []
         BaseElev_curve_list = []
         DEM_Elev_curve_list = []
         QMax_curve_list = []
@@ -3980,6 +3982,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     All_DEM_Elev_curve_list.append(dm_elevation[i_row_cell, i_column_cell])
                     All_QMax_curve_list.append(d_q_maximum)
                     All_Slope_curve_list.append(round(d_slope_use, 8))
+                    All_XS_Angle_curve_list.append(round(d_xs_direction, 3))
                     continue
                 else:
                     continue
@@ -4015,6 +4018,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                     vdt_row.append(dm_elevation[i_row_cell, i_column_cell] - 100 if b_modified_dem else dm_elevation[i_row_cell, i_column_cell])
                     vdt_row.append(d_q_baseflow)
                     vdt_row.append(np.round(d_slope_use, 8))
+                    vdt_row.append(np.round(d_xs_direction, 3))
                     vdt_list.append(vdt_row)
 
                     # Loop backward through the elevations
@@ -4053,6 +4057,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
             All_QMax_curve_list.append(np.round(d_q_maximum, 3))
             All_Slope_curve_list.append(np.round(d_slope_use, 8))
+            All_XS_Angle_curve_list.append(np.round(d_xs_direction, 3))
 
         # Work on the Regression Equations File
         if b_outprint_yes and params['s_output_curve_file'] and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
@@ -4072,6 +4077,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                 DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
             QMax_curve_list.append(np.round(da_total_q[i_last_elevation_index], 3))
             Slope_curve_list.append(np.round(d_slope_use, 8))
+            XS_Angle_curve_list.append(np.round(d_xs_direction, 3))
             depth_a_curve_list.append(np.round(d_d_a, 3))
             depth_b_curve_list.append(np.round(d_d_b, 3))
             tw_a_curve_list.append(np.round(d_t_a, 3))
@@ -4117,13 +4123,13 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
         return
     
-    colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope'] + [
+    colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
         f"{prefix}_{i}" for i in range(1, i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']
     ]
 
     # Combine the data first (without rounding yet)
     vdt_df = pd.concat([
-        pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope']),
+        pd.DataFrame(vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle']),
         pd.DataFrame(q_list, columns=[f'q_{i}' for i in range(1, len(q_list[0]) + 1)]),
         pd.DataFrame(v_list, columns=[f'v_{i}' for i in range(1, len(v_list[0]) + 1)]),
         pd.DataFrame(t_list, columns=[f't_{i}' for i in range(1, len(t_list[0]) + 1)]),
@@ -4132,11 +4138,12 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
     # Round all numeric columns to 3, except 'Slope'
     for col in vdt_df.columns:
-        if col != 'Slope':
+        if col not in ('Slope', 'XS_Angle'):
             vdt_df[col] = vdt_df[col].round(3)
 
-    # Now round Slope separately to 8
+    # Now round Slope separately to 8 and XS_Angle to 3
     vdt_df['Slope'] = vdt_df['Slope'].round(8)
+    vdt_df['XS_Angle'] = vdt_df['XS_Angle'].round(3)
 
     # Reorder columns
     vdt_df = vdt_df[colorder]
@@ -4222,6 +4229,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             "DEM_Elev": [np.round(num, 3) for num in All_DEM_Elev_curve_list],
             "QMax": All_QMax_curve_list,
             "Slope": All_Slope_curve_list,
+            "XS_Angle": All_XS_Angle_curve_list,
         }
 
         # Creating the DataFrame
@@ -4355,6 +4363,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
                                 'DEM_Elev': DEM_Elev_curve_list,
                                 'QMax': QMax_curve_list,
                                 'Slope': Slope_curve_list,
+                                'XS_Angle': XS_Angle_curve_list,
                                 'depth_a': depth_a_curve_list,
                                 'depth_b': depth_b_curve_list,
                                 'tw_a': tw_a_curve_list,
