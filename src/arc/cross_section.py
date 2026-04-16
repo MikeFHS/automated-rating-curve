@@ -6,13 +6,17 @@ from numba import njit
 class CrossSection:
     def __init__(self, 
                  i_center_point: int, 
-                 dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float):
+                 dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float,
+                 dm_elevation: np.ndarray, dm_land_use: np.ndarray):
         self.i_center_point = i_center_point
 
         self.da_xs_profile1 = np.zeros(self.i_center_point + 1)
         self.da_xs_profile2 = np.zeros(self.i_center_point + 1)
         self.ia_lc_xs1 = np.zeros(self.i_center_point + 1)
         self.ia_lc_xs2 = np.zeros(self.i_center_point + 1)
+
+        self.dm_elevation = dm_elevation
+        self.dm_land_use = dm_land_use
 
         self.create_cross_section_ordinates(i_center_point, dx, dy, i_precompute_angles, d_precompute_angles)
 
@@ -41,32 +45,30 @@ class CrossSection:
         self.i_column_bottom = i_boundary_number
         self.i_column_top = ncols + i_boundary_number - 1
     
-    def reset(self, row: int, col: int, i_precompute_angle_closest: int):
+    def set_cross_section(self, row: int, col: int, i_precompute_angle_closest: int, d_xs_direction: float):
         """
         Parameters
         """
         self.row = row
         self.col = col
         self.i_precompute_angle_closest = i_precompute_angle_closest
+        self.d_xs_direction = d_xs_direction
         self.xs1_n = 0
         self.xs2_n = 0
         self.da_xs_profile1[:] = 0.0
         self.da_xs_profile2[:] = 0.0
 
         self.ia_xc_row1_index_main = self.row + self.ia_xc_dr_index_main[self.i_precompute_angle_closest]
+        self.ia_xc_row2_index_main = self.row - self.ia_xc_dr_index_main[self.i_precompute_angle_closest]
         self.ia_xc_column1_index_main = self.col + self.ia_xc_dc_index_main[self.i_precompute_angle_closest]
-        self.ia_xc_row2_index_main = self.row + self.ia_xc_dr_index_main[self.i_precompute_angle_closest] * -1
-        self.ia_xc_column2_index_main = self.col + self.ia_xc_dc_index_main[self.i_precompute_angle_closest] * -1
+        self.ia_xc_column2_index_main = self.col - self.ia_xc_dc_index_main[self.i_precompute_angle_closest]
         
         self.ia_xc_row1_index_second = self.row + self.ia_xc_dr_index_second[self.i_precompute_angle_closest]
+        self.ia_xc_row2_index_second = self.row - self.ia_xc_dr_index_second[self.i_precompute_angle_closest]
         self.ia_xc_column1_index_second = self.col + self.ia_xc_dc_index_second[self.i_precompute_angle_closest]
-        self.ia_xc_row2_index_second = self.row + self.ia_xc_dr_index_second[self.i_precompute_angle_closest] * -1
-        self.ia_xc_column2_index_second = self.col + self.ia_xc_dc_index_second[self.i_precompute_angle_closest] * -1
+        self.ia_xc_column2_index_second = self.col - self.ia_xc_dc_index_second[self.i_precompute_angle_closest]
 
-    def sample_from_dem(self, dm_elevation, dm_land_use=None):
         self.xs1_n = self._sample_side(
-            dm_elevation,
-            dm_land_use,
             profile=self.da_xs_profile1,
             lc_profile=self.ia_lc_xs1,
             ia_xc_row_index_main=self.ia_xc_row1_index_main,
@@ -76,8 +78,6 @@ class CrossSection:
         )
 
         self.xs2_n = self._sample_side(
-            dm_elevation,
-            dm_land_use,
             profile=self.da_xs_profile2,
             lc_profile=self.ia_lc_xs2,
             ia_xc_row_index_main=self.ia_xc_row2_index_main,
@@ -88,8 +88,6 @@ class CrossSection:
         
     def _sample_side(
         self,
-        dm_elevation: np.ndarray,
-        dm_land_use: np.ndarray,
         profile: np.ndarray,
         lc_profile: np.ndarray,
         ia_xc_row_index_main: np.ndarray,
@@ -116,8 +114,8 @@ class CrossSection:
         profile[i_xs_length_indice] = 99999.9
 
         profile[:i_xs_length_indice] = (
-            dm_elevation[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]] * self.da_xc_main_fract[self.i_precompute_angle_closest, :i_xs_length_indice] +
-            dm_elevation[ia_xc_row_index_second[:i_xs_length_indice], ia_xc_column_index_second[:i_xs_length_indice]] * self.da_xc_second_fract[self.i_precompute_angle_closest, :i_xs_length_indice]
+            self.dm_elevation[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]] * self.da_xc_main_fract[self.i_precompute_angle_closest, :i_xs_length_indice] +
+            self.dm_elevation[ia_xc_row_index_second[:i_xs_length_indice], ia_xc_column_index_second[:i_xs_length_indice]] * self.da_xc_second_fract[self.i_precompute_angle_closest, :i_xs_length_indice]
         )
 
         # for i in range(i_xs_length_indice):
@@ -131,16 +129,15 @@ class CrossSection:
         #         dm_elevation[row_second, col_second] * self.da_xc_second_fract[i]
         #     )
 
-        if dm_land_use is not None:
-            lc_profile[:i_xs_length_indice] = dm_land_use[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]]
-            # for i in range(i_xs_length_indice):
-            #     row_main = ia_xc_row_index_main[i]
-            #     col_main = ia_xc_column_index_main[i]
-            #     lc_profile[i] = int(dm_land_use[row_main, col_main])
+        lc_profile[:i_xs_length_indice] = self.dm_land_use[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]]
+        # for i in range(i_xs_length_indice):
+        #     row_main = ia_xc_row_index_main[i]
+        #     col_main = ia_xc_column_index_main[i]
+        #     lc_profile[i] = int(dm_land_use[row_main, col_main])
 
         return i_xs_length_indice
     
-    def adjust_cross_section_to_lowest_point(self, i_low_spot_range: int, dm_elevation: np.ndarray, dm_land_use: np.ndarray):
+    def adjust_cross_section_to_lowest_point(self, i_low_spot_range: int):
         """
         Reorients the cross section through the lowest point of the stream. Cross-section needs to be re-sampled if the low spot in the cross-section changes location.
 
@@ -231,16 +228,88 @@ class CrossSection:
         # The r and c for the stream cell is adjusted because it may have moved
         self.row, self.col = self.get_row_col()
 
-        
         # re-sample the cross-section to make sure all of the low-spot data has the same values through interpolation
-        self.sample_from_dem(dm_elevation, dm_land_use)
+        self.set_cross_section(self.row, self.col, self.i_precompute_angle_closest, self.d_xs_direction)
 
-    
     def get_row_col(self):
         return self.ia_xc_row1_index_main[0], self.ia_xc_column1_index_main[0]
     
     def get_thalweg(self):
         return self.da_xs_profile1[0]
+    
+    def get_best_xsection_angle(self, d_precompute_angles: float, l_angles_to_test: list[float]):
+        d_test_depth = 0.5
+        d_shortest_tw_angle = 0.0
+        d_t_test = np.inf
+
+        # Loop through the angles to test
+        for d_entry_angle_adjustment in l_angles_to_test:
+            # Ensure angle is between 0 and pi
+            d_xs_angle_use = (self.d_xs_direction + d_entry_angle_adjustment) % np.pi
+        
+            #We now precompute the cross-section ordinates
+            i_precompute_angle_closest = int(round(d_xs_angle_use / d_precompute_angles))
+
+            # Pull the cross-section again
+            self.set_cross_section(self.row, self.col, i_precompute_angle_closest, self.d_xs_direction)
+            d_wse = self.get_thalweg() + d_test_depth
+            top_width = self.calculate_top_width_of_wse(d_wse)
+
+            if top_width < d_t_test:
+                d_t_test = top_width
+                d_shortest_tw_angle = d_xs_angle_use
+
+        return d_shortest_tw_angle
+    
+    
+    def check_for_negative_depths(self, da_y_depth: np.ndarray):
+        # Take action if there are values < 0
+        lt_0_in_depths = False
+        i_target_index = 0
+        for i_target_index, value in enumerate(da_y_depth[1:]):
+            if value <= 0:
+                lt_0_in_depths = True
+                break
+
+        return lt_0_in_depths, i_target_index
+    
+    def get_distance_to_use(self, da_y_depth: np.ndarray, i_target_index: int):
+        return self.d_distance_z[self.i_precompute_angle_closest] * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
+    
+    def calculate_top_width_up_to_point(self, i_target_index: int, d_dist_use: float):
+        return self.d_distance_z[self.i_precompute_angle_closest] * (i_target_index - 1) + d_dist_use
+
+    def calculate_top_width_from_all(self, da_y_depth: np.ndarray):
+        return self.d_distance_z[self.i_precompute_angle_closest] * (da_y_depth.shape[0] - 1)
+    
+    def _get_stream_depths(self, d_wse: float, profile: np.ndarray, n: int):
+        da_y_depth = d_wse - profile[:n]
+
+        if da_y_depth.shape[0] <= 0 or da_y_depth[0] <= 1e-16:
+            return None
+        
+        return da_y_depth
+    
+    def _calculate_side_top_width(self, d_wse: float, profile: np.ndarray, n: int):
+        da_y_depth = self._get_stream_depths(d_wse, profile, n)
+
+        if da_y_depth is None:
+            return 0
+
+        lt_0_in_depths, i_target_index = self.check_for_negative_depths(da_y_depth)
+
+        if lt_0_in_depths:
+            i_target_index += 1
+            d_dist_use = self.get_distance_to_use(da_y_depth, i_target_index)
+            return self.calculate_top_width_up_to_point(i_target_index, d_dist_use)
+        else:
+            return self.calculate_top_width_from_all(da_y_depth)
+
+    def calculate_top_width_of_wse(self, d_wse: float):
+        return sum((
+            self._calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n),
+            self._calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n),
+        ))
 
 @njit(cache=True)
 def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
