@@ -2,12 +2,14 @@ import math
 
 import numpy as np
 from numba import njit
+from scipy.signal import savgol_filter
 
 class CrossSection:
     def __init__(self, 
                  i_center_point: int, 
                  dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float,
-                 dm_elevation: np.ndarray, dm_land_use: np.ndarray):
+                 dm_elevation: np.ndarray, dm_land_use: np.ndarray,
+                 params: dict):
         self.i_center_point = i_center_point
 
         self.da_xs_profile1 = np.zeros(self.i_center_point + 1)
@@ -17,6 +19,11 @@ class CrossSection:
 
         self.dm_elevation = dm_elevation
         self.dm_land_use = dm_land_use
+
+        self.b_FindBanksBasedOnLandCover = params["b_FindBanksBasedOnLandCover"]
+        self.i_lc_water_value = params["i_lc_water_value"]
+        self.d_bathymetry_trapzoid_height = params["d_bathymetry_trapzoid_height"]
+        self.b_bathy_use_banks = params["b_bathy_use_banks"]
 
         self.create_cross_section_ordinates(i_center_point, dx, dy, i_precompute_angles, d_precompute_angles)
 
@@ -57,6 +64,7 @@ class CrossSection:
         self.xs2_n = 0
         self.da_xs_profile1[:] = 0.0
         self.da_xs_profile2[:] = 0.0
+        self.dz = self.d_distance_z[self.i_precompute_angle_closest]
 
         self.ia_xc_row1_index_main = self.row + self.ia_xc_dr_index_main[self.i_precompute_angle_closest]
         self.ia_xc_row2_index_main = self.row - self.ia_xc_dr_index_main[self.i_precompute_angle_closest]
@@ -274,14 +282,14 @@ class CrossSection:
         return lt_0_in_depths, i_target_index
     
     def get_distance_to_use(self, da_y_depth: np.ndarray, i_target_index: int):
-        return self.d_distance_z[self.i_precompute_angle_closest] * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
+        return self.dz * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
     
     def calculate_top_width_up_to_point(self, i_target_index: int, d_dist_use: float):
-        return self.d_distance_z[self.i_precompute_angle_closest] * (i_target_index - 1) + d_dist_use
+        return self.dz * (i_target_index - 1) + d_dist_use
 
     def calculate_top_width_from_all(self, da_y_depth: np.ndarray):
-        return self.d_distance_z[self.i_precompute_angle_closest] * (da_y_depth.shape[0] - 1)
-    
+        return self.dz * (da_y_depth.shape[0] - 1)
+
     def _get_stream_depths(self, d_wse: float, profile: np.ndarray, n: int):
         da_y_depth = d_wse - profile[:n]
 
@@ -306,10 +314,393 @@ class CrossSection:
             return self.calculate_top_width_from_all(da_y_depth)
 
     def calculate_top_width_of_wse(self, d_wse: float):
-        return sum((
-            self._calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n),
-            self._calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n),
-        ))
+        return (
+            self._calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n) +
+            self._calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n)
+        )
+
+    def _find_wse_and_banks_by_lc(self):
+        #Initially set the bank info to zeros
+        i_bank_1_index = 0
+        i_bank_2_index = 0
+        
+        bank_elev_1 = self.da_xs_profile1[0]
+        bank_elev_2 = self.da_xs_profile2[0]
+        for i in range(1, self.xs1_n):
+            if self.ia_lc_xs1[i] == self.i_lc_water_value:
+                if self.da_xs_profile1[i] < bank_elev_1:
+                    bank_elev_1 = self.da_xs_profile1[i]
+            else:
+                i_bank_1_index = i
+                break
+
+        for i in range(1, self.xs2_n):
+            if self.ia_lc_xs2[i] == self.i_lc_water_value:
+                if self.da_xs_profile2[i] < bank_elev_2:
+                    bank_elev_2 = self.da_xs_profile2[i]
+            else:
+                i_bank_2_index = i
+                break
+        
+        if bank_elev_1>self.da_xs_profile1[0]:
+            if bank_elev_2>self.da_xs_profile1[0]:
+                d_wse_from_dem = min(bank_elev_1, bank_elev_2)
+            else:
+                d_wse_from_dem = bank_elev_1
+        elif bank_elev_2>self.da_xs_profile1[0]:
+            d_wse_from_dem = bank_elev_2
+        else:
+            d_wse_from_dem = self.get_thalweg() + 0.1
+        
+        return d_wse_from_dem, i_bank_1_index, i_bank_2_index
+    
+    def _find_bank(self, profile: np.ndarray, i_cross_section_number: int, wse: bool = False):
+        """
+        Finds the cell containing the bank of the cross section. Subtract 1 to get WSE elevation
+
+        Parameters
+        ----------
+        da_xs_profile: ndarray
+            Elevations of the stream cross section
+        i_cross_section_number: int
+            Index of the cross section cell
+        d_z_target: float
+            Target elevation that defines the bank
+        elevation_wanter: str
+            Determines if the elevation is the bank elevation or the water surface elevation                
+
+
+        Returns
+        -------
+        i_cross_section_number: int
+            Updated cell index that defines the bank
+
+        """
+
+        # Loop on the cells of the cross section
+        for entry in range(1, i_cross_section_number):
+            # Check if the profile elevation matches the target elevation
+            if profile[entry] >= self.get_thalweg() + 0.1:
+                return entry - 1 if wse else entry
+
+                
+
+        # Return to the calling function
+        return i_cross_section_number
+    
+    def _find_bank_using_width_to_depth_ratio(self):
+        """
+        da_xs_profile1: ndarray
+            Elevations of the stream cross section on one side
+        da_xs_profile2: ndarray
+            Elevations of the stream cross section on the other side
+        xs1_n: int
+            Index of the cross section cells on one of the cross section
+        xs2_n: int
+            Index of the cross section cells on the other side of the cross section
+        d_distance_z: float
+            Incremental distance per cell parallel to the orientation of the cross section
+
+        """
+
+        # We don't use mannings n in this func, so these are just dummys (they are generated really quickly)
+        d_bottom_elevation = self.get_thalweg()
+        d_depth = 0
+        d_new_width_to_depth_ratio = 0
+        d_width_to_depth_ratio = np.inf  # Start with a large value
+
+        prev_t1 = 0.
+        prev_t2 = 0.
+
+        # we will assume that if we get to a depth of 25 meters, something has gone wrong
+        while d_new_width_to_depth_ratio <= d_width_to_depth_ratio and d_depth <= 25:
+            d_depth += 0.01
+            d_wse = d_bottom_elevation + d_depth
+            
+            # Calculate stream geometry for both sides
+            # T1 = calculate_top_width(da_xs_profile1_sliced, d_wse, d_distance_z)
+            # T2 = calculate_top_width(da_xs_profile2_sliced, d_wse, d_distance_z)
+            
+            # TW = T1 + T2
+            T1 = self._calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n)
+            T2 = self._calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n)
+            TW = T1 + T2
+            d_new_width_to_depth_ratio = TW / d_depth
+
+            if d_new_width_to_depth_ratio > d_width_to_depth_ratio:
+                # Recalculate the last valid depth
+                d_depth -= 0.01
+                T1 = prev_t1
+                T2 = prev_t2            
+                break
+
+            d_width_to_depth_ratio = d_new_width_to_depth_ratio
+            prev_t1 = T1
+            prev_t2 = T2
+
+        if d_depth < 25:
+            i_bank_1_index = int(T1 / self.dz)
+            i_bank_2_index = int(T2 / self.dz)
+        # if we have made it to 25 on d_depth, something is wrong and the banks will be set at the stream cell
+        elif d_depth >= 25:
+            i_bank_1_index = 0
+            i_bank_2_index = 0
+
+        return (i_bank_1_index, i_bank_2_index)
+    
+    def _find_bank_inflection_point(self, da_xs_profile: np.ndarray, i_cross_section_number: int, window_length: int = 11, polyorder: int = 3):
+        """
+        Finds the cell containing the bank of the cross section, with smoothing applied.
+
+        Parameters
+        ----------
+        da_xs_profile: ndarray
+            Elevations of the stream cross section
+        i_cross_section_number: int
+            Index of the cross section cell
+        d_distance_z: float
+            Incremental distance per cell parallel to the orientation of the cross section
+        window_length: int, optional
+            The length of the filter window for smoothing (must be an odd number, default is 11)
+        polyorder: int, optional
+            The order of the polynomial used to fit the samples for smoothing (default is 3)
+
+        Returns
+        -------
+        i_cross_section_number: int
+            Updated cell index that defines the bank
+        """
+        # Apply smoothing to the cross-section data
+        # da_xs_smooth = da_xs_profile
+        # If our window is bigger than the number of wet cells, than we need to adjust the window size and polyorder.
+        # Otherwise, the smoothing will go wild because of 9999 next to 0, not erroring but producing a bad result.
+        window_length = min(window_length, i_cross_section_number)
+        polyorder = min(polyorder, window_length - 1)
+        try:
+            da_xs_smooth = savgol_filter(da_xs_profile[:i_cross_section_number], window_length=window_length, polyorder=polyorder)
+        except np.linalg.LinAlgError:
+            # If the rare case smoothing fails, just use original profile
+            da_xs_smooth = da_xs_profile
+            
+        return self._find_bank_inflection_point_helper(da_xs_smooth, i_cross_section_number)
+
+    def _find_bank_inflection_point_helper(self, da_xs_smooth: np.ndarray, i_cross_section_number: int) -> int:
+        # Loop on the smoothed cross-section cells
+        entry = 0
+        previous_delta_elevation = 0.0
+        total_width = 0.0
+        while entry < min(i_cross_section_number, len(da_xs_smooth) - 1):
+            elevation_0 = da_xs_smooth[entry]
+            elevation_1 = da_xs_smooth[entry + 1]
+
+            current_delta_elevation = elevation_1 - elevation_0
+
+            if current_delta_elevation >= previous_delta_elevation:
+                previous_delta_elevation = current_delta_elevation
+                total_width += self.dz
+                entry += 1  # move forward
+            else:
+                # Found the bank – go back one if needed
+                return entry  # or return entry - 1 if you want the previous one
+
+        # Return to the calling function
+        return 0
+    
+    def _adjust_one_side_for_bathymetry(self, i_bank_index: int, d_total_bank_dist: float,
+                                        d_trap_base: float, d_distance_h: float, ia_xc_r_index_main: np.ndarray, 
+                                        ia_xc_c_index_main: np.ndarray, da_xs_profile: np.ndarray, dm_output_bathymetry: np.ndarray,
+                                        d_side_dist: float, d_y_bathy: float, d_y_depth: float):
+        """
+        Adjusts the profile for the estimated bathymetry
+
+        Parameters
+        ----------
+        da_xs_profile: ndarray
+            Elevations of the stream cross section
+        i_bank_index: int
+            Distance in index space from the stream to the bank
+        d_total_bank_dist: float
+            Distance to the bank estimated in unit space
+        d_trap_base: float
+            Bottom distance of the stream cross section
+        d_distance_z: float
+            Incremental distance per cell parallel to the orientation of the cross section
+        d_distance_h: float
+            Distance of the slope section of the trapezoidal channel.  Typically d_distance_h = 0.2* TW of Trapezoid
+        d_y_bathy: float
+            Bathymetry elevation of the bottom
+        d_y_depth: float
+            Depth.  Basically water surface elevation (WSE) minus d_y_bathy
+        dm_output_bathymetry: ndarray
+            Output bathymetry matrix
+        ia_xc_r_index_main: ndarray
+            Row indices for the stream cross section
+        ia_xc_c_index_main: ndarray
+            Column indices for the stream cross section
+
+        Returns
+        -------
+        None. Values are updated in the output bathymetry matrix
+
+        """
+
+        # If banks are calculated, make an adjustment to the trapezoidal bathymetry
+        if i_bank_index <= 0:
+            return
+        
+        # Loop over the bank width offset indices
+        for x in range(min(i_bank_index + 1, len(ia_xc_r_index_main))):
+            # Calculate the distance to the bank
+            d_dist_cell_to_bank = (i_bank_index - x) * self.dz + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
+            # lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
+
+            # if lc_grid_val<0 or (i_lc_water_value>0 and lc_grid_val!=i_lc_water_value):
+            #     return
+
+            # # Joseph added this because it looks like we aren't getting a bathymetry output for the first cell in the cross-section
+            # if x == 0:
+            #     # If the cell is the first cell, then set it to the bottom elevation of the trapezoid.
+            #     da_xs_profile[x] = d_y_bathy
+            #     dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+            # If the cell is in the flat part of the trapezoidal cross-section, set it to the bottom elevation of the trapezoid.
+            if d_dist_cell_to_bank > d_distance_h:
+                if self.b_bathy_use_banks == False and d_y_bathy < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                    da_xs_profile[x] = d_y_bathy
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                elif self.b_bathy_use_banks == True:
+                    da_xs_profile[x] = d_y_bathy
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+            # If the cell is in the slope part of the trapezoid you need to find the elevation based on the slope of the trapezoid side.
+            elif d_dist_cell_to_bank <= d_distance_h and d_dist_cell_to_bank < d_trap_base + d_distance_h:
+                if self.b_bathy_use_banks == False and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                elif self.b_bathy_use_banks == True:
+                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+            # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevation based on the slope of the trapezoid side.
+            elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
+                d_dist_cell_to_bank_other_side = d_total_bank_dist - d_dist_cell_to_bank
+                if self.b_bathy_use_banks == False and d_dist_cell_to_bank_other_side>0.0 and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))) < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                elif self.b_bathy_use_banks == True:
+                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
+                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                #if (d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h) < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                #    da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
+                #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+            # If the cell is outside of the banks, then just ignore this cell (set it to it's same elevation).  No need to update the output bathymetry raster.
+            elif d_dist_cell_to_bank <= 0 or d_dist_cell_to_bank >= d_total_bank_dist:
+                return
+
+
+            
+            #JUST FOR TESTING
+            #da_xs_profile[x] = d_y_bathy
+            #dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+        return
+    
+    def Calculate_Bathymetry_Based_on_WSE_or_LC(self, d_q_baseflow: float, d_slope_use: float, output_bathymetry: np.ndarray):
+        """
+        Calculate bathymetry based on water surface elevations.
+        """
+
+
+        # set the function used to none before we start running things
+        function_used = None
+        
+        # First find the bank information
+        if self.b_FindBanksBasedOnLandCover:   
+            (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = self._find_wse_and_banks_by_lc()
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+            if i_total_bank_cells > 1:
+                function_used = "find_wse_and_banks_by_lc"
+        else:
+            i_bank_1_index = self._find_bank(self.da_xs_profile1, self.xs1_n, wse=True)
+            i_bank_2_index = self._find_bank(self.da_xs_profile2, self.xs2_n, wse=True)
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+            if i_total_bank_cells > 1:
+                function_used = "find_wse_and_banks_by_flat_water"
+
+        if i_total_bank_cells <= 1:
+            (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+            if i_total_bank_cells > 1:
+                function_used = "find_bank_using_width_to_depth_ratio"
+
+        if i_total_bank_cells <= 1:
+            i_bank_1_index = self._find_bank_inflection_point(self.da_xs_profile1, self.xs1_n)
+            i_bank_2_index = self._find_bank_inflection_point(self.da_xs_profile2, self.xs2_n)
+            i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+            if i_total_bank_cells > 1:
+                function_used = "find_bank_inflection_point"
+
+        if i_total_bank_cells < 1:
+            i_total_bank_cells = 1
+
+        #Trapezoid Shape
+        #      d_total_bank_dist 
+        #   -----------------------
+        #    -                   -
+        #     -                 -
+        #      -               -
+        #       ---------------
+        #         d_trap_base
+        #  |    | <-d_h_dist->|    |
+        #                     |    |<--d_h_dist = d_bathymetry_trapzoid_height * d_total_bank_dist
+        # d_bathymetry_trapzoid_height is the fraction of d_total_bank_dist that is for the sloped part (see Follum et al., 2023).
+        #        Basically, it assumes ~40% of the total top-width of the trapezoid is part of the sloping part
+        #        Typically, d_bathymetry_trapzoid_height is set to 0.2
+        
+        d_total_bank_dist = i_total_bank_cells * self.dz
+        d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
+        d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+
+        d_y_bathy = 0.0  # Initialize d_y_bathy to avoid UnboundLocalError
+
+        if d_q_baseflow > 0.0 and function_used != None:
+            d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+            if d_y_depth >= 25:
+                if i_total_bank_cells <= 1:
+                    (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
+                    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+                    d_total_bank_dist = i_total_bank_cells * self.dz
+                    d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
+                    d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+                    d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+                    function_used = "find_bank_using_width_to_depth_ratio"
+
+                if d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
+                    i_bank_1_index = self._find_bank_inflection_point(self.da_xs_profile1, self.xs1_n)
+                    i_bank_2_index = self._find_bank_inflection_point(self.da_xs_profile2, self.xs2_n)
+                    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+                    d_total_bank_dist = i_total_bank_cells * self.dz
+                    d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
+                    d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+                    d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+                    function_used = "find_bank_inflection_point"
+
+                if d_y_depth >= 25:
+                    d_y_depth = 0.0
+                    d_y_bathy = self.get_thalweg() - d_y_depth
+                    i_bank_1_index = 0
+                    i_bank_2_index = 0
+                    i_total_bank_cells = 1
+            if i_total_bank_cells > 1:
+                d_y_bathy = self.get_thalweg() - d_y_depth
+                self._adjust_one_side_for_bathymetry(i_bank_1_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row1_index_main, self.ia_xc_column1_index_main, self.da_xs_profile1, output_bathymetry, 0.0, d_y_bathy, d_y_depth)
+                self._adjust_one_side_for_bathymetry(i_bank_2_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main, self.da_xs_profile2, output_bathymetry, 0.0, d_y_bathy, d_y_depth)
+
+        else:
+            d_y_depth = 0.0
+
+        return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
 @njit(cache=True)
 def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
@@ -427,3 +818,68 @@ def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_
 
     # Return to the calling function
     return d_distance_z
+
+def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_width: float, d_slope: float, d_mannings_n: float):
+    """
+    Estimates the depth iteratively by comparing the calculated flow to the baseflow
+
+    Parameters
+    ----------
+    d_baseflow: float
+        Baseflow input for flow convergence calculation
+    d_bottom_width: float
+        Bottom width of the stream
+    d_top_width: float
+        Top width of the stream
+    d_slope: float
+        Slope of the stream
+    d_mannings_n: float
+        Manning's roughness of the stream
+
+    Returns
+    -------
+    d_working_depth: float
+        Estimated depth of the stream
+
+    """
+
+    # Calculate the average width of the stream
+    d_average_width = (d_top_width - d_bottom_width) * 0.5
+
+    # Assign a starting depth
+    d_depth_start = 0.0
+
+    # Set the incremental convergence targets
+    l_dy_list = [1.0, 0.5, 0.1, 0.01]
+    
+    # Loop over each convergence target
+    for d_dy in l_dy_list:
+        # Set the initial value
+        d_flow_calculated = 0.0
+        d_working_depth = d_depth_start
+
+        # This will prevent infinite loops
+        d_max_depth = d_depth_start + 25
+
+        # Converge until the calculate flow is above the baseflow
+        while d_flow_calculated <= d_baseflow and d_working_depth < d_max_depth:
+            d_working_depth = d_working_depth + d_dy
+            d_area = d_working_depth * (d_bottom_width + d_top_width) / 2.0
+            d_perimeter = d_bottom_width + 2.0 * math.sqrt(d_average_width * d_average_width + d_working_depth * d_working_depth)
+            d_hydraulic_radius = d_area / d_perimeter
+            d_flow_calculated = (1.0 / d_mannings_n) * d_area * d_hydraulic_radius**(2 / 3) * d_slope**0.5
+
+        # Update the starting depth
+        d_depth_start = d_working_depth - d_dy
+
+    # Update the calculated depth
+    d_working_depth = d_working_depth - d_dy
+
+    # Debugging variables
+    # A = y * (B + TW) / 2.0
+    # P = B + 2.0*math.sqrt(H*H + y*y)
+    # R = A / P
+    # Qcalc = (1.0/n)*A*math.pow(R,(2/3)) * pow(slope,0.5)
+    # print(str(d_top_width) + ' ' + str(d_working_depth) + '  ' + str(d_flow_calculated) + ' vs ' + str(d_baseflow))
+
+    return d_working_depth
