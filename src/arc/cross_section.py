@@ -6,11 +6,12 @@ from scipy.signal import savgol_filter
 
 class CrossSection:
     def __init__(self, 
-                 i_center_point: int, 
-                 dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float,
+                 dx: float, dy: float,
+                 i_precompute_angles: int, d_precompute_angles: float,
                  dm_elevation: np.ndarray, dm_land_use: np.ndarray,
                  params: dict):
-        self.i_center_point = i_center_point
+        self.d_x_section_distance = params['d_x_section_distance']
+        self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
 
         self.da_xs_profile1 = np.zeros(self.i_center_point + 1)
         self.da_xs_profile2 = np.zeros(self.i_center_point + 1)
@@ -28,10 +29,10 @@ class CrossSection:
         self.b_bathy_use_banks = params["b_bathy_use_banks"]
         self.d_bathymetry_trapzoid_height = params["d_bathymetry_trapzoid_height"]
 
-        self.create_cross_section_ordinates(i_center_point, dx, dy, i_precompute_angles, d_precompute_angles)
+        self.create_cross_section_ordinates(dx, dy, i_precompute_angles, d_precompute_angles)
 
-    def create_cross_section_ordinates(self, i_center_point: int, dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float):
-        self.i_center_point = i_center_point
+    def create_cross_section_ordinates(self, dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float):
+        i_center_point = self.i_center_point
         self.ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
         self.ia_xc_dc_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
         self.ia_xc_dr_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1

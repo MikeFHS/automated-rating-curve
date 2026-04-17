@@ -3035,32 +3035,10 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     LOG.info('Cellsize X = ' + str(dx))
     LOG.info('Cellsize Y = ' + str(dy))
 
+    # Create cross section, with precomputed angles
     i_precompute_angles = 30
     d_precompute_angles = np.pi / i_precompute_angles
-    
-    # Pull cross sections
-    i_center_point = int((params['d_x_section_distance'] / (sum([dx, dy]) * 0.5)) / 2.0) + 1
-    x_section = CrossSection(i_center_point, dx, dy, i_precompute_angles, d_precompute_angles, dm_elevation, dm_land_use, params)
-    # CrossSection.create_cross_section_ordinates(i_center_point, dx, dy, i_precompute_angles, d_precompute_angles)
-
-    da_xs_profile1 = np.zeros(i_center_point + 1)
-    da_xs_profile2 = np.zeros(i_center_point + 1)
-    ia_lc_xs1 = np.zeros(i_center_point + 1)
-    ia_lc_xs2 = np.zeros(i_center_point + 1)
-    ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    ia_xc_dc_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    ia_xc_dr_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    ia_xc_dc_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-    d_distance_z = np.zeros(i_precompute_angles + 1, dtype=float)
-    da_xc_main_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1))
-    da_xc_second_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1))
-
-    for i in range(i_precompute_angles+1):
-        d_xs_direction = d_precompute_angles * i
-        # Get the Cross-Section Ordinates
-        from arc.cross_section import get_xs_index_values_precalculated
-        d_distance_z[i]= get_xs_index_values_precalculated(ia_xc_dr_index_main[i], ia_xc_dc_index_main[i], ia_xc_dr_index_second[i], ia_xc_dc_index_second[i], da_xc_main_fract[i], da_xc_second_fract[i], d_xs_direction,
-                                                                                           i_center_point, dx, dy)
+    x_section = CrossSection(dx, dy, i_precompute_angles, d_precompute_angles, dm_elevation, dm_land_use, params)
 
     # Find all the different angle increments to test
     l_angles_to_test = [0.0]
@@ -3081,12 +3059,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     l_angles_to_test = np.multiply(l_angles_to_test, math.pi / 180.0)
     LOG.info('  Angles (radians) to evaluate= ' + str(l_angles_to_test))
 
-
     # Get the extents of the boundaries
-    i_row_bottom = i_boundary_number
-    i_row_top = nrows + i_boundary_number-1
-    i_column_bottom = i_boundary_number
-    i_column_top = ncols + i_boundary_number-1
     x_section.set_boundary_extents(i_boundary_number, nrows, ncols)
 
     # This is now a model input
@@ -3178,10 +3151,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
 
     # Extract some parameters
-    d_bathymetry_trapzoid_height = params['d_bathymetry_trapzoid_height']
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
-    b_FindBanksBasedOnLandCover = params['b_FindBanksBasedOnLandCover']
     b_reach_average_curve_file = params['b_reach_average_curve_file']
 
     d_depth_increment_big = 0.5
@@ -3211,7 +3182,6 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
         # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
         d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, i_general_direction_distance)
-        #dm_output_streamangles[i_row_cell,i_column_cell] = d_xs_direction * 180.0 / math.pi
 
         # Get the Slope of each Stream Cell. Slope should be in m/m
         if s_stream_slope_method == 'local_average':
@@ -3232,106 +3202,40 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             #Default to using the 'local_average' method
             d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
 
-        #We now precompute the cross-section ordinates
+        # Now Pull the Cross-Section again with the new angle
         if d_xs_direction > np.pi:
             i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
         else:
             i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
 
-        # Now Pull a Cross-Section
-        ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest]
-        ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest]
-        ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest] * -1
-        ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest] * -1
-
-        da_xs_profile1[:] = 0.0
-        da_xs_profile2[:] = 0.0
-
-        # todo: These appear to be resetting thoe center point only?
-        xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
-                                            i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest],  i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-        xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
-                                            i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1,  da_xc_main_fract[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest], i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
-
         x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
-
-        if not all(x_section.da_xs_profile1[:xs1_n] == da_xs_profile1[:xs1_n]) or not all(x_section.da_xs_profile2[:xs2_n] == da_xs_profile2[:xs2_n]):
-            pass 
-
+        
         # Adjust to the lowest-point in the Cross-Section
-        i_lowest_point_index_offset=0
-        d_dem_low_point_elev = x_section.get_thalweg()
         i_low_spot_range = params['i_low_spot_range']
         if i_low_spot_range > 0:
             x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
-            i_lowest_point_index_offset = adjust_cross_section_to_lowest_point(i_lowest_point_index_offset, d_dem_low_point_elev, da_xs_profile1, da_xs_profile2, ia_xc_r1_index_main,
-                                                                            ia_xc_r2_index_main, ia_xc_c1_index_main, ia_xc_c2_index_main, xs1_n, xs2_n, i_center_point, i_low_spot_range)
-
-
-        # The r and c for the stream cell is adjusted because it may have moved
-        i_row_cell = ia_xc_r1_index_main[0]
-        i_column_cell = ia_xc_c1_index_main[0]
-        if (i_row_cell, i_column_cell) != x_section.get_row_col():
-            pass
-
-        # re-sample the cross-section to make sure all of the low-spot data has the same values through interpolation
-        if abs(i_lowest_point_index_offset) > 0:
-            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
-                                                    i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest],  da_xc_second_fract[i_precompute_angle_closest],  i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2,  dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
-                                                    i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1, da_xc_main_fract[i_precompute_angle_closest], da_xc_second_fract[i_precompute_angle_closest],  i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
-            # set the low-spot value to the new low spot in the cross-section 
-            d_dem_low_point_elev = x_section.get_thalweg()
-
-        if x_section.get_thalweg() != d_dem_low_point_elev:
-            pass
+            # The r and c for the stream cell is adjusted because it may have moved
+            i_row_cell, i_column_cell = x_section.get_row_col()
         
+        d_dem_low_point_elev = x_section.get_thalweg()
 
         # Adjust cross-section angle to ensure shortest top-width at a specified depth
         if d_increments > 0:
-            d_xs_direction = get_best_xsection_angle(l_angles_to_test, d_xs_direction, d_precompute_angles,
-                          i_row_cell, i_column_cell, i_entry_cell,
-                          ia_xc_dr_index_main, ia_xc_dc_index_main, ia_xc_dr_index_second, ia_xc_dc_index_second,
-                          da_xs_profile1, dm_elevation, i_center_point,
-                          da_xc_main_fract,  da_xc_second_fract,  
-                          i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, ia_lc_xs2,
-                          d_distance_z, da_xs_profile2)
-            
-            if abs(d_xs_direction - x_section.get_best_xsection_angle(d_precompute_angles, l_angles_to_test)) > 1e-10:
-                pass
-            
-            #We now precompute the cross-section ordinates
+            d_xs_direction = x_section.get_best_xsection_angle(d_precompute_angles, l_angles_to_test)
+
+            # Now Pull the Cross-Section again with the new angle
             if d_xs_direction > np.pi:
                 i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
             else:
                 i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
 
-            ia_xc_r1_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest]
-            ia_xc_r2_index_main = i_row_cell + ia_xc_dr_index_main[i_precompute_angle_closest] * -1
-            ia_xc_c1_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest]
-            ia_xc_c2_index_main = i_column_cell + ia_xc_dc_index_main[i_precompute_angle_closest] * -1
-            
-            #Set the index values to be within the confines of the raster
-            # ia_xc_r1_index_main = np.clip(ia_xc_r1_index_main,0,nrows+2*i_boundary_number-1)
-            # ia_xc_r2_index_main = np.clip(ia_xc_r2_index_main,0,nrows+2*i_boundary_number-1)
-            # ia_xc_c1_index_main = np.clip(ia_xc_c1_index_main,0,ncols+2*i_boundary_number-1)
-            # ia_xc_c2_index_main = np.clip(ia_xc_c2_index_main,0,ncols+2*i_boundary_number-1)
-
-            xs1_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile1, dm_elevation, i_center_point, ia_xc_r1_index_main, ia_xc_c1_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest],
-                                                  i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest], da_xc_main_fract[i_precompute_angle_closest],  da_xc_second_fract[i_precompute_angle_closest],  i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs1, dm_land_use)
-            xs2_n = sample_cross_section_from_dem(i_entry_cell, da_xs_profile2, dm_elevation, i_center_point, ia_xc_r2_index_main, ia_xc_c2_index_main, i_row_cell + ia_xc_dr_index_second[i_precompute_angle_closest] * -1,
-                                              i_column_cell + ia_xc_dc_index_second[i_precompute_angle_closest] * -1, da_xc_main_fract[i_precompute_angle_closest],  da_xc_second_fract[i_precompute_angle_closest],  i_row_bottom, i_row_top, i_column_bottom, i_column_top, ia_lc_xs2, dm_land_use)
             x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
-            if not all(x_section.da_xs_profile1[:xs1_n] == da_xs_profile1[:xs1_n]) or not all(x_section.da_xs_profile2[:xs2_n] == da_xs_profile2[:xs2_n]):
-                pass 
-
-
 
         # Burn bathymetry profile into cross-section profile
         # "Be the banks for your river" - Needtobreathe
                 
         # If you don't have a cross-section, skip it or fill in empty values for the reach average processing
-        if xs1_n<=0 and xs2_n<=0:
+        if x_section.xs1_n<=0 and x_section.xs2_n<=0:
             # print("I'm skipping because xs1_n<=0 and xs2_n<=0")
             if b_reach_average_curve_file:
                 All_COMID_curve_list.append(i_cell_comid)
@@ -3349,17 +3253,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(d_q_baseflow, d_slope_use, dm_output_bathymetry)
         #This method calculates the banks based on the Riverbank
         elif b_bathy_use_banks and s_output_bathymetry_path != '':
-            if x_section.get_thalweg() != d_dem_low_point_elev:
-                pass
-            expected = Calculate_Bathymetry_Based_on_RiverBank_Elevations(da_xs_profile1, xs1_n, da_xs_profile2, xs2_n, ia_lc_xs1, ia_lc_xs2, dm_land_use, d_dem_low_point_elev, d_distance_z[i_precompute_angle_closest], d_slope_use, 
-                                                                        ia_xc_r1_index_main, ia_xc_c1_index_main, ia_xc_r2_index_main, ia_xc_c2_index_main, d_q_baseflow, dm_output_bathymetry, i_lc_water_value, dm_elevation, 
-                                                                    b_FindBanksBasedOnLandCover, ia_lc_xs1[0], b_bathy_use_banks, d_bathymetry_trapzoid_height)  
-            result = x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, dm_output_bathymetry)
-            # # Check that profile arrays are the same
-        if i_entry_cell == 52:
-            pass
-        if not all(x_section.da_xs_profile1[:xs1_n] == da_xs_profile1[:xs1_n]) or not all(x_section.da_xs_profile2[:xs2_n] == da_xs_profile2[:xs2_n]):
-            pass
+            x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, dm_output_bathymetry)
+
         # Calculate the volumes
         # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
         # This is preferred for VDTDatabase method.
@@ -3368,7 +3263,6 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         if s_output_flood:
             dm_out_flood[i_row_cell,i_column_cell] = 3
         
-
         # Set output arrays to zero
         da_total_t *= 0
         da_total_a *= 0
@@ -3389,14 +3283,13 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         x_section.set_mannings_n_values(dm_manning_n_raster)
 
         # space between ordinates in the cross-section
-        d_ordinate_dist = d_distance_z[i_precompute_angle_closest]
+        d_ordinate_dist = x_section.d_ordinate_dist
 
         # we'll assume the results are acceptable until we think otherwise
         acceptable = True
 
         # This is the bottom of the channel
         d_maxflow_wse_initial = x_section.get_thalweg()
-        # d_maxflow_wse_initial = x_section.get_thalweg()
 
         # set this as the default in case we don't find a better one
         d_maxflow_wse_final = -999.0
@@ -3422,8 +3315,6 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
             d_maxflow_wse_final = np.round(wse_lower, 3) if np.round(f_lower, 5) == 0 else np.round(wse_upper, 3)
             d_q_sum = x_section.calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared)
-
-
 
         # Let's see if the volume-fill approach gave us a better answer and use that if it did
         # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
@@ -3710,19 +3601,9 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         
         # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
         if acceptable and d_maxflow_wse_final > 0.0:
-        
             # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
             d_inc_y = (d_maxflow_wse_final - x_section.get_thalweg()) / i_number_of_increments
             i_number_of_elevations = i_number_of_increments + 1
-            if i_entry_cell == 52:
-                pass
-            # i_start_elevation_index, i_last_elevation_index = flood_incrementsog(i_number_of_increments + 1, 
-            #                                                                 d_inc_y, 
-            #                                                                 da_xs_profile1, da_xs_profile2, xs1_n, xs2_n,
-            #                                                                 d_ordinate_dist, 
-            #                                                                 x_section.mannings_n1, x_section.mannings_n2, d_slope_use, da_total_t, 
-            #                                                                 da_total_a, da_total_p, da_total_v, da_total_q, 
-            #                                                                 da_total_wse, d_q_sum)
             i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                             d_inc_y, 
                                                                             x_section, d_slope_use, da_total_t, 
@@ -3820,19 +3701,19 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             XS_Col_List.append(i_column_cell - i_boundary_number)
             if b_modified_dem:
                 # This is to remove the +100 if a negative value was in the DEM elevation
-                da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n]-100)
-                da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]-100) 
+                da_xs_profile1_str = array_to_string(x_section.da_xs_profile1[0:x_section.xs1_n]-100)
+                da_xs_profile2_str = array_to_string(x_section.da_xs_profile2[0:x_section.xs2_n]-100) 
             else:
-                da_xs_profile1_str = array_to_string(da_xs_profile1[0:xs1_n])
-                da_xs_profile2_str = array_to_string(da_xs_profile2[0:xs2_n]) 
-            dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[ia_xc_r1_index_main[0:xs1_n], ia_xc_c1_index_main[0:xs1_n]]) 
-            dm_manning_n_raster2_str = array_to_string(dm_manning_n_raster[ia_xc_r2_index_main[0:xs2_n], ia_xc_c2_index_main[0:xs2_n]])
+                da_xs_profile1_str = array_to_string(x_section.da_xs_profile1[0:x_section.xs1_n])
+                da_xs_profile2_str = array_to_string(x_section.da_xs_profile2[0:x_section.xs2_n]) 
+            dm_manning_n_raster1_str = array_to_string(dm_manning_n_raster[x_section.ia_xc_row1_index_main[0:x_section.xs1_n], x_section.ia_xc_column1_index_main[0:x_section.xs1_n]]) 
+            dm_manning_n_raster2_str = array_to_string(dm_manning_n_raster[x_section.ia_xc_row2_index_main[0:x_section.xs2_n], x_section.ia_xc_column2_index_main[0:x_section.xs2_n]])
 
             # calculate the location of the cross-section end points
-            r1 = ia_xc_r1_index_main[xs1_n-1]-i_boundary_number
-            c1 = ia_xc_c1_index_main[xs1_n-1]-i_boundary_number
-            r2 = ia_xc_r2_index_main[xs2_n-1]-i_boundary_number
-            c2 = ia_xc_c2_index_main[xs2_n-1]-i_boundary_number
+            r1 = x_section.ia_xc_row1_index_main[x_section.xs1_n-1]-i_boundary_number
+            c1 = x_section.ia_xc_column1_index_main[x_section.xs1_n-1]-i_boundary_number
+            r2 = x_section.ia_xc_row2_index_main[x_section.xs2_n-1]-i_boundary_number
+            c2 = x_section.ia_xc_column2_index_main[x_section.xs2_n-1]-i_boundary_number
             XS_da_xs_profile1_str.append(da_xs_profile1_str)
             XS_da_xs_profile2_str.append(da_xs_profile2_str)
             # dm_manning_n_raster1_str
