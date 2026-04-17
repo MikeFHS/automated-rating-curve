@@ -16,6 +16,8 @@ class CrossSection:
         self.da_xs_profile2 = np.zeros(self.i_center_point + 1)
         self.ia_lc_xs1 = np.zeros(self.i_center_point + 1)
         self.ia_lc_xs2 = np.zeros(self.i_center_point + 1)
+        self.mannings_n1 = np.zeros(self.i_center_point + 1)
+        self.mannings_n2 = np.zeros(self.i_center_point + 1)
 
         self.dm_elevation = dm_elevation
         self.dm_land_use = dm_land_use
@@ -64,7 +66,7 @@ class CrossSection:
         self.xs2_n = 0
         self.da_xs_profile1[:] = 0.0
         self.da_xs_profile2[:] = 0.0
-        self.dz = self.d_distance_z[self.i_precompute_angle_closest]
+        self.d_ordinate_dist = self.d_distance_z[self.i_precompute_angle_closest] # space between ordinates in the cross-section
 
         self.ia_xc_row1_index_main = self.row + self.ia_xc_dr_index_main[self.i_precompute_angle_closest]
         self.ia_xc_row2_index_main = self.row - self.ia_xc_dr_index_main[self.i_precompute_angle_closest]
@@ -270,7 +272,7 @@ class CrossSection:
         return d_shortest_tw_angle
     
     
-    def check_for_negative_depths(self, da_y_depth: np.ndarray):
+    def _check_for_negative_depths(self, da_y_depth: np.ndarray):
         # Take action if there are values < 0
         lt_0_in_depths = False
         i_target_index = 0
@@ -281,14 +283,14 @@ class CrossSection:
 
         return lt_0_in_depths, i_target_index
     
-    def get_distance_to_use(self, da_y_depth: np.ndarray, i_target_index: int):
-        return self.dz * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
+    def _get_distance_to_use(self, da_y_depth: np.ndarray, i_target_index: int):
+        return self.d_ordinate_dist * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
     
     def calculate_top_width_up_to_point(self, i_target_index: int, d_dist_use: float):
-        return self.dz * (i_target_index - 1) + d_dist_use
+        return self.d_ordinate_dist * (i_target_index - 1) + d_dist_use
 
     def calculate_top_width_from_all(self, da_y_depth: np.ndarray):
-        return self.dz * (da_y_depth.shape[0] - 1)
+        return self.d_ordinate_dist * (da_y_depth.shape[0] - 1)
 
     def _get_stream_depths(self, d_wse: float, profile: np.ndarray, n: int):
         da_y_depth = d_wse - profile[:n]
@@ -304,11 +306,11 @@ class CrossSection:
         if da_y_depth is None:
             return 0
 
-        lt_0_in_depths, i_target_index = self.check_for_negative_depths(da_y_depth)
+        lt_0_in_depths, i_target_index = self._check_for_negative_depths(da_y_depth)
 
         if lt_0_in_depths:
             i_target_index += 1
-            d_dist_use = self.get_distance_to_use(da_y_depth, i_target_index)
+            d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
             return self.calculate_top_width_up_to_point(i_target_index, d_dist_use)
         else:
             return self.calculate_top_width_from_all(da_y_depth)
@@ -439,8 +441,8 @@ class CrossSection:
             prev_t2 = T2
 
         if d_depth < 25:
-            i_bank_1_index = int(T1 / self.dz)
-            i_bank_2_index = int(T2 / self.dz)
+            i_bank_1_index = int(T1 / self.d_ordinate_dist)
+            i_bank_2_index = int(T2 / self.d_ordinate_dist)
         # if we have made it to 25 on d_depth, something is wrong and the banks will be set at the stream cell
         elif d_depth >= 25:
             i_bank_1_index = 0
@@ -497,7 +499,7 @@ class CrossSection:
 
             if current_delta_elevation >= previous_delta_elevation:
                 previous_delta_elevation = current_delta_elevation
-                total_width += self.dz
+                total_width += self.d_ordinate_dist
                 entry += 1  # move forward
             else:
                 # Found the bank – go back one if needed
@@ -551,7 +553,7 @@ class CrossSection:
         # Loop over the bank width offset indices
         for x in range(min(i_bank_index + 1, len(ia_xc_r_index_main))):
             # Calculate the distance to the bank
-            d_dist_cell_to_bank = (i_bank_index - x) * self.dz + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
+            d_dist_cell_to_bank = (i_bank_index - x) * self.d_ordinate_dist + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
             # lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
 
             # if lc_grid_val<0 or (i_lc_water_value>0 and lc_grid_val!=i_lc_water_value):
@@ -658,7 +660,7 @@ class CrossSection:
         #        Basically, it assumes ~40% of the total top-width of the trapezoid is part of the sloping part
         #        Typically, d_bathymetry_trapzoid_height is set to 0.2
         
-        d_total_bank_dist = i_total_bank_cells * self.dz
+        d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
         d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
 
@@ -670,7 +672,7 @@ class CrossSection:
                 if i_total_bank_cells <= 1:
                     (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
                     i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-                    d_total_bank_dist = i_total_bank_cells * self.dz
+                    d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
                     d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
                     d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
                     d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
@@ -680,7 +682,7 @@ class CrossSection:
                     i_bank_1_index = self._find_bank_inflection_point(self.da_xs_profile1, self.xs1_n)
                     i_bank_2_index = self._find_bank_inflection_point(self.da_xs_profile2, self.xs2_n)
                     i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-                    d_total_bank_dist = i_total_bank_cells * self.dz
+                    d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
                     d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
                     d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
                     d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
@@ -701,6 +703,80 @@ class CrossSection:
             d_y_depth = 0.0
 
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
+    
+    def set_mannings_n_values(self, dm_manning_n_raster: np.ndarray):
+        self.mannings_n1 = dm_manning_n_raster[self.ia_xc_row1_index_main[:self.xs1_n], self.ia_xc_column1_index_main[:self.xs1_n]]
+        self.mannings_n2 = dm_manning_n_raster[self.ia_xc_row2_index_main[:self.xs2_n], self.ia_xc_column2_index_main[:self.xs2_n]]
+
+    def calculate_stream_geometry(self, da_xs_profile: np.ndarray,
+                                  d_wse: float,
+                                  n: int,
+                                  da_n_profile: np.ndarray = None,) -> tuple[float, ...]:
+        # Initial output
+        d_area, d_perimeter, d_composite_n = 0.0, 0.0, 0.0
+
+        # Estimate the depth of the stream
+        da_y_depth = self._get_stream_depths(d_wse, da_xs_profile, n)
+
+        # Return if the depth is not valid.
+        if da_y_depth is None:
+            return 0, 0, 0
+
+        # Take action if there are values < 0
+        lt_0_in_depths, i_target_index = self._check_for_negative_depths(da_y_depth)
+        
+        if lt_0_in_depths:
+            # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
+            # Get the index of the first bad vadlue
+            i_target_index += 1
+
+            # Calculate the distance to use
+            d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
+
+            # Calculate the geometric variables
+            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
+
+            d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
+            perim_array = calculate_hypotnuse(self.d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
+
+            d_perimeter = np.sum(perim_array) + d_perimeter_i
+            
+            # Calculate the composite n
+            d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
+        else:
+            # All values are positive, so include them all.
+
+            # Calculate the geometric values
+            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
+
+            perim_array = calculate_hypotnuse(self.d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
+
+            d_perimeter = np.sum(perim_array[1:])
+
+            d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
+
+        # Return to the calling function
+        return d_area, d_perimeter, d_composite_n
+
+
+    def calculate_discharge_from_wse(self, wse: float, sqrt_slope: float):
+         # Calculate the geometry
+        A1, P1, np1 = self.calculate_stream_geometry(self.da_xs_profile1, wse, self.xs1_n, self.mannings_n1)
+        A2, P2, np2 = self.calculate_stream_geometry(self.da_xs_profile2, wse, self.xs2_n, self.mannings_n2)
+
+        # Aggregate the geometric properties
+        d_a_sum = A1 + A2
+        d_p_sum = max(P1 + P2, 1e-6)  # Avoid division by zero
+
+        d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+
+        # Check that the mannings n is physically realistic
+        if d_composite_n < 0.0001:
+            d_composite_n = 0.035
+
+        discharge = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * sqrt_slope
+        return discharge
+
 
 @njit(cache=True)
 def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
@@ -883,3 +959,28 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
     # print(str(d_top_width) + ' ' + str(d_working_depth) + '  ' + str(d_flow_calculated) + ' vs ' + str(d_baseflow))
 
     return d_working_depth
+
+@njit(cache=True)
+def calculate_hypotnuse(d_side_one: float, d_side_two: float):
+    """
+    Calculates the hypotenuse distance of a right triangle
+
+    Parameters
+    ----------
+    d_side_one: float
+        Length of the first right triangle side
+    d_side_two: float
+        Length of the second right triangle side
+
+    Returns
+    -------
+    d_distance: float
+        Length of the hypotenuse
+
+    """
+
+    # Calculate the distance
+    d_distance = (d_side_one ** 2 + d_side_two ** 2)**(1/2)
+
+    # Return to the calling function
+    return d_distance
