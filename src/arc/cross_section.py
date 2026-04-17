@@ -286,10 +286,10 @@ class CrossSection:
     def _get_distance_to_use(self, da_y_depth: np.ndarray, i_target_index: int):
         return self.d_ordinate_dist * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
     
-    def calculate_top_width_up_to_point(self, i_target_index: int, d_dist_use: float):
+    def _calculate_top_width_up_to_point(self, i_target_index: int, d_dist_use: float):
         return self.d_ordinate_dist * (i_target_index - 1) + d_dist_use
 
-    def calculate_top_width_from_all(self, da_y_depth: np.ndarray):
+    def _calculate_top_width_from_all(self, da_y_depth: np.ndarray):
         return self.d_ordinate_dist * (da_y_depth.shape[0] - 1)
 
     def _get_stream_depths(self, d_wse: float, profile: np.ndarray, n: int):
@@ -311,9 +311,9 @@ class CrossSection:
         if lt_0_in_depths:
             i_target_index += 1
             d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
-            return self.calculate_top_width_up_to_point(i_target_index, d_dist_use)
+            return self._calculate_top_width_up_to_point(i_target_index, d_dist_use)
         else:
-            return self.calculate_top_width_from_all(da_y_depth)
+            return self._calculate_top_width_from_all(da_y_depth)
 
     def calculate_top_width_of_wse(self, d_wse: float):
         return (
@@ -708,7 +708,7 @@ class CrossSection:
         self.mannings_n1 = dm_manning_n_raster[self.ia_xc_row1_index_main[:self.xs1_n], self.ia_xc_column1_index_main[:self.xs1_n]]
         self.mannings_n2 = dm_manning_n_raster[self.ia_xc_row2_index_main[:self.xs2_n], self.ia_xc_column2_index_main[:self.xs2_n]]
 
-    def calculate_stream_geometry(self, da_xs_profile: np.ndarray,
+    def _calculate_stream_geometry(self, da_xs_profile: np.ndarray,
                                   d_wse: float,
                                   n: int,
                                   da_n_profile: np.ndarray = None,) -> tuple[float, ...]:
@@ -757,12 +757,90 @@ class CrossSection:
 
         # Return to the calling function
         return d_area, d_perimeter, d_composite_n
+    
+    def _calculate_stream_geometry_and_topwidth(self, da_xs_profile: np.ndarray, 
+                              d_wse: float, 
+                              n: int, 
+                              da_n_profile: np.ndarray,) -> tuple[float, ...]:
+        """
+        Estimates the stream geometry
+
+        Uses a composite Manning's n as given by:
+        Composite Manning N based on https://www.hec.usace.army.mil/confluence/rasdocs/ras1dtechref/6.5/theoretical-basis-for-one-dimensional-and-two-dimensional-hydrodynamic-calculations/1d-steady-flow-water-surface-profiles/composite-manning-s-n-for-the-main-channel
+
+        Parameters
+        ----------
+        da_xs_profile: ndarray
+            Elevations of the stream cross section
+        d_wse: float
+            Water surface elevation
+        d_distance_z: float
+            Incremental distance per cell parallel to the orientation of the cross section
+        da_n_profile: float
+            Input initial Manning's n for the stream
+
+        Returns
+        -------
+        d_area, d_perimeter, d_composite_n, d_top_width
+
+        """
+        # Initial output
+        d_area, d_perimeter, d_composite_n, d_top_width = 0.0, 0.0, 0.0, 0.0
+
+        # Estimate the depth of the stream
+        da_y_depth = self._get_stream_depths(d_wse, da_xs_profile, n)
+
+        # Return if the depth is not valid.
+        if da_y_depth is None:
+            return 0, 0, 0, 0
+
+        # Take action if there are values < 0
+        lt_0_in_depths, i_target_index = self._check_for_negative_depths(da_y_depth)
+        
+        if lt_0_in_depths:
+            # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
+            # Get the index of the first bad vadlue
+            i_target_index += 1
+
+            # Calculate the distance to use
+            d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
+
+            # Calculate the geometric variables
+            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
+
+            d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
+            perim_array = calculate_hypotnuse(self.d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
+
+            d_perimeter = np.sum(perim_array) + d_perimeter_i
+            
+            # Calculate the composite n
+            d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
+
+            # Update the top width
+            d_top_width = self._calculate_top_width_up_to_point(i_target_index, d_dist_use)
+
+        else:
+            # All values are positive, so include them all.
+
+            # Calculate the geometric values
+            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
+
+            perim_array = calculate_hypotnuse(self.d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
+
+            d_perimeter = np.sum(perim_array[1:])
+
+            d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
+
+            d_top_width = self._calculate_top_width_from_all(da_y_depth)
+
+        # Return to the calling function
+        return d_area, d_perimeter, d_composite_n, d_top_width
 
 
     def calculate_discharge_from_wse(self, wse: float, sqrt_slope: float):
          # Calculate the geometry
-        A1, P1, np1 = self.calculate_stream_geometry(self.da_xs_profile1, wse, self.xs1_n, self.mannings_n1)
-        A2, P2, np2 = self.calculate_stream_geometry(self.da_xs_profile2, wse, self.xs2_n, self.mannings_n2)
+        A1, P1, np1 = self.calculate_stream_geometry_side_1(wse)
+        A2, P2, np2 = self.calculate_stream_geometry_side_2(wse)
 
         # Aggregate the geometric properties
         d_a_sum = A1 + A2
@@ -776,6 +854,18 @@ class CrossSection:
 
         discharge = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * sqrt_slope
         return discharge
+    
+    def calculate_stream_geometry_side_1(self, wse: float):
+        return self._calculate_stream_geometry(self.da_xs_profile1, wse, self.xs1_n, self.mannings_n1)
+    
+    def calculate_stream_geometry_side_2(self, wse: float):
+        return self._calculate_stream_geometry(self.da_xs_profile2, wse, self.xs2_n, self.mannings_n2)
+    
+    def calculate_stream_geometry_and_topwidth_side_1(self, wse: float):
+        return self._calculate_stream_geometry_and_topwidth(self.da_xs_profile1, wse, self.xs1_n, self.mannings_n1)
+    
+    def calculate_stream_geometry_and_topwidth_side_2(self, wse: float):
+        return self._calculate_stream_geometry_and_topwidth(self.da_xs_profile2, wse, self.xs2_n, self.mannings_n2)
 
 
 @njit(cache=True)
