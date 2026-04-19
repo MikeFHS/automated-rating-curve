@@ -1,0 +1,609 @@
+import numpy as np
+import pandas as pd
+from numba import njit
+from numba.core.errors import TypingError
+from scipy.optimize import curve_fit
+
+from arc.cross_section import CrossSection
+from arc import LOG
+
+class HydraulicData:
+    def __init__(self,  params: dict, b_modified_dem: bool):
+        self.ap_file = params['s_output_ap_database']
+        self.vdt_file = params["s_output_vdt_database"]
+        self.curve_file = params["s_output_curve_file"]
+        self.i_number_of_increments = params['i_number_of_increments']
+        self.b_reach_average_curve_file = params['b_reach_average_curve_file']
+        self.s_xs_output_file = params['s_xs_output_file']
+        self.b_modified_dem = b_modified_dem
+
+        self.da_total_t = np.zeros(self.i_number_of_increments + 1, dtype=float)
+        self.da_total_a = np.zeros(self.i_number_of_increments + 1, dtype=float)
+        self.da_total_p = np.zeros(self.i_number_of_increments + 1, dtype=float)
+        self.da_total_v = np.zeros(self.i_number_of_increments + 1, dtype=float)
+        self.da_total_q = np.zeros(self.i_number_of_increments + 1, dtype=float)
+        self.da_total_wse = np.zeros(self.i_number_of_increments + 1, dtype=float)
+
+        # Here we will capture a list of all stream cell values that will be used if we build a reach average curve file
+        self.All_COMID_curve_list = []
+        self.All_Row_curve_list = []
+        self.All_Col_curve_list = []
+        self.All_BaseElev_curve_list = []
+        self.All_DEM_Elev_curve_list = []
+        self.All_QMax_curve_list = []
+        self.All_Slope_curve_list = []
+        self.All_XS_Angle_curve_list = []
+
+        # instantiate the lists we will use to create the XS File
+        self.XS_COMID_List = []
+        self.XS_Row_List = []
+        self.XS_Col_List = []
+        # da_xs_profile1_str
+        self.XS_da_xs_profile1_str = []
+        self.XS_da_xs_profile2_str = []
+        # dm_manning_n_raster1_str
+        self.XS_dm_manning_n_raster1_str = []
+        self.XS_dm_manning_n_raster2_str = []
+        # d_ordinate_dist
+        self.XS_d_ordinate_dist = []
+        # r1, c1, r2, c2
+        self.XS_r1 = []
+        self.XS_c1 = []
+        self.XS_r2 = []
+        self.XS_c2 = []
+
+        # Create the dictionary and lists that will be used to create our VDT database
+        self.vdt_list: list = []
+        self.q_list = []
+        self.v_list = []
+        self.t_list = []
+        self.wse_list = []
+
+        # Create the dictionary and lists that will be used to create our ATW database
+        self.o_ap_file_dict: dict[str, list] = {}
+        self.o_ap_file_dict['COMID'] = []
+        self.o_ap_file_dict['Row'] = []
+        self.o_ap_file_dict['Col'] = []
+        self.comid_ap_dict_list = self.o_ap_file_dict['COMID']
+        self.row_ap_dict_list = self.o_ap_file_dict['Row']
+        self.col_ap_dict_list = self.o_ap_file_dict['Col']
+        self.ap_column_names = []
+        for i in range(1, self.i_number_of_increments+1):
+            self.o_ap_file_dict[f'q_{i}'] = []
+            self.o_ap_file_dict[f'a_{i}'] = []
+            self.o_ap_file_dict[f'p_{i}'] = []
+            self.ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
+
+        # Create the list that we will use to generate the output Curve file
+        self.COMID_curve_list = []
+        self.Row_curve_list = []
+        self.Col_curve_list = []
+        self.Slope_curve_list = []
+        self.XS_Angle_curve_list = []
+        self.BaseElev_curve_list = []
+        self.DEM_Elev_curve_list = []
+        self.QMax_curve_list = []
+        self.depth_a_curve_list = []
+        self.depth_b_curve_list = []
+        self.tw_a_curve_list = []
+        self.tw_b_curve_list = []
+        self.vel_a_curve_list = []
+        self.vel_b_curve_list = []
+
+    def associate_with_cross_section(self, x_section: CrossSection):
+        self.x_section = x_section
+    
+    def add_empty_x_section_for_curve_file(self,i_cell_comid: int, d_q_maximum: float, d_slope_use: float):
+        if not self.b_reach_average_curve_file:
+            return
+        
+        i_row_cell, i_column_cell = self.x_section.get_row_col()
+        self.All_COMID_curve_list.append(i_cell_comid)
+        self.All_Row_curve_list.append(i_row_cell - self.x_section.i_boundary_number)
+        self.All_Col_curve_list.append(i_column_cell - self.x_section.i_boundary_number)
+        self.All_BaseElev_curve_list.append(round(self.x_section.dm_elevation[i_row_cell,i_column_cell], 3))
+        self.All_DEM_Elev_curve_list.append(round(self.x_section.dm_elevation[i_row_cell,i_column_cell], 3))
+        self.All_QMax_curve_list.append(d_q_maximum)
+        self.All_Slope_curve_list.append(round(d_slope_use, 8))
+        self.All_XS_Angle_curve_list.append(round(self.x_section.d_xs_direction, 3))
+
+    def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float):
+        self.da_total_wse[n] = wse
+        self.da_total_t[n] = t
+        self.da_total_a[n] = a
+        self.da_total_p[n] = p
+        self.da_total_q[n] = q
+        self.da_total_v[n] = v
+
+    def set_q_at_index(self, n: int, q: float):
+        self.da_total_q[n] = q
+
+    def reset_hydraulic_data(self):
+        self.da_total_t.fill(0)
+        self.da_total_a.fill(0)
+        self.da_total_p.fill(0)
+        self.da_total_v.fill(0)
+        self.da_total_q.fill(0)
+        self.da_total_wse.fill(0)
+
+    def is_start_q_greater_than_baseflow(self, i_start_elevation_index: int, d_q_baseflow: float):
+        idx = i_start_elevation_index + 1
+        return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
+
+    def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_number_of_elevations: int):
+        i_row_cell, i_column_cell = self.x_section.get_row_col()
+        if self.ap_file:
+            self.comid_ap_dict_list.append(i_cell_comid)
+            self.row_ap_dict_list.append(i_row_cell - self.x_section.i_boundary_number)
+            self.col_ap_dict_list.append(i_column_cell - self.x_section.i_boundary_number)
+        
+            for i, (q_name, a_name, p_name) in enumerate(self.ap_column_names[:i_number_of_elevations - 1], start=1):
+                self.o_ap_file_dict[q_name].append(self.da_total_q[i])
+                self.o_ap_file_dict[a_name].append(self.da_total_a[i])
+                self.o_ap_file_dict[p_name].append(self.da_total_p[i])
+
+        vdt_row = [i_cell_comid, i_row_cell - self.x_section.i_boundary_number, i_column_cell - self.x_section.i_boundary_number]
+        vdt_row.append(self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell])
+        vdt_row.append(d_q_baseflow)
+        vdt_row.append(np.round(d_slope_use, 8))
+        vdt_row.append(np.round(self.x_section.d_xs_direction, 3))
+        self.vdt_list.append(vdt_row)
+
+        # Loop backward through the elevations
+        if self.vdt_file:
+            if self.b_modified_dem:
+                self.da_total_wse -= 100
+
+            self.q_list.append(self.da_total_q[1:].copy())
+            self.v_list.append(self.da_total_v[1:].copy())
+            self.t_list.append(self.da_total_t[1:].copy())
+            self.wse_list.append(self.da_total_wse[1:].copy())
+
+            if self.b_modified_dem:
+                self.da_total_wse += 100
+        
+    def set_non_vdt_data(self, print_curve_file: bool, i_start_elevation_index: int, i_last_elevation_index: int,
+                         i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, d_q_maximum: float):
+        if self.b_reach_average_curve_file:
+            self._set_reach_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_q_maximum, d_slope_use, d_dem_low_point_elev)
+        if print_curve_file and self.curve_file and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
+            self._set_curve_file_data(i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell, d_slope_use, d_dem_low_point_elev)
+        if self.s_xs_output_file:
+            self._set_cross_section_data(i_cell_comid, i_row_cell, i_column_cell)
+
+    def _set_reach_curve_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_q_maximum: float, d_slope_use: float, d_dem_low_point_elev: float):
+        self.All_COMID_curve_list.append(int(i_cell_comid))
+        self.All_Row_curve_list.append(int(i_row_cell - self.x_section.i_boundary_number))
+        self.All_Col_curve_list.append(int(i_column_cell - self.x_section.i_boundary_number))
+        if self.b_modified_dem:
+            self.All_BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3)-100)
+            self.All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3)-100)
+        else:
+            self.All_BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3))
+            self.All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
+        self.All_QMax_curve_list.append(np.round(d_q_maximum, 3))
+        self.All_Slope_curve_list.append(np.round(d_slope_use, 8))
+        self.All_XS_Angle_curve_list.append(np.round(self.x_section.d_xs_direction, 3))
+
+    def _set_curve_file_data(self, i_start_elevation_index: int, i_last_elevation_index: int, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float):
+        (d_t_a, d_t_b, d_t_R2) = self._linear_regression_power_function(self.da_total_q[i_start_elevation_index + 1 : i_last_elevation_index + 1], self.da_total_t[i_start_elevation_index + 1 : i_last_elevation_index + 1], [12, 0.3])
+        (d_v_a, d_v_b, d_v_R2) = self._linear_regression_power_function(self.da_total_q[i_start_elevation_index + 1 : i_last_elevation_index + 1], self.da_total_v[i_start_elevation_index + 1 : i_last_elevation_index + 1], [1, 0.3])
+        da_total_depth = self.da_total_wse - self.x_section.get_thalweg()
+        (d_d_a, d_d_b, d_d_R2) = self._linear_regression_power_function(self.da_total_q[i_start_elevation_index + 1 : i_last_elevation_index + 1], da_total_depth[i_start_elevation_index + 1 : i_last_elevation_index + 1], [0.2, 0.5])
+        self.COMID_curve_list.append(int(i_cell_comid))
+        self.Row_curve_list.append(int(i_row_cell - self.x_section.i_boundary_number))
+        self.Col_curve_list.append(int(i_column_cell - self.x_section.i_boundary_number))
+        if self.b_modified_dem:
+            self.BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3)-100)
+            self.DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3)-100)
+        else:
+            self.BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3))
+            self.DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
+        self.QMax_curve_list.append(np.round(self.da_total_q[i_last_elevation_index], 3))
+        self.Slope_curve_list.append(np.round(d_slope_use, 8))
+        self.XS_Angle_curve_list.append(np.round(self.x_section.d_xs_direction, 3))
+        self.depth_a_curve_list.append(np.round(d_d_a, 3))
+        self.depth_b_curve_list.append(np.round(d_d_b, 3))
+        self.tw_a_curve_list.append(np.round(d_t_a, 3))
+        self.tw_b_curve_list.append(np.round(d_t_b, 3))
+        self.vel_a_curve_list.append(np.round(d_v_a, 3))
+        self.vel_b_curve_list.append(np.round(d_v_b, 3))
+
+    def _set_cross_section_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int,):
+        self.XS_COMID_List.append(i_cell_comid)
+        self.XS_Row_List.append(i_row_cell - self.x_section.i_boundary_number)
+        self.XS_Col_List.append(i_column_cell - self.x_section.i_boundary_number)
+        if self.b_modified_dem:
+            # This is to remove the +100 if a negative value was in the DEM elevation
+            da_xs_profile1_str = array_to_string(self.x_section.da_xs_profile1[0:self.x_section.xs1_n]-100)
+            da_xs_profile2_str = array_to_string(self.x_section.da_xs_profile2[0:self.x_section.xs2_n]-100) 
+        else:
+            da_xs_profile1_str = array_to_string(self.x_section.da_xs_profile1[0:self.x_section.xs1_n])
+            da_xs_profile2_str = array_to_string(self.x_section.da_xs_profile2[0:self.x_section.xs2_n]) 
+        dm_manning_n_raster1_str = array_to_string(self.x_section.mannings_n1[:self.x_section.xs1_n]) 
+        dm_manning_n_raster2_str = array_to_string(self.x_section.mannings_n2[:self.x_section.xs2_n])
+
+        # calculate the location of the cross-section end points
+        r1 = self.x_section.ia_xc_row1_index_main[self.x_section.xs1_n-1]-self.x_section.i_boundary_number
+        c1 = self.x_section.ia_xc_column1_index_main[self.x_section.xs1_n-1]-self.x_section.i_boundary_number
+        r2 = self.x_section.ia_xc_row2_index_main[self.x_section.xs2_n-1]-self.x_section.i_boundary_number
+        c2 = self.x_section.ia_xc_column2_index_main[self.x_section.xs2_n-1]-self.x_section.i_boundary_number
+        self.XS_da_xs_profile1_str.append(da_xs_profile1_str)
+        self.XS_da_xs_profile2_str.append(da_xs_profile2_str)
+        # dm_manning_n_raster1_str
+        self.XS_dm_manning_n_raster1_str.append(dm_manning_n_raster1_str)
+        self.XS_dm_manning_n_raster2_str.append(dm_manning_n_raster2_str)
+        # d_ordinate_dist
+        self.XS_d_ordinate_dist.append(self.x_section.d_ordinate_dist)
+        # r1, c1, r2, c2
+        self.XS_r1.append(r1)
+        self.XS_c1.append(c1)
+        self.XS_r2.append(r2)
+        self.XS_c2.append(c2)
+
+    def vdt_data_exists(self):
+        return bool(self.q_list)
+
+    def _linear_regression_power_function(self, da_x_input: np.ndarray, da_y_input: np.ndarray, init_guess: list = [1.0, 1.0]):
+        """
+        Performs a curve fit to a power function
+
+        Parameters
+        ----------
+        da_x_input: np.ndarray
+            X values input to the fit
+        da_y_input: np.ndarray
+            Y values input to the fit
+
+        Returns
+        -------
+        d_coefficient: float
+            Coeffient of the fit
+        d_power: float
+            Power of the fit
+        d_R2: float
+            Goodness of fit
+
+        """
+        # Default values in case of failure
+        d_coefficient, d_power, d_R2 = -9999.9, -9999.9, -9999.9
+
+        # Attempt to calculate the fit
+        try:
+            (d_coefficient, d_power), dm_pcov = curve_fit(
+                power_func, 
+                da_x_input,
+                da_y_input, 
+                p0=init_guess)
+        except TypingError as e:
+            LOG.error(e)
+        except RuntimeError as e:
+            pass
+
+        # Return to the calling function
+        return d_coefficient, d_power, d_R2
+    
+    def save_files(self):
+        if not self.q_list:
+            LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
+            return
+        
+        vdt_df = None
+        if self.vdt_file:
+            vdt_df = self.save_vdt()
+        if self.ap_file:
+            self.save_ap()
+        if self.b_reach_average_curve_file:
+            self.save_reach_average_curve_file(vdt_df)
+        elif self.curve_file:
+            self.save_curve_file()
+
+    def save_vdt(self):
+        colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
+            f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']
+        ]
+
+        # Combine the data first (without rounding yet)
+        vdt_df = pd.concat([
+            pd.DataFrame(self.vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle']),
+            pd.DataFrame(self.q_list, columns=[f'q_{i}' for i in range(1, len(self.q_list[0]) + 1)]),
+            pd.DataFrame(self.v_list, columns=[f'v_{i}' for i in range(1, len(self.v_list[0]) + 1)]),
+            pd.DataFrame(self.t_list, columns=[f't_{i}' for i in range(1, len(self.t_list[0]) + 1)]),
+            pd.DataFrame(self.wse_list, columns=[f'wse_{i}' for i in range(1, len(self.wse_list[0]) + 1)])
+        ], axis=1)
+
+        # Round all numeric columns to 3, except 'Slope'
+        for col in vdt_df.columns:
+            if col not in ('Slope', 'XS_Angle'):
+                vdt_df[col] = vdt_df[col].round(3)
+
+        # Now round Slope separately to 8 and XS_Angle to 3
+        vdt_df['Slope'] = vdt_df['Slope'].round(8)
+        vdt_df['XS_Angle'] = vdt_df['XS_Angle'].round(3)
+
+        # Reorder columns
+        vdt_df = vdt_df[colorder]
+        
+        # Remove rows with NaN values
+        vdt_df = vdt_df.dropna()
+        # # Remove rows where any column has a negative value except wse or elevation
+        # Select columns NOT starting with 'wse' or 'Elev'
+        cols_to_check = [col for col in vdt_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
+        # Remove rows where any of the selected columns have a negative value
+        vdt_df = vdt_df.loc[~(vdt_df[cols_to_check] < 0).any(axis=1)]
+        if self.vdt_file.endswith('.parquet'):
+            vdt_df.to_parquet(self.vdt_file, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with VDT data
+        else:
+            vdt_df.to_csv(self.vdt_file, index=False)    
+        LOG.info('Finished writing ' + str(self.vdt_file))
+        return vdt_df
+
+    def save_ap(self):
+        # Write the output VDT Database file
+        dtypes = {
+                    "COMID": 'int64',
+                    "Row": 'int64',
+                    "Col": 'int64',
+        }
+        for i in range(1, self.i_number_of_increments + 1):
+            self.o_ap_file_dict[f'a_{i}'] = np.round(self.o_ap_file_dict[f'a_{i}'], 3)
+            self.o_ap_file_dict[f'q_{i}'] = np.round(self.o_ap_file_dict[f'q_{i}'], 3)
+            self.o_ap_file_dict[f'p_{i}'] = np.round(self.o_ap_file_dict[f'p_{i}'], 3)
+
+        o_ap_file_df = pd.DataFrame(self.o_ap_file_dict).astype(dtypes)
+        # Remove rows with NaN values
+        o_ap_file_df = o_ap_file_df.dropna()
+        # # Remove rows where any column has a negative value except wse or elevation
+        # Select columns NOT starting with 'wse' or 'Elev'
+        cols_to_check = [col for col in o_ap_file_df.columns if (col.startswith('q') or col.startswith('a') or col.startswith('p'))]
+        # Remove rows where any of the selected columns have a negative value
+        o_ap_file_df = o_ap_file_df.loc[~(o_ap_file_df[cols_to_check] < 0).any(axis=1)]
+        if self.ap_file.endswith('.parquet'):
+            o_ap_file_df.to_parquet(self.ap_file, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with AP data
+        else:
+            o_ap_file_df.to_csv(self.ap_file, index=False)
+        LOG.info('Finished writing ' + str(self.ap_file))
+
+    def save_reach_average_curve_file(self, vdt_df):
+        data = {
+            "COMID": self.All_COMID_curve_list,
+            "Row": self.All_Row_curve_list,
+            "Col": self.All_Col_curve_list,
+            "BaseElev":  [np.round(num, 3) for num in self.All_BaseElev_curve_list],
+            "DEM_Elev": [np.round(num, 3) for num in self.All_DEM_Elev_curve_list],
+            "QMax": self.All_QMax_curve_list,
+            "Slope": self.All_Slope_curve_list,
+            "XS_Angle": self.All_XS_Angle_curve_list,
+        }
+
+        # Creating the DataFrame
+        reach_average_curvefile_df = pd.DataFrame(data)
+
+        # Dynamically select columns, starting with prefixes
+        q_prefixes = [f'q_{i}' for i in range(1, len(self.q_list[0]) + 1)]
+        t_prefixes = [f't_{i}' for i in range(1, len(self.t_list[0]) + 1)]
+        v_prefixes = [f'v_{i}' for i in range(1, len(self.v_list[0]) + 1)]
+        wse_prefixes = [f'wse_{i}' for i in range(1, len(self.wse_list[0]) + 1)]
+
+        # Initialize lists to store regression coefficients
+        comid_list = []
+        d_t_a_list, d_t_b_list = [], []
+        d_v_a_list, d_v_b_list = [], []
+        d_d_a_list, d_d_b_list = [], []
+
+        # Extract all unique COMID values
+        unique_comids = vdt_df["COMID"].unique()
+
+        # Process each unique COMID
+        for comid in unique_comids:
+            group = vdt_df[vdt_df["COMID"] == comid]
+            
+            # Create a MultiIndex from the current group's Row and Col for precise matching
+            group_index = pd.MultiIndex.from_arrays([group["Row"].values, group["Col"].values], names=["Row", "Col"])
+
+            # Filter reach_average_curvefile_df using COMID and matching Row-Col pairs
+            matching_reach = reach_average_curvefile_df[
+                (reach_average_curvefile_df["COMID"] == comid) &
+                (pd.MultiIndex.from_frame(reach_average_curvefile_df[["Row", "Col"]]).isin(group_index))
+            ]
+
+            matching_reach = matching_reach.drop_duplicates(subset=["Row", "Col", "COMID"])
+
+            if matching_reach.empty:
+                LOG.warning(f"No matching BaseElev values found for COMID {comid}. Skipping...")
+                continue
+
+            # Get the BaseElev values for subtraction
+            base_elev_values = matching_reach.set_index(["Row", "Col"])["BaseElev"]
+
+            # Combine WSE_ values and subtract BaseElev
+            depth_combined_values_list = []
+            for prefix in wse_prefixes:
+                # Match rows using Row and Col from the group
+                wse_values = group.set_index(["Row", "Col"])[prefix]
+                depth_values = wse_values - base_elev_values
+                depth_combined_values_list.extend(depth_values.values)
+            d_combined_values = np.array(depth_combined_values_list)
+
+            # Combine Q_ values
+            q_combined_values_list = []
+            for prefix in q_prefixes:
+                q_combined_values_list.extend(group[prefix].values)
+            q_combined_values = np.array(q_combined_values_list)
+
+            # Combine T_ values
+            t_combined_values_list = []
+            for prefix in t_prefixes:
+                t_combined_values_list.extend(group[prefix].values)
+            t_combined_values = np.array(t_combined_values_list)
+
+            # Combine V_ values
+            v_combined_values_list = []
+            for prefix in v_prefixes:
+                v_combined_values_list.extend(group[prefix].values)
+            v_combined_values = np.array(v_combined_values_list)
+
+            # Calculate regression coefficients
+            try:
+                (d_t_a, d_t_b, d_t_R2) = self._linear_regression_power_function(q_combined_values, t_combined_values, [12, 0.3])
+                (d_v_a, d_v_b, d_v_R2) = self._linear_regression_power_function(q_combined_values, v_combined_values, [1, 0.3])
+                (d_d_a, d_d_b, d_d_R2) = self._linear_regression_power_function(q_combined_values, d_combined_values, [0.2, 0.5])
+            except Exception as e:
+                # Handle cases where regression fails (e.g., insufficient data)
+                LOG.warning(f"Regression failed for COMID {comid}: {e}")
+                d_t_a, d_t_b, d_v_a, d_v_b, d_d_a, d_d_b = np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+
+            # Append results to lists
+            comid_list.append(comid)
+            d_t_a_list.append(np.round(d_t_a, 3) if not np.isnan(d_t_a) else np.nan)
+            d_t_b_list.append(np.round(d_t_b, 3) if not np.isnan(d_t_b) else np.nan)
+            d_v_a_list.append(np.round(d_v_a, 3) if not np.isnan(d_v_a) else np.nan)
+            d_v_b_list.append(np.round(d_v_b, 3) if not np.isnan(d_v_b) else np.nan)
+            d_d_a_list.append(np.round(d_d_a, 3) if not np.isnan(d_d_a) else np.nan)
+            d_d_b_list.append(np.round(d_d_b, 3) if not np.isnan(d_d_b) else np.nan)
+
+        # Create a DataFrame with regression coefficients
+        regression_df = pd.DataFrame({
+            "COMID": comid_list,
+            "depth_a": d_d_a_list,
+            "depth_b": d_d_b_list,
+            "tw_a": d_t_a_list,
+            "tw_b": d_t_b_list,
+            "vel_a": d_v_a_list,
+            "vel_b": d_v_b_list,
+        })
+
+        # Merge the regression_df into reach_average_curvefile_df based on COMID
+        reach_average_curvefile_df = reach_average_curvefile_df.merge(regression_df, on="COMID", how="left")
+
+        # Drop all rows with any NaN values
+        reach_average_curvefile_df = reach_average_curvefile_df.dropna()
+
+        # Write the output file
+        if self.curve_file.endswith('.parquet'):
+            reach_average_curvefile_df.to_parquet(self.curve_file, compression='brotli', index=False, engine='fastparquet')
+        else:
+            reach_average_curvefile_df.to_csv(self.curve_file, index=False)        
+        LOG.info('Finished writing ' + str(self.curve_file))
+
+    def save_curve_file(self):
+        o_curve_file_dict = {'COMID': self.COMID_curve_list,
+                            'Row': self.Row_curve_list,
+                            'Col': self.Col_curve_list,
+                            'BaseElev': self.BaseElev_curve_list,
+                            'DEM_Elev': self.DEM_Elev_curve_list,
+                            'QMax': self.QMax_curve_list,
+                            'Slope': self.Slope_curve_list,
+                            'XS_Angle': self.XS_Angle_curve_list,
+                            'depth_a': self.depth_a_curve_list,
+                            'depth_b': self.depth_b_curve_list,
+                            'tw_a': self.tw_a_curve_list,
+                            'tw_b': self.tw_b_curve_list,
+                            'vel_a': self.vel_a_curve_list,
+                            'vel_b': self.vel_b_curve_list,}
+        o_curve_file_df = pd.DataFrame(o_curve_file_dict)
+        # Remove rows with NaN values
+        o_curve_file_df = o_curve_file_df.dropna()
+        # # Remove rows where any column has negative a coefficient value
+        o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
+        if self.curve_file.endswith('.parquet'):
+            o_curve_file_df.to_parquet(self.curve_file, compression='brotli', index=False, engine='fastparquet')
+        else:
+            o_curve_file_df.to_csv(self.curve_file, index=False)            
+        LOG.info('Finished writing ' + str(self.curve_file))
+
+    def save_cross_section_file(self):
+        with open(self.s_xs_output_file, 'w') as o_xs_file:
+            o_xs_file.write('COMID\tRow\tCol\tXS1_Profile\tOrdinate_Dist\tManning_N_Raster1\tXS2_Profile\tOrdinate_Dist\tManning_N_Raster2\tr1\tc1\tr2\tc2\n')
+            for i in range(len(self.XS_COMID_List)):
+                o_xs_file.write(f"{self.XS_COMID_List[i]}\t{self.XS_Row_List[i]}\t{self.XS_Col_List[i]}\t{self.XS_da_xs_profile1_str[i]}\t{self.XS_d_ordinate_dist[i]}\t{self.XS_dm_manning_n_raster1_str[i]}\t{self.XS_da_xs_profile2_str[i]}\t{self.XS_d_ordinate_dist[i]}\t{self.XS_dm_manning_n_raster2_str[i]}\t{self.XS_r1[i]}\t{self.XS_c1[i]}\t{self.XS_r2[i]}\t{self.XS_c2[i]}\n")
+        
+        LOG.info('Finished writing ' + str(self.s_xs_output_file))
+
+# Power function equation
+@njit(cache=True)
+def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
+    """
+    Define a general power function that can be used for fitting
+
+    Parameters
+    ----------
+    d_value: float
+        Current x value
+    d_coefficient: float
+        Coefficient at the lead of the power function
+    d_power: float
+        Power value
+
+    Returns
+    -------
+    d_power_value: float
+        Calculated value
+
+    """
+
+    # Calculate the power
+    d_power_value = d_coefficient * (d_value ** d_power)
+
+    # Return to the calling function
+    return d_power_value
+
+def format_array(da_array: np.ndarray, s_format: str):
+    """
+    Formats a string. Helper function to allow multidimensional formats
+
+    Parameters
+    ----------
+    da_array: np.array
+        Array to be formatted
+    s_format: str
+        Specifies the format of the output
+
+    Returns
+    -------
+    s_formatted_output: str
+        Formatted output as a string
+
+    """
+
+    # Format the output
+    s_formatted_output = "[" + ",".join(s_format.format(x) for x in da_array) + "]"
+
+    # Return to the calling function
+    return s_formatted_output
+
+
+def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
+    """
+    Convert a NumPy array to a formatted string with consistent spacing and no new lines.
+
+    Parameters
+    ----------
+    da_array: np.ndarray
+        Array to conver to a string
+    i_decimal_places: int
+        Number oof decimal places to return in the string
+
+    Returns
+    -------
+
+    """
+
+    # Define the format string
+    s_format = f"{{:.{i_decimal_places}f}}"
+
+    # Format the string based on the dimensionality of the array
+    if da_array.ndim == 1:
+        # Array is one-dimensional
+        s_output = format_array(da_array, s_format)
+
+    elif da_array.ndim == 2:
+        # Array is two-dimensional
+        s_output = "[" + ",".join(format_array(row, s_format) for row in da_array) + "]"
+
+    else:
+        # Array is ill formated. Throw an error.
+        raise ValueError("Only 1D and 2D arrays are supported")
+
+    # Return to the calling function
+    return s_output

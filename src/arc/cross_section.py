@@ -31,6 +31,9 @@ class CrossSection:
 
         self.create_cross_section_ordinates(dx, dy, i_precompute_angles, d_precompute_angles)
 
+    def is_valid(self) -> bool:
+        return self.xs1_n > 0 or self.xs2_n > 0
+
     def create_cross_section_ordinates(self, dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float):
         i_center_point = self.i_center_point
         self.ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
@@ -51,6 +54,7 @@ class CrossSection:
         """
         Get the max and min row and col that we can go for later search functions (based on max of slope and direction distance parameters.)
         """
+        self.i_boundary_number = i_boundary_number
         self.i_row_bottom = i_boundary_number
         self.i_row_top = nrows + i_boundary_number - 1
         self.i_column_bottom = i_boundary_number
