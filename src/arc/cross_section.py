@@ -9,25 +9,24 @@ class CrossSection:
                  dx: float, dy: float,
                  i_precompute_angles: int, d_precompute_angles: float,
                  dm_elevation: np.ndarray, dm_land_use: np.ndarray,
-                 params: dict):
-        self.d_x_section_distance = params['d_x_section_distance']
+                 d_x_section_distance: float, b_FindBanksBasedOnLandCover: bool, i_lc_water_value: int, d_bathymetry_trapzoid_height: float, b_bathy_use_banks: bool):
+        self.d_x_section_distance = d_x_section_distance
         self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
 
-        self.da_xs_profile1 = np.zeros(self.i_center_point + 1)
-        self.da_xs_profile2 = np.zeros(self.i_center_point + 1)
-        self.ia_lc_xs1 = np.zeros(self.i_center_point + 1)
-        self.ia_lc_xs2 = np.zeros(self.i_center_point + 1)
-        self.mannings_n1 = np.zeros(self.i_center_point + 1)
-        self.mannings_n2 = np.zeros(self.i_center_point + 1)
+        self.da_xs_profile1 = np.zeros(self.i_center_point + 1, dtype=np.float64)
+        self.da_xs_profile2 = np.zeros(self.i_center_point + 1, dtype=np.float64)
+        self.ia_lc_xs1 = np.zeros(self.i_center_point + 1, dtype=np.int64)
+        self.ia_lc_xs2 = np.zeros(self.i_center_point + 1, dtype=np.int64)
+        self.mannings_n1 = np.zeros(self.i_center_point + 1, dtype=np.float64)
+        self.mannings_n2 = np.zeros(self.i_center_point + 1, dtype=np.float64)
 
         self.dm_elevation = dm_elevation
         self.dm_land_use = dm_land_use
 
-        self.b_FindBanksBasedOnLandCover = params["b_FindBanksBasedOnLandCover"]
-        self.i_lc_water_value = params["i_lc_water_value"]
-        self.d_bathymetry_trapzoid_height = params["d_bathymetry_trapzoid_height"]
-        self.b_bathy_use_banks = params["b_bathy_use_banks"]
-        self.d_bathymetry_trapzoid_height = params["d_bathymetry_trapzoid_height"]
+        self.b_FindBanksBasedOnLandCover = b_FindBanksBasedOnLandCover
+        self.i_lc_water_value = i_lc_water_value
+        self.d_bathymetry_trapzoid_height = d_bathymetry_trapzoid_height
+        self.b_bathy_use_banks = b_bathy_use_banks
 
         self.create_cross_section_ordinates(dx, dy, i_precompute_angles, d_precompute_angles)
 
@@ -36,13 +35,13 @@ class CrossSection:
 
     def create_cross_section_ordinates(self, dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float):
         i_center_point = self.i_center_point
-        self.ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dc_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dr_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dc_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=int)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.d_distance_z = np.zeros(i_precompute_angles + 1, dtype=float)
-        self.da_xc_main_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1))
-        self.da_xc_second_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1))
+        self.ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.ia_xc_dc_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.ia_xc_dr_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.ia_xc_dc_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.d_distance_z = np.zeros(i_precompute_angles + 1, dtype=np.float64)
+        self.da_xc_main_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
+        self.da_xc_second_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
 
         for i in range(i_precompute_angles+1):
             d_xs_direction = d_precompute_angles * i
@@ -84,165 +83,57 @@ class CrossSection:
         self.ia_xc_column1_index_second = self.col + self.ia_xc_dc_index_second[self.i_precompute_angle_closest]
         self.ia_xc_column2_index_second = self.col - self.ia_xc_dc_index_second[self.i_precompute_angle_closest]
 
-        self.xs1_n = self._sample_side(
-            profile=self.da_xs_profile1,
-            lc_profile=self.ia_lc_xs1,
-            ia_xc_row_index_main=self.ia_xc_row1_index_main,
-            ia_xc_column_index_main=self.ia_xc_column1_index_main,
-            ia_xc_row_index_second=self.ia_xc_row1_index_second,
-            ia_xc_column_index_second=self.ia_xc_column1_index_second
+        self.xs1_n = _sample_side(
+            self.da_xs_profile1,
+            self.ia_lc_xs1,
+            self.ia_xc_row1_index_main,
+            self.ia_xc_column1_index_main,
+            self.ia_xc_row1_index_second,
+            self.ia_xc_column1_index_second,
+            self.da_xc_main_fract[self.i_precompute_angle_closest],
+            self.da_xc_second_fract[self.i_precompute_angle_closest],
+            self.i_center_point,
+            self.i_row_bottom,
+            self.i_row_top,
+            self.i_column_bottom,
+            self.i_column_top,
+            self.dm_elevation,
+            self.dm_land_use
         )
 
-        self.xs2_n = self._sample_side(
-            profile=self.da_xs_profile2,
-            lc_profile=self.ia_lc_xs2,
-            ia_xc_row_index_main=self.ia_xc_row2_index_main,
-            ia_xc_column_index_main=self.ia_xc_column2_index_main,
-            ia_xc_row_index_second=self.ia_xc_row2_index_second,
-            ia_xc_column_index_second=self.ia_xc_column2_index_second
+        self.xs2_n = _sample_side(
+            self.da_xs_profile2,
+            self.ia_lc_xs2,
+            self.ia_xc_row2_index_main,
+            self.ia_xc_column2_index_main,
+            self.ia_xc_row2_index_second,
+            self.ia_xc_column2_index_second,
+            self.da_xc_main_fract[self.i_precompute_angle_closest],
+            self.da_xc_second_fract[self.i_precompute_angle_closest],
+            self.i_center_point,
+            self.i_row_bottom,
+            self.i_row_top,
+            self.i_column_bottom,
+            self.i_column_top,
+            self.dm_elevation,
+            self.dm_land_use
         )
         
-    def _sample_side(
-        self,
-        profile: np.ndarray,
-        lc_profile: np.ndarray,
-        ia_xc_row_index_main: np.ndarray,
-        ia_xc_column_index_main: np.ndarray,
-        ia_xc_row_index_second: np.ndarray,
-        ia_xc_column_index_second: np.ndarray
-    ):
-        i_xs_length_indice = self.i_center_point
-
-        for i in range(i_xs_length_indice):
-            if (
-                ia_xc_row_index_main[i] <= self.i_row_bottom or
-                ia_xc_row_index_second[i] <= self.i_row_bottom or
-                ia_xc_row_index_main[i] >= self.i_row_top or
-                ia_xc_row_index_second[i] >= self.i_row_top or
-                ia_xc_column_index_main[i] <= self.i_column_bottom or
-                ia_xc_column_index_second[i] <= self.i_column_bottom or
-                ia_xc_column_index_main[i] >= self.i_column_top or
-                ia_xc_column_index_second[i] >= self.i_column_top
-            ):
-                i_xs_length_indice = i
-                break
-
-        profile[i_xs_length_indice] = 99999.9
-
-        profile[:i_xs_length_indice] = (
-            self.dm_elevation[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]] * self.da_xc_main_fract[self.i_precompute_angle_closest, :i_xs_length_indice] +
-            self.dm_elevation[ia_xc_row_index_second[:i_xs_length_indice], ia_xc_column_index_second[:i_xs_length_indice]] * self.da_xc_second_fract[self.i_precompute_angle_closest, :i_xs_length_indice]
-        )
-
-        # for i in range(i_xs_length_indice):
-        #     row_main = ia_xc_row_index_main[i]
-        #     col_main = ia_xc_column_index_main[i]
-        #     row_second = ia_xc_row_index_second[i]
-        #     col_second = ia_xc_column_index_second[i]
-
-        #     profile[i] = (
-        #         dm_elevation[row_main, col_main] * self.da_xc_main_fract[i] +
-        #         dm_elevation[row_second, col_second] * self.da_xc_second_fract[i]
-        #     )
-
-        lc_profile[:i_xs_length_indice] = self.dm_land_use[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]]
-        # for i in range(i_xs_length_indice):
-        #     row_main = ia_xc_row_index_main[i]
-        #     col_main = ia_xc_column_index_main[i]
-        #     lc_profile[i] = int(dm_land_use[row_main, col_main])
-
-        return i_xs_length_indice
+    
     
     def adjust_cross_section_to_lowest_point(self, i_low_spot_range: int):
-        """
-        Reorients the cross section through the lowest point of the stream. Cross-section needs to be re-sampled if the low spot in the cross-section changes location.
-
-        Parameters
-        ----------
-        i_low_point_index: int
-            Offset index along the cross section of the lowest point
-        d_dem_low_point_elev: float
-            Elevation of the lowest point
-        da_xs_profile_one: ndarray
-            Cross section elevations of the first cross section
-        da_xs_profile_two: ndarray
-            Cross section elevations of the second cross section
-        ia_xc_r1_index_main: ndarray
-            Row indices of the first cross section
-        ia_xc_r2_index_main: ndarray
-            Row indices of the second cross section
-        ia_xc_c1_index_main: ndarray
-            Column indices of the first cross section
-        ia_xc_c2_index_main: ndarray
-            Column indicies of the second cross section
-        da_xs1_mannings: ndarray
-            Manning's roughness of the first cross section
-        da_xs2_mannings: ndarray
-            Manning's roughness of the second cross section
-        i_center_point: int
-            Center point index
-        i_low_spot_range: int
-            The number of cells on each side of the cross-section we're looking at moving to. 
-        """
-        d_dem_low_point_elev = self.da_xs_profile1[0]
-        i_low_point_index = 0
-
-        # Loop on the search range for the low point
-        for i_entry in range(i_low_spot_range):
-            if i_entry >= self.da_xs_profile1.shape[0] or i_entry >= self.da_xs_profile2.shape[0]:
-                break
-            # Look in the first profile
-            if self.da_xs_profile1[i_entry] > 0.0 and self.da_xs_profile1[i_entry] < d_dem_low_point_elev:
-                # New low point was found. Update the index.
-                d_dem_low_point_elev = self.da_xs_profile1[i_entry]
-                i_low_point_index = i_entry
-
-            # Look in the second profile
-            if self.da_xs_profile2[i_entry] > 0.0 and self.da_xs_profile2[i_entry] < d_dem_low_point_elev:
-                # New low point was found. Update the index.
-                d_dem_low_point_elev = self.da_xs_profile2[i_entry]
-                i_low_point_index = i_entry * -1
-
-        # Process based on if the low point is in the first or second profile
-        if i_low_point_index > 0:
-            # Low point is in the first profile. Update the cross section and mannings.
-            self.da_xs_profile2[i_low_point_index:self.i_center_point] = self.da_xs_profile2[0:self.i_center_point - i_low_point_index]
-            self.da_xs_profile2[0:i_low_point_index + 1] = np.flip(self.da_xs_profile1[0:i_low_point_index + 1])
-            self.da_xs_profile1[0:self.i_center_point - i_low_point_index] = self.da_xs_profile1[i_low_point_index:self.i_center_point]
-            self.da_xs_profile1[self.xs1_n - i_low_point_index] = 99999.9
-
-            # Update the row indices
-            self.ia_xc_row2_index_main[i_low_point_index:self.i_center_point] = self.ia_xc_row2_index_main[0:self.i_center_point - i_low_point_index]
-            self.ia_xc_row2_index_main[0:i_low_point_index + 1] = np.flip(self.ia_xc_row1_index_main[0:i_low_point_index + 1])
-            self.ia_xc_row1_index_main[0:self.i_center_point - i_low_point_index] = self.ia_xc_row1_index_main[i_low_point_index:self.i_center_point]
-
-            # Update the column indices
-            self.ia_xc_column2_index_main[i_low_point_index:self.i_center_point] = self.ia_xc_column2_index_main[0:self.i_center_point - i_low_point_index]
-            self.ia_xc_column2_index_main[0:i_low_point_index + 1] = np.flip(self.ia_xc_column1_index_main[0:i_low_point_index + 1])
-            self.ia_xc_column1_index_main[0:self.i_center_point - i_low_point_index] = self.ia_xc_column1_index_main[i_low_point_index:self.i_center_point]
-
-        elif i_low_point_index < 0:
-            # Low point is in the second profile Update the cross section and mannings.
-            i_low_point_index = i_low_point_index * -1
-            self.da_xs_profile1[i_low_point_index:self.i_center_point] = self.da_xs_profile1[0:self.i_center_point - i_low_point_index]
-            self.da_xs_profile1[0:i_low_point_index + 1] = np.flip(self.da_xs_profile2[0:i_low_point_index + 1])
-            self.da_xs_profile2[0:self.i_center_point - i_low_point_index] = self.da_xs_profile2[i_low_point_index:self.i_center_point]
-            self.da_xs_profile2[self.xs2_n - i_low_point_index] = 99999.9
-
-            # Update the row indices
-            self.ia_xc_row1_index_main[i_low_point_index:self.i_center_point] = self.ia_xc_row1_index_main[0:self.i_center_point - i_low_point_index]
-            self.ia_xc_row1_index_main[0:i_low_point_index + 1] = np.flip(self.ia_xc_row2_index_main[0:i_low_point_index + 1])
-            self.ia_xc_row2_index_main[0:self.i_center_point - i_low_point_index] = self.ia_xc_row2_index_main[i_low_point_index:self.i_center_point]
-
-            # Update the column indices
-            self.ia_xc_column1_index_main[i_low_point_index:self.i_center_point] = self.ia_xc_column1_index_main[0:self.i_center_point - i_low_point_index]
-            self.ia_xc_column1_index_main[0:i_low_point_index + 1] = np.flip(self.ia_xc_column2_index_main[0:i_low_point_index + 1])
-            self.ia_xc_column2_index_main[0:self.i_center_point - i_low_point_index] = self.ia_xc_column2_index_main[i_low_point_index:self.i_center_point]
-        else:
-            return    
-        
-        # The r and c for the stream cell is adjusted because it may have moved
-        self.row, self.col = self.get_row_col()
+        self.row, self.col = _adjust_cross_section_to_lowest_point(
+            i_low_spot_range,
+            self.da_xs_profile1,
+            self.da_xs_profile2,
+            self.ia_xc_row1_index_main,
+            self.ia_xc_row2_index_main,
+            self.ia_xc_column1_index_main,
+            self.ia_xc_column2_index_main,
+            self.i_center_point,
+            self.xs1_n,
+            self.xs2_n
+        )
 
         # re-sample the cross-section to make sure all of the low-spot data has the same values through interpolation
         self.set_cross_section(self.row, self.col, self.i_precompute_angle_closest, self.d_xs_direction)
@@ -278,53 +169,10 @@ class CrossSection:
         return d_shortest_tw_angle
     
     
-    def _check_for_negative_depths(self, da_y_depth: np.ndarray):
-        # Take action if there are values < 0
-        lt_0_in_depths = False
-        i_target_index = 0
-        for i_target_index, value in enumerate(da_y_depth[1:]):
-            if value <= 0:
-                lt_0_in_depths = True
-                break
-
-        return lt_0_in_depths, i_target_index
-    
-    def _get_distance_to_use(self, da_y_depth: np.ndarray, i_target_index: int):
-        return self.d_ordinate_dist * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
-    
-    def _calculate_top_width_up_to_point(self, i_target_index: int, d_dist_use: float):
-        return self.d_ordinate_dist * (i_target_index - 1) + d_dist_use
-
-    def _calculate_top_width_from_all(self, da_y_depth: np.ndarray):
-        return self.d_ordinate_dist * (da_y_depth.shape[0] - 1)
-
-    def _get_stream_depths(self, d_wse: float, profile: np.ndarray, n: int):
-        da_y_depth = d_wse - profile[:n]
-
-        if da_y_depth.shape[0] <= 0 or da_y_depth[0] <= 1e-16:
-            return None
-        
-        return da_y_depth
-    
-    def _calculate_side_top_width(self, d_wse: float, profile: np.ndarray, n: int):
-        da_y_depth = self._get_stream_depths(d_wse, profile, n)
-
-        if da_y_depth is None:
-            return 0
-
-        lt_0_in_depths, i_target_index = self._check_for_negative_depths(da_y_depth)
-
-        if lt_0_in_depths:
-            i_target_index += 1
-            d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
-            return self._calculate_top_width_up_to_point(i_target_index, d_dist_use)
-        else:
-            return self._calculate_top_width_from_all(da_y_depth)
-
     def calculate_top_width_of_wse(self, d_wse: float):
         return (
-            self._calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n) +
-            self._calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n)
+            _calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n, self.d_ordinate_dist) +
+            _calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n, self.d_ordinate_dist)
         )
 
     def _find_wse_and_banks_by_lc(self):
@@ -428,8 +276,8 @@ class CrossSection:
             # T2 = calculate_top_width(da_xs_profile2_sliced, d_wse, d_distance_z)
             
             # TW = T1 + T2
-            T1 = self._calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n)
-            T2 = self._calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n)
+            T1 = _calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n, self.d_ordinate_dist)
+            T2 = _calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n, self.d_ordinate_dist)
             TW = T1 + T2
             d_new_width_to_depth_ratio = TW / d_depth
 
@@ -512,105 +360,7 @@ class CrossSection:
         # Return to the calling function
         return 0
     
-    def _adjust_one_side_for_bathymetry(self, i_bank_index: int, d_total_bank_dist: float,
-                                        d_trap_base: float, d_distance_h: float, ia_xc_r_index_main: np.ndarray, 
-                                        ia_xc_c_index_main: np.ndarray, da_xs_profile: np.ndarray, dm_output_bathymetry: np.ndarray,
-                                        d_side_dist: float, d_y_bathy: float, d_y_depth: float):
-        """
-        Adjusts the profile for the estimated bathymetry
-
-        Parameters
-        ----------
-        da_xs_profile: ndarray
-            Elevations of the stream cross section
-        i_bank_index: int
-            Distance in index space from the stream to the bank
-        d_total_bank_dist: float
-            Distance to the bank estimated in unit space
-        d_trap_base: float
-            Bottom distance of the stream cross section
-        d_distance_z: float
-            Incremental distance per cell parallel to the orientation of the cross section
-        d_distance_h: float
-            Distance of the slope section of the trapezoidal channel.  Typically d_distance_h = 0.2* TW of Trapezoid
-        d_y_bathy: float
-            Bathymetry elevation of the bottom
-        d_y_depth: float
-            Depth.  Basically water surface elevation (WSE) minus d_y_bathy
-        dm_output_bathymetry: ndarray
-            Output bathymetry matrix
-        ia_xc_r_index_main: ndarray
-            Row indices for the stream cross section
-        ia_xc_c_index_main: ndarray
-            Column indices for the stream cross section
-
-        Returns
-        -------
-        None. Values are updated in the output bathymetry matrix
-
-        """
-
-        # If banks are calculated, make an adjustment to the trapezoidal bathymetry
-        if i_bank_index <= 0:
-            return
-        
-        # Loop over the bank width offset indices
-        for x in range(min(i_bank_index + 1, len(ia_xc_r_index_main))):
-            # Calculate the distance to the bank
-            d_dist_cell_to_bank = (i_bank_index - x) * self.d_ordinate_dist + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
-            # lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
-
-            # if lc_grid_val<0 or (i_lc_water_value>0 and lc_grid_val!=i_lc_water_value):
-            #     return
-
-            # # Joseph added this because it looks like we aren't getting a bathymetry output for the first cell in the cross-section
-            # if x == 0:
-            #     # If the cell is the first cell, then set it to the bottom elevation of the trapezoid.
-            #     da_xs_profile[x] = d_y_bathy
-            #     dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-
-            # If the cell is in the flat part of the trapezoidal cross-section, set it to the bottom elevation of the trapezoid.
-            if d_dist_cell_to_bank > d_distance_h:
-                if self.b_bathy_use_banks == False and d_y_bathy < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
-                    da_xs_profile[x] = d_y_bathy
-                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                elif self.b_bathy_use_banks == True:
-                    da_xs_profile[x] = d_y_bathy
-                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-
-            # If the cell is in the slope part of the trapezoid you need to find the elevation based on the slope of the trapezoid side.
-            elif d_dist_cell_to_bank <= d_distance_h and d_dist_cell_to_bank < d_trap_base + d_distance_h:
-                if self.b_bathy_use_banks == False and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
-                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                elif self.b_bathy_use_banks == True:
-                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-
-            # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevation based on the slope of the trapezoid side.
-            elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
-                d_dist_cell_to_bank_other_side = d_total_bank_dist - d_dist_cell_to_bank
-                if self.b_bathy_use_banks == False and d_dist_cell_to_bank_other_side>0.0 and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))) < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
-                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
-                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                elif self.b_bathy_use_banks == True:
-                    da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
-                    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-                #if (d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h) < self.dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
-                #    da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
-                #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-
-            # If the cell is outside of the banks, then just ignore this cell (set it to it's same elevation).  No need to update the output bathymetry raster.
-            elif d_dist_cell_to_bank <= 0 or d_dist_cell_to_bank >= d_total_bank_dist:
-                return
-
-
-            
-            #JUST FOR TESTING
-            #da_xs_profile[x] = d_y_bathy
-            #dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-
-        return
+    
     
     def Calculate_Bathymetry_Based_on_WSE_or_LC(self, d_q_baseflow: float, d_slope_use: float, output_bathymetry: np.ndarray):
         """
@@ -700,8 +450,8 @@ class CrossSection:
                     i_total_bank_cells = 1
             if i_total_bank_cells > 1:
                 d_y_bathy = self.get_thalweg() - d_y_depth
-                self._adjust_one_side_for_bathymetry(i_bank_1_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row1_index_main, self.ia_xc_column1_index_main, self.da_xs_profile1, output_bathymetry, 0.0, d_y_bathy, d_y_depth)
-                self._adjust_one_side_for_bathymetry(i_bank_2_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main, self.da_xs_profile2, output_bathymetry, 0.0, d_y_bathy, d_y_depth)
+                _adjust_one_side_for_bathymetry(i_bank_1_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row1_index_main, self.ia_xc_column1_index_main, self.da_xs_profile1, output_bathymetry, 0.0, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks)
+                _adjust_one_side_for_bathymetry(i_bank_2_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main, self.da_xs_profile2, output_bathymetry, 0.0, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks)
 
         else:
             d_y_depth = 0.0
@@ -711,165 +461,18 @@ class CrossSection:
     def set_mannings_n_values(self, dm_manning_n_raster: np.ndarray):
         self.mannings_n1 = dm_manning_n_raster[self.ia_xc_row1_index_main[:self.xs1_n], self.ia_xc_column1_index_main[:self.xs1_n]]
         self.mannings_n2 = dm_manning_n_raster[self.ia_xc_row2_index_main[:self.xs2_n], self.ia_xc_column2_index_main[:self.xs2_n]]
-
-    def _calculate_stream_geometry(self, da_xs_profile: np.ndarray,
-                                  d_wse: float,
-                                  n: int,
-                                  da_n_profile: np.ndarray = None,) -> tuple[float, ...]:
-        # Initial output
-        d_area, d_perimeter, d_composite_n = 0.0, 0.0, 0.0
-
-        # Estimate the depth of the stream
-        da_y_depth = self._get_stream_depths(d_wse, da_xs_profile, n)
-
-        # Return if the depth is not valid.
-        if da_y_depth is None:
-            return 0, 0, 0
-
-        # Take action if there are values < 0
-        lt_0_in_depths, i_target_index = self._check_for_negative_depths(da_y_depth)
-        
-        if lt_0_in_depths:
-            # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
-            # Get the index of the first bad vadlue
-            i_target_index += 1
-
-            # Calculate the distance to use
-            d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
-
-            # Calculate the geometric variables
-            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
-
-            d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
-            perim_array = calculate_hypotnuse(self.d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
-
-            d_perimeter = np.sum(perim_array) + d_perimeter_i
-            
-            # Calculate the composite n
-            d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
-        else:
-            # All values are positive, so include them all.
-
-            # Calculate the geometric values
-            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
-
-            perim_array = calculate_hypotnuse(self.d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
-
-            d_perimeter = np.sum(perim_array[1:])
-
-            d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
-
-        # Return to the calling function
-        return d_area, d_perimeter, d_composite_n
-    
-    def _calculate_stream_geometry_and_topwidth(self, da_xs_profile: np.ndarray, 
-                              d_wse: float, 
-                              n: int, 
-                              da_n_profile: np.ndarray,) -> tuple[float, ...]:
-        """
-        Estimates the stream geometry
-
-        Uses a composite Manning's n as given by:
-        Composite Manning N based on https://www.hec.usace.army.mil/confluence/rasdocs/ras1dtechref/6.5/theoretical-basis-for-one-dimensional-and-two-dimensional-hydrodynamic-calculations/1d-steady-flow-water-surface-profiles/composite-manning-s-n-for-the-main-channel
-
-        Parameters
-        ----------
-        da_xs_profile: ndarray
-            Elevations of the stream cross section
-        d_wse: float
-            Water surface elevation
-        d_distance_z: float
-            Incremental distance per cell parallel to the orientation of the cross section
-        da_n_profile: float
-            Input initial Manning's n for the stream
-
-        Returns
-        -------
-        d_area, d_perimeter, d_composite_n, d_top_width
-
-        """
-        # Initial output
-        d_area, d_perimeter, d_composite_n, d_top_width = 0.0, 0.0, 0.0, 0.0
-
-        # Estimate the depth of the stream
-        da_y_depth = self._get_stream_depths(d_wse, da_xs_profile, n)
-
-        # Return if the depth is not valid.
-        if da_y_depth is None:
-            return 0, 0, 0, 0
-
-        # Take action if there are values < 0
-        lt_0_in_depths, i_target_index = self._check_for_negative_depths(da_y_depth)
-        
-        if lt_0_in_depths:
-            # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
-            # Get the index of the first bad vadlue
-            i_target_index += 1
-
-            # Calculate the distance to use
-            d_dist_use = self._get_distance_to_use(da_y_depth, i_target_index)
-
-            # Calculate the geometric variables
-            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
-
-            d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
-            perim_array = calculate_hypotnuse(self.d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
-
-            d_perimeter = np.sum(perim_array) + d_perimeter_i
-            
-            # Calculate the composite n
-            d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
-
-            # Update the top width
-            d_top_width = self._calculate_top_width_up_to_point(i_target_index, d_dist_use)
-
-        else:
-            # All values are positive, so include them all.
-
-            # Calculate the geometric values
-            d_area = np.sum(self.d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
-
-            perim_array = calculate_hypotnuse(self.d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
-
-            d_perimeter = np.sum(perim_array[1:])
-
-            d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
-
-            d_top_width = self._calculate_top_width_from_all(da_y_depth)
-
-        # Return to the calling function
-        return d_area, d_perimeter, d_composite_n, d_top_width
-
-
-    def calculate_discharge_from_wse(self, wse: float, sqrt_slope: float):
-         # Calculate the geometry
-        A1, P1, np1 = self.calculate_stream_geometry_side_1(wse)
-        A2, P2, np2 = self.calculate_stream_geometry_side_2(wse)
-
-        # Aggregate the geometric properties
-        d_a_sum = A1 + A2
-        d_p_sum = max(P1 + P2, 1e-6)  # Avoid division by zero
-
-        d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
-
-        # Check that the mannings n is physically realistic
-        if d_composite_n < 0.0001:
-            d_composite_n = 0.035
-
-        discharge = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * sqrt_slope
-        return discharge
     
     def calculate_stream_geometry_side_1(self, wse: float):
-        return self._calculate_stream_geometry(self.da_xs_profile1, wse, self.xs1_n, self.mannings_n1)
+        return _calculate_stream_geometry(self.da_xs_profile1, wse, self.xs1_n, self.d_ordinate_dist, self.mannings_n1)
     
     def calculate_stream_geometry_side_2(self, wse: float):
-        return self._calculate_stream_geometry(self.da_xs_profile2, wse, self.xs2_n, self.mannings_n2)
+        return _calculate_stream_geometry(self.da_xs_profile2, wse, self.xs2_n, self.d_ordinate_dist, self.mannings_n2)
     
     def calculate_stream_geometry_and_topwidth_side_1(self, wse: float):
-        return self._calculate_stream_geometry_and_topwidth(self.da_xs_profile1, wse, self.xs1_n, self.mannings_n1)
+        return _calculate_stream_geometry_and_topwidth(self.da_xs_profile1, wse, self.xs1_n, self.d_ordinate_dist, self.mannings_n1)
     
     def calculate_stream_geometry_and_topwidth_side_2(self, wse: float):
-        return self._calculate_stream_geometry_and_topwidth(self.da_xs_profile2, wse, self.xs2_n, self.mannings_n2)
+        return _calculate_stream_geometry_and_topwidth(self.da_xs_profile2, wse, self.xs2_n, self.d_ordinate_dist, self.mannings_n2)
     
     def _calc_side_distance(self, profile, bank_index, bankfull_elev):
             """Compute the horizontal distance along a side based on elevation difference."""
@@ -884,6 +487,9 @@ class CrossSection:
                     return 0.0
             except Exception:
                 return 0.5 * self.d_ordinate_dist
+            
+    def get_calculate_discharge_from_wse_args(self):
+        return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist
     
     def _compute_depth(self, i_total_bank_cells, i_bank_1_index, i_bank_2_index, d_bankfull_elevation, d_q_baseflow, d_slope_use):
         
@@ -1086,15 +692,15 @@ class CrossSection:
         # --- Adjust bathymetry on both profiles if valid banks were found --- #
         if i_total_bank_cells > 1:
             # Add 1 to the bank index to get to the actual bank cell
-            self._adjust_one_side_for_bathymetry(
+            _adjust_one_side_for_bathymetry(
                 i_bank_1_index + 1, d_total_bank_dist,
                 d_trap_base, d_h_dist, self.ia_xc_row1_index_main, self.ia_xc_column1_index_main,
-                self.da_xs_profile1, dm_output_bathymetry, d_side1_dist, d_y_bathy, d_y_depth
+                self.da_xs_profile1, dm_output_bathymetry, d_side1_dist, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks
             )
-            self._adjust_one_side_for_bathymetry(
+            _adjust_one_side_for_bathymetry(
                 i_bank_2_index + 1, d_total_bank_dist,
                 d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main,
-                self.da_xs_profile2, dm_output_bathymetry, d_side2_dist, d_y_bathy, d_y_depth
+                self.da_xs_profile2, dm_output_bathymetry, d_side2_dist, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks
             )
             # adjust_profile_for_bathymetry(
             #     da_xs_profile1, i_bank_1_index + 1, d_total_bank_dist,
@@ -1112,6 +718,474 @@ class CrossSection:
             # )
 
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
+
+@njit(cache=True)
+def _adjust_cross_section_to_lowest_point(i_low_spot_range: int,
+                                          da_xs_profile1: np.ndarray,
+                                          da_xs_profile2: np.ndarray,
+                                          ia_xc_row1_index_main: np.ndarray,
+                                          ia_xc_row2_index_main: np.ndarray,
+                                          ia_xc_column1_index_main: np.ndarray,
+                                          ia_xc_column2_index_main: np.ndarray,
+                                          i_center_point: int,
+                                          xs1_n: int,
+                                          xs2_n: int
+                                          ):
+    """
+    Reorients the cross section through the lowest point of the stream. Cross-section needs to be re-sampled if the low spot in the cross-section changes location.
+
+    Parameters
+    ----------
+    i_low_point_index: int
+        Offset index along the cross section of the lowest point
+    d_dem_low_point_elev: float
+        Elevation of the lowest point
+    da_xs_profile_one: ndarray
+        Cross section elevations of the first cross section
+    da_xs_profile_two: ndarray
+        Cross section elevations of the second cross section
+    ia_xc_r1_index_main: ndarray
+        Row indices of the first cross section
+    ia_xc_r2_index_main: ndarray
+        Row indices of the second cross section
+    ia_xc_c1_index_main: ndarray
+        Column indices of the first cross section
+    ia_xc_c2_index_main: ndarray
+        Column indicies of the second cross section
+    da_xs1_mannings: ndarray
+        Manning's roughness of the first cross section
+    da_xs2_mannings: ndarray
+        Manning's roughness of the second cross section
+    i_center_point: int
+        Center point index
+    i_low_spot_range: int
+        The number of cells on each side of the cross-section we're looking at moving to. 
+    """
+    d_dem_low_point_elev = da_xs_profile1[0]
+    i_low_point_index = 0
+
+    # Loop on the search range for the low point
+    for i_entry in range(i_low_spot_range):
+        if i_entry >= da_xs_profile1.shape[0] or i_entry >= da_xs_profile2.shape[0]:
+            break
+        # Look in the first profile
+        if da_xs_profile1[i_entry] > 0.0 and da_xs_profile1[i_entry] < d_dem_low_point_elev:
+            # New low point was found. Update the index.
+            d_dem_low_point_elev = da_xs_profile1[i_entry]
+            i_low_point_index = i_entry
+
+        # Look in the second profile
+        if da_xs_profile2[i_entry] > 0.0 and da_xs_profile2[i_entry] < d_dem_low_point_elev:
+            # New low point was found. Update the index.
+            d_dem_low_point_elev = da_xs_profile2[i_entry]
+            i_low_point_index = i_entry * -1
+
+    # Process based on if the low point is in the first or second profile
+    if i_low_point_index > 0:
+        # Low point is in the first profile. Update the cross section and mannings.
+        da_xs_profile2[i_low_point_index:i_center_point] = da_xs_profile2[0:i_center_point - i_low_point_index]
+        da_xs_profile2[0:i_low_point_index + 1] = np.flip(da_xs_profile1[0:i_low_point_index + 1])
+        da_xs_profile1[0:i_center_point - i_low_point_index] = da_xs_profile1[i_low_point_index:i_center_point]
+        da_xs_profile1[xs1_n - i_low_point_index] = 99999.9
+
+        # Update the row indices
+        ia_xc_row2_index_main[i_low_point_index:i_center_point] = ia_xc_row2_index_main[0:i_center_point - i_low_point_index]
+        ia_xc_row2_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_row1_index_main[0:i_low_point_index + 1])
+        ia_xc_row1_index_main[0:i_center_point - i_low_point_index] = ia_xc_row1_index_main[i_low_point_index:i_center_point]
+
+        # Update the column indices
+        ia_xc_column2_index_main[i_low_point_index:i_center_point] = ia_xc_column2_index_main[0:i_center_point - i_low_point_index]
+        ia_xc_column2_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_column1_index_main[0:i_low_point_index + 1])
+        ia_xc_column1_index_main[0:i_center_point - i_low_point_index] = ia_xc_column1_index_main[i_low_point_index:i_center_point]
+
+    elif i_low_point_index < 0:
+        # Low point is in the second profile Update the cross section and mannings.
+        i_low_point_index = i_low_point_index * -1
+        da_xs_profile1[i_low_point_index:i_center_point] = da_xs_profile1[0:i_center_point - i_low_point_index]
+        da_xs_profile1[0:i_low_point_index + 1] = np.flip(da_xs_profile2[0:i_low_point_index + 1])
+        da_xs_profile2[0:i_center_point - i_low_point_index] = da_xs_profile2[i_low_point_index:i_center_point]
+        da_xs_profile2[xs2_n - i_low_point_index] = 99999.9
+
+        # Update the row indices
+        ia_xc_row1_index_main[i_low_point_index:i_center_point] = ia_xc_row1_index_main[0:i_center_point - i_low_point_index]
+        ia_xc_row1_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_row2_index_main[0:i_low_point_index + 1])
+        ia_xc_row2_index_main[0:i_center_point - i_low_point_index] = ia_xc_row2_index_main[i_low_point_index:i_center_point]
+
+        # Update the column indices
+        ia_xc_column1_index_main[i_low_point_index:i_center_point] = ia_xc_column1_index_main[0:i_center_point - i_low_point_index]
+        ia_xc_column1_index_main[0:i_low_point_index + 1] = np.flip(ia_xc_column2_index_main[0:i_low_point_index + 1])
+        ia_xc_column2_index_main[0:i_center_point - i_low_point_index] = ia_xc_column2_index_main[i_low_point_index:i_center_point]
+    else:
+        return ia_xc_row1_index_main[i_center_point], ia_xc_column1_index_main[i_center_point]  
+    
+    # The r and c for the stream cell is adjusted because it may have moved
+    row, col = ia_xc_row1_index_main[0], ia_xc_column1_index_main[0]
+    return row, col
+    
+
+@njit(cache=True)
+def _sample_side(
+        profile: np.ndarray,
+        lc_profile: np.ndarray,
+        ia_xc_row_index_main: np.ndarray,
+        ia_xc_column_index_main: np.ndarray,
+        ia_xc_row_index_second: np.ndarray,
+        ia_xc_column_index_second: np.ndarray,
+        da_xc_main_fract: np.ndarray,
+        da_xc_second_fract: np.ndarray,
+        i_center_point: int,
+        i_row_bottom: int,
+        i_row_top: int,
+        i_column_bottom: int,
+        i_column_top: int,
+        dm_elevation: np.ndarray,
+        dm_land_use: np.ndarray
+    ):
+        i_xs_length_indice = i_center_point
+
+        for i in range(i_xs_length_indice):
+            if (
+                ia_xc_row_index_main[i] <= i_row_bottom or
+                ia_xc_row_index_second[i] <= i_row_bottom or
+                ia_xc_row_index_main[i] >= i_row_top or
+                ia_xc_row_index_second[i] >= i_row_top or
+                ia_xc_column_index_main[i] <= i_column_bottom or
+                ia_xc_column_index_second[i] <= i_column_bottom or
+                ia_xc_column_index_main[i] >= i_column_top or
+                ia_xc_column_index_second[i] >= i_column_top
+            ):
+                i_xs_length_indice = i
+                break
+
+        profile[i_xs_length_indice] = 99999.9
+
+        # profile[:i_xs_length_indice] = (
+        #     self.dm_elevation[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]] * self.da_xc_main_fract[self.i_precompute_angle_closest, :i_xs_length_indice] +
+        #     self.dm_elevation[ia_xc_row_index_second[:i_xs_length_indice], ia_xc_column_index_second[:i_xs_length_indice]] * self.da_xc_second_fract[self.i_precompute_angle_closest, :i_xs_length_indice]
+        # )
+
+        for i in range(i_xs_length_indice):
+            row_main = ia_xc_row_index_main[i]
+            col_main = ia_xc_column_index_main[i]
+            row_second = ia_xc_row_index_second[i]
+            col_second = ia_xc_column_index_second[i]
+
+            profile[i] = (
+                dm_elevation[row_main, col_main] * da_xc_main_fract[i] +
+                dm_elevation[row_second, col_second] * da_xc_second_fract[i]
+            )
+
+        # lc_profile[:i_xs_length_indice] = self.dm_land_use[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]]
+        for i in range(i_xs_length_indice):
+            row_main = ia_xc_row_index_main[i]
+            col_main = ia_xc_column_index_main[i]
+            lc_profile[i] = int(dm_land_use[row_main, col_main])
+
+        return i_xs_length_indice
+
+@njit(cache=True)
+def _check_for_negative_depths(da_y_depth: np.ndarray):
+    # Take action if there are values < 0
+    lt_0_in_depths = False
+    i_target_index = 0
+    for i_target_index, value in enumerate(da_y_depth[1:]):
+        if value <= 0:
+            lt_0_in_depths = True
+            break
+
+    return lt_0_in_depths, i_target_index
+
+@njit(cache=True)
+def _get_distance_to_use(da_y_depth: np.ndarray, i_target_index: int, d_ordinate_dist: float):
+    return d_ordinate_dist * da_y_depth[i_target_index - 1] / (np.abs(da_y_depth[i_target_index - 1]) + np.abs(da_y_depth[i_target_index]))
+
+@njit(cache=True)
+def _calculate_top_width_up_to_point(i_target_index: int, d_dist_use: float, d_ordinate_dist: float):
+    return d_ordinate_dist * (i_target_index - 1) + d_dist_use
+
+@njit(cache=True)
+def _calculate_top_width_from_all(da_y_depth: np.ndarray, d_ordinate_dist: float):
+    return d_ordinate_dist * (da_y_depth.shape[0] - 1)
+
+@njit(cache=True)
+def _get_stream_depths(d_wse: float, profile: np.ndarray, n: int):
+    da_y_depth = d_wse - profile[:n]
+
+    if da_y_depth.shape[0] <= 0 or da_y_depth[0] <= 1e-16:
+        return None
+    
+    return da_y_depth
+
+@njit(cache=True)
+def _calculate_side_top_width(d_wse: float, profile: np.ndarray, n: int, d_ordinate_dist: float):
+    da_y_depth = _get_stream_depths(d_wse, profile, n)
+
+    if da_y_depth is None:
+        return 0
+
+    lt_0_in_depths, i_target_index = _check_for_negative_depths(da_y_depth)
+
+    if lt_0_in_depths:
+        i_target_index += 1
+        d_dist_use = _get_distance_to_use(da_y_depth, i_target_index, d_ordinate_dist)
+        return _calculate_top_width_up_to_point(i_target_index, d_dist_use, d_ordinate_dist)
+    else:
+        return _calculate_top_width_from_all(da_y_depth, d_ordinate_dist)
+
+
+@njit(cache=True)
+def _calculate_stream_geometry(da_xs_profile: np.ndarray,
+                                d_wse: float,
+                                n: int,
+                                d_ordinate_dist: float,
+                                da_n_profile: np.ndarray = None,) -> tuple[float, ...]:
+    # Initial output
+    d_area, d_perimeter, d_composite_n = 0.0, 0.0, 0.0
+
+    # Estimate the depth of the stream
+    da_y_depth = _get_stream_depths(d_wse, da_xs_profile, n)
+
+    # Return if the depth is not valid.
+    if da_y_depth is None:
+        return 0, 0, 0
+
+    # Take action if there are values < 0
+    lt_0_in_depths, i_target_index = _check_for_negative_depths(da_y_depth)
+    
+    if lt_0_in_depths:
+        # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
+        # Get the index of the first bad vadlue
+        i_target_index += 1
+
+        # Calculate the distance to use
+        d_dist_use = _get_distance_to_use(da_y_depth, i_target_index, d_ordinate_dist)
+
+        # Calculate the geometric variables
+        d_area = np.sum(d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
+
+        d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
+        perim_array = calculate_hypotnuse(d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
+
+        d_perimeter = np.sum(perim_array) + d_perimeter_i
+        
+        # Calculate the composite n
+        d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
+    else:
+        # All values are positive, so include them all.
+
+        # Calculate the geometric values
+        d_area = np.sum(d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
+
+        perim_array = calculate_hypotnuse(d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
+
+        d_perimeter = np.sum(perim_array[1:])
+
+        d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
+
+    # Return to the calling function
+    return d_area, d_perimeter, d_composite_n
+
+@njit(cache=True)
+def _calculate_stream_geometry_and_topwidth(da_xs_profile: np.ndarray, 
+                            d_wse: float, 
+                            n: int, 
+                            d_ordinate_dist: float,
+                            da_n_profile: np.ndarray,) -> tuple[float, ...]:
+    """
+    Estimates the stream geometry
+
+    Uses a composite Manning's n as given by:
+    Composite Manning N based on https://www.hec.usace.army.mil/confluence/rasdocs/ras1dtechref/6.5/theoretical-basis-for-one-dimensional-and-two-dimensional-hydrodynamic-calculations/1d-steady-flow-water-surface-profiles/composite-manning-s-n-for-the-main-channel
+
+    Parameters
+    ----------
+    da_xs_profile: ndarray
+        Elevations of the stream cross section
+    d_wse: float
+        Water surface elevation
+    d_distance_z: float
+        Incremental distance per cell parallel to the orientation of the cross section
+    da_n_profile: float
+        Input initial Manning's n for the stream
+
+    Returns
+    -------
+    d_area, d_perimeter, d_composite_n, d_top_width
+
+    """
+    # Initial output
+    d_area, d_perimeter, d_composite_n, d_top_width = 0.0, 0.0, 0.0, 0.0
+
+    # Estimate the depth of the stream
+    da_y_depth = _get_stream_depths(d_wse, da_xs_profile, n)
+
+    # Return if the depth is not valid.
+    if da_y_depth is None:
+        return 0, 0, 0, 0
+
+    # Take action if there are values < 0
+    lt_0_in_depths, i_target_index = _check_for_negative_depths(da_y_depth)
+    
+    if lt_0_in_depths:
+        # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
+        # Get the index of the first bad vadlue
+        i_target_index += 1
+
+        # Calculate the distance to use
+        d_dist_use = _get_distance_to_use(da_y_depth, i_target_index, d_ordinate_dist)
+
+        # Calculate the geometric variables
+        d_area = np.sum(d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
+
+        d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
+        perim_array = calculate_hypotnuse(d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
+
+        d_perimeter = np.sum(perim_array) + d_perimeter_i
+        
+        # Calculate the composite n
+        d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
+
+        # Update the top width
+        d_top_width = _calculate_top_width_up_to_point(i_target_index, d_dist_use, d_ordinate_dist)
+
+    else:
+        # All values are positive, so include them all.
+
+        # Calculate the geometric values
+        d_area = np.sum(d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
+
+        perim_array = calculate_hypotnuse(d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
+
+        d_perimeter = np.sum(perim_array[1:])
+
+        d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
+
+        d_top_width = _calculate_top_width_from_all(da_y_depth, d_ordinate_dist)
+
+    # Return to the calling function
+    return d_area, d_perimeter, d_composite_n, d_top_width
+
+@njit(cache=True)
+def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.ndarray, xs1_n: float, mannings_n1: float,
+                                profile2: np.ndarray, xs2_n: float, mannings_n2: float, d_ordinate_dist: float):
+        # Calculate the geometry
+    A1, P1, np1 = _calculate_stream_geometry(profile1, wse, xs1_n, d_ordinate_dist, mannings_n1)
+    A2, P2, np2 = _calculate_stream_geometry(profile2, wse, xs2_n, d_ordinate_dist, mannings_n2)
+
+    # Aggregate the geometric properties
+    d_a_sum = A1 + A2
+    d_p_sum = max(P1 + P2, 1e-6)  # Avoid division by zero
+
+    d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+
+    # Check that the mannings n is physically realistic
+    if d_composite_n < 0.0001:
+        d_composite_n = 0.035
+
+    discharge = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * sqrt_slope
+    return discharge
+
+@njit(cache=True)
+def _adjust_one_side_for_bathymetry(i_bank_index: int, d_total_bank_dist: float,
+                                    d_trap_base: float, d_distance_h: float, ia_xc_r_index_main: np.ndarray, 
+                                    ia_xc_c_index_main: np.ndarray, da_xs_profile: np.ndarray, dm_output_bathymetry: np.ndarray,
+                                    d_side_dist: float, d_y_bathy: float, d_y_depth: float, d_ordinate_dist: float,
+                                    dm_elevation: np.ndarray, b_bathy_use_banks: bool):
+    """
+    Adjusts the profile for the estimated bathymetry
+
+    Parameters
+    ----------
+    da_xs_profile: ndarray
+        Elevations of the stream cross section
+    i_bank_index: int
+        Distance in index space from the stream to the bank
+    d_total_bank_dist: float
+        Distance to the bank estimated in unit space
+    d_trap_base: float
+        Bottom distance of the stream cross section
+    d_distance_z: float
+        Incremental distance per cell parallel to the orientation of the cross section
+    d_distance_h: float
+        Distance of the slope section of the trapezoidal channel.  Typically d_distance_h = 0.2* TW of Trapezoid
+    d_y_bathy: float
+        Bathymetry elevation of the bottom
+    d_y_depth: float
+        Depth.  Basically water surface elevation (WSE) minus d_y_bathy
+    dm_output_bathymetry: ndarray
+        Output bathymetry matrix
+    ia_xc_r_index_main: ndarray
+        Row indices for the stream cross section
+    ia_xc_c_index_main: ndarray
+        Column indices for the stream cross section
+
+    Returns
+    -------
+    None. Values are updated in the output bathymetry matrix
+
+    """
+
+    # If banks are calculated, make an adjustment to the trapezoidal bathymetry
+    if i_bank_index <= 0:
+        return
+    
+    # Loop over the bank width offset indices
+    for x in range(min(i_bank_index + 1, len(ia_xc_r_index_main))):
+        # Calculate the distance to the bank
+        d_dist_cell_to_bank = (i_bank_index - x) * d_ordinate_dist + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
+        # lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
+
+        # if lc_grid_val<0 or (i_lc_water_value>0 and lc_grid_val!=i_lc_water_value):
+        #     return
+
+        # # Joseph added this because it looks like we aren't getting a bathymetry output for the first cell in the cross-section
+        # if x == 0:
+        #     # If the cell is the first cell, then set it to the bottom elevation of the trapezoid.
+        #     da_xs_profile[x] = d_y_bathy
+        #     dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+        # If the cell is in the flat part of the trapezoidal cross-section, set it to the bottom elevation of the trapezoid.
+        if d_dist_cell_to_bank > d_distance_h:
+            if b_bathy_use_banks == False and d_y_bathy < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                da_xs_profile[x] = d_y_bathy
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+            elif b_bathy_use_banks == True:
+                da_xs_profile[x] = d_y_bathy
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+        # If the cell is in the slope part of the trapezoid you need to find the elevation based on the slope of the trapezoid side.
+        elif d_dist_cell_to_bank <= d_distance_h and d_dist_cell_to_bank < d_trap_base + d_distance_h:
+            if b_bathy_use_banks == False and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+            elif b_bathy_use_banks == True:
+                da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+        # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevation based on the slope of the trapezoid side.
+        elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
+            d_dist_cell_to_bank_other_side = d_total_bank_dist - d_dist_cell_to_bank
+            if b_bathy_use_banks == False and d_dist_cell_to_bank_other_side>0.0 and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+            elif b_bathy_use_banks == True:
+                da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
+                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+            #if (d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+            #    da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
+            #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+        # If the cell is outside of the banks, then just ignore this cell (set it to it's same elevation).  No need to update the output bathymetry raster.
+        elif d_dist_cell_to_bank <= 0 or d_dist_cell_to_bank >= d_total_bank_dist:
+            return
+
+
+        
+        #JUST FOR TESTING
+        #da_xs_profile[x] = d_y_bathy
+        #dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+
+    return
 
 @njit(cache=True)
 def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
@@ -1230,6 +1304,7 @@ def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_
     # Return to the calling function
     return d_distance_z
 
+@njit(cache=True)
 def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_width: float, d_slope: float, d_mannings_n: float):
     """
     Estimates the depth iteratively by comparing the calculated flow to the baseflow

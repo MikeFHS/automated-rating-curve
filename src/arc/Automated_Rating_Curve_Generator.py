@@ -24,7 +24,7 @@ from numba import njit, vectorize
 from numba.core.errors import TypingError
 
 from arc import LOG
-from arc.cross_section import CrossSection
+from arc.cross_section import CrossSection, calculate_discharge_from_wse
 from arc.hydraulic_data import HydraulicData
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
@@ -1235,7 +1235,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSecti
 
     # Let us try the maximum depth increment first. If it cannot give us an answer, return
     wse_high = start_wse + high * increment
-    d_q_sum_high = x_section.calculate_discharge_from_wse(wse_high, sqrt_slope)
+    d_q_sum_high = calculate_discharge_from_wse(wse_high, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
 
     if d_q_sum_high < d_q_maximum:
         return wse_high, d_q_sum_high
@@ -1244,7 +1244,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSecti
     while high - low > 1:
         mid = (low + high) // 2
         wse = start_wse + mid * increment
-        d_q_sum = x_section.calculate_discharge_from_wse(wse, sqrt_slope)
+        d_q_sum = calculate_discharge_from_wse(wse, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
 
         if d_q_sum < d_q_maximum:
             low = mid
@@ -1257,8 +1257,8 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSecti
     can_interpolate = False
     for i_depthincrement in range(low, high + 1):
         d_wse = start_wse + i_depthincrement * increment
-        d_q_sum = x_section.calculate_discharge_from_wse(d_wse, sqrt_slope)
-        
+        d_q_sum = calculate_discharge_from_wse(d_wse, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
+
         # Check for overshoot in discharge
         if d_q_sum == d_q_maximum:
             break
@@ -1269,7 +1269,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSecti
                 # interp_wse = prev_wse + (target_q - prev_q) * (d_wse - prev_wse) / (d_q_sum - prev_q)
                 interp_wse = prev_wse + (d_q_maximum - prev_q) * (d_wse - prev_wse) / (d_q_sum - prev_q)
                 # Recalculate geometry and discharge at the interpolated water surface elevation
-                d_q_sum = x_section.calculate_discharge_from_wse(interp_wse, sqrt_slope)
+                d_q_sum = calculate_discharge_from_wse(interp_wse, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
                 d_wse = interp_wse
             break
 
@@ -1343,9 +1343,6 @@ def flood_increments(i_number_of_increments, d_inc_y, x_section: CrossSection, d
                         break
 
                     d_wse_lower_bound += 0.01
-
-            if round(Q, 3) == 40.761:
-                pass
                         
             # if we reach the upper bound without a valid candidate, or we overshot, revert
             # also add a top‑level guard before saving the initial (non‑refined) Q
@@ -1373,12 +1370,13 @@ def flood_increments(i_number_of_increments, d_inc_y, x_section: CrossSection, d
 
     return i_start_elevation_index, i_last_elevation_index
 
-def modify_array(arr, b_modified_dem):
+def add_100_if_elevation_less_than_0(arr):
     """
     Checks and modifies the DEM if there are negative elevations in it by adding 100 to all elevations.
     """
     # Check if the array contains any negative value
-    if np.any(arr < 0) and not b_modified_dem:
+    b_modified_dem = False
+    if np.any(arr < 0):
         # Add 100 to the entire array
         arr += 100
         b_modified_dem = True
@@ -1425,7 +1423,7 @@ def objective_with_wse(trial_wse: float, x_section: CrossSection, slope_squared:
     # Define an objective function: the difference between the calculated max flow and d_q_maximum.
     trial_wse = np.round(trial_wse, 3)
 
-    trial_d_q_sum = x_section.calculate_discharge_from_wse(trial_wse, slope_squared)
+    trial_d_q_sum = calculate_discharge_from_wse(trial_wse, slope_squared, *x_section.get_calculate_discharge_from_wse_args())
 
     # trial_d_q_sum = round(trial_d_q_sum, 3)
     difference = trial_d_q_sum - d_q_maximum
@@ -1451,6 +1449,7 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
+# @profile
 def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
@@ -1475,8 +1474,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         b_projected = False
 
     ### if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
-    b_modified_dem = False
-    dm_elevation, b_modified_dem = modify_array(dm_elevation, b_modified_dem)
+    dm_elevation, b_modified_dem = add_100_if_elevation_less_than_0(dm_elevation)
 
     ### make sure the rasters are all the same size and aligned and if not, end with log an error message and stop processing
     if dnrows != snrows or dnrows != lnrows:
@@ -1581,7 +1579,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     # Create cross section, with precomputed angles
     i_precompute_angles = 30
     d_precompute_angles = np.pi / i_precompute_angles
-    x_section = CrossSection(dx, dy, i_precompute_angles, d_precompute_angles, dm_elevation, dm_land_use, params)
+    x_section = CrossSection(dx, dy, i_precompute_angles, d_precompute_angles, dm_elevation, dm_land_use, params["d_x_section_distance"], params["b_FindBanksBasedOnLandCover"], params["i_lc_water_value"], params["d_bathymetry_trapzoid_height"], params["b_bathy_use_banks"])
     hydraulic_data.associate_with_cross_section(x_section)
 
     # Find all the different angle increments to test
@@ -1763,11 +1761,11 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             # The signs differ, so we have a valid bracket.
             # For 3 decimal places, xtol only needs to be 0.001
             d_maxflow_wse_final = np.round(brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.001, args=wse_obj_args), 3)
-            d_q_sum = x_section.calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared)
+            d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
         elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
             # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
             d_maxflow_wse_final = np.round(wse_lower, 3) if np.round(f_lower, 5) == 0 else np.round(wse_upper, 3)
-            d_q_sum = x_section.calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared)
+            d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
 
         # Let's see if the volume-fill approach gave us a better answer and use that if it did
         # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
