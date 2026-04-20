@@ -1,4 +1,3 @@
-
 """
 Written initially by Mike Follum with Follum Hydrologic Solutions, LLC.
 Program simply creates depth, velocity, and top-width information for each stream cell in a domain.
@@ -16,7 +15,6 @@ import pandas as pd
 from datetime import datetime
 import geopandas as gpd
 from scipy.optimize import curve_fit, OptimizeWarning, brentq
-from scipy.signal import savgol_filter
 from shapely.geometry import LineString, MultiLineString
 from osgeo import gdal
 from pyproj import CRS, Geod
@@ -30,14 +28,32 @@ from arc.hydraulic_data import HydraulicData
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 gdal.UseExceptions()
 
-# def geodesic_length_m(line_geom, dem_projection):
-#     """Return geodesic length of a LineString in meters."""
-#     crs = CRS.from_wkt(dem_projection)
-#     geod = Geod(ellps=crs.name)
-#     coords = list(line_geom.coords)
-#     lons, lats = zip(*coords)
-#     length = geod.line_length(lons, lats)  # meters
-#     return length
+_DEM: np.ndarray = None
+_STREAMS: np.ndarray = None
+_BATHYMETRY: np.ndarray = None
+_MANNINGS_N: np.ndarray = None
+_STREAM_SLOPE_DICT: tuple[dict, dict, dict] = None
+
+def get_dem():
+    global _DEM
+    return _DEM
+
+def get_bathymetry():
+    global _BATHYMETRY
+    return _BATHYMETRY
+
+def get_streams():
+    global _STREAMS
+    return _STREAMS
+
+def get_mannings_n():
+    global _MANNINGS_N
+    return _MANNINGS_N
+
+def get_stream_slope_dicts():
+    global _STREAM_SLOPE_DICT
+    return _STREAM_SLOPE_DICT
+
 
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
     """
@@ -606,7 +622,6 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'd_bathymetry_trapzoid_height': float(get_parameter_name(sl_lines,  'Bathy_Trap_H', 0.2)), # Find the bathymetry trapezoid height parameter,
         'b_bathy_use_banks': b_bathy_use_banks, # Find the true/false variable to use the bank elevations to calculate the depth of the bathymetry estimate
         's_output_bathymetry_path': get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File')), # Find the path to the output bathymetry file
-        's_output_flood': get_parameter_name(sl_lines,  'AROutFLOOD'), # Find the path to the output flood file
         's_xs_output_file': get_parameter_name(sl_lines,  'XS_Out_File'), # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
         'i_lc_water_value': int(get_parameter_name(sl_lines,  'LC_Water_Value', 80)), # Find the value in the land cover dataset that corresponds to water. This is used to find the banks of the river if b_FindBanksBasedOnLandCover is set to True
         'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
@@ -992,7 +1007,6 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         Direction of the cross section
 
     """
-
     # Initialize default values
     d_stream_direction = 0.0
     d_xs_direction = 0.0
@@ -1222,9 +1236,7 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     idx = df.iloc[:, 0].astype(int).values
     lookup_array = np.zeros(idx.max() + 1)
     lookup_array[idx] = df.iloc[:, 2].values
-    da_input_mannings = lookup_array[da_input_mannings.astype(int)]
-    # Return to the calling function
-    return da_input_mannings
+    return lookup_array[da_input_mannings.astype(int)]
 
 def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSection, d_slope_use):
     d_q_sum = 0.0
@@ -1449,6 +1461,479 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
+def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, i_general_slope_distance):
+    global _STREAM_SLOPE_DICT
+    s_stream_slope_method = params['s_stream_slope_method']
+    if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
+        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance)
+        _STREAM_SLOPE_DICT = (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
+    elif s_stream_slope_method == 'end_points':
+        dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
+        _STREAM_SLOPE_DICT = (dict_stream_slopes, None, None)
+
+
+def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_baseflow: float, d_q_maximum: float, params: dict, dx: float, dy: float, x_section: CrossSection, hydraulic_data: HydraulicData):
+    dm_stream = get_streams()
+    dm_elevation = get_dem()
+    i_cell_comid = dm_stream[i_row_cell, i_column_cell]
+    i_number_of_increments = params['i_number_of_increments']
+    i_general_direction_distance = params['i_general_direction_distance']
+    i_general_slope_distance = params['i_general_slope_distance']
+
+    
+    d_depth_increment_big = 0.5
+    d_depth_increment_med = 0.05
+    d_depth_increment_small = 0.01
+
+
+    # Get the Slope of each Stream Cell. Slope should be in m/m
+    s_stream_slope_method = params['s_stream_slope_method']
+    if s_stream_slope_method == 'local_average':
+        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
+    elif s_stream_slope_method =='reach_average' or s_stream_slope_method == 'end_points':
+        d_slope_use = get_stream_slope_dicts()[0][i_cell_comid]
+    elif s_stream_slope_method == 'local_average_corrected':
+        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
+        d_slope_25th = get_stream_slope_dicts()[1][i_cell_comid]
+        d_slope_75th = get_stream_slope_dicts()[2][i_cell_comid]
+        # if the corrected slope is less than the streams 25th percentile slope, use the 25th percentile slope
+        if d_slope_use < d_slope_25th:
+            d_slope_use = d_slope_25th
+        # if the corrected slope is greater than the streams 75th percentile slope, use the 75th percentile slope
+        elif d_slope_use > d_slope_75th:
+            d_slope_use = d_slope_75th  
+    else: 
+        #Default to using the 'local_average' method
+        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, _STREAMS, dx, dy, i_general_slope_distance)
+
+    # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
+    d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, i_general_direction_distance)
+
+    # Now Pull the Cross-Section again with the new angle
+    if d_xs_direction > np.pi:
+        i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / x_section.d_precompute_angles))
+    else:
+        i_precompute_angle_closest = int(round(d_xs_direction / x_section.d_precompute_angles))
+
+    x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
+    
+    # Adjust to the lowest-point in the Cross-Section
+    i_low_spot_range = params['i_low_spot_range']
+    if i_low_spot_range > 0:
+        x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
+        # The r and c for the stream cell is adjusted because it may have moved
+        i_row_cell, i_column_cell = x_section.get_row_col()
+    
+    d_dem_low_point_elev = x_section.get_thalweg()
+
+    # Adjust cross-section angle to ensure shortest top-width at a specified depth
+    if x_section.has_angles_to_test():
+        x_section.test_angles_and_reset_cross_section(i_row_cell, i_column_cell)
+
+    # Burn bathymetry profile into cross-section profile
+    # "Be the banks for your river" - Needtobreathe
+            
+    # If you don't have a cross-section, skip it and fill in empty values for the reach average processing
+    if not x_section.is_valid():
+        hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_q_maximum, d_slope_use)
+        return
+
+    #BATHYMETRY CALCULATION
+    #This method calculates bathymetry based on the water surface elevation or LandCover ("FindBanksBasedOnLandCover" and "LC_Water_Value").
+    b_bathy_use_banks = params['b_bathy_use_banks']
+    s_output_bathymetry_path = params['s_output_bathymetry_path']
+    if not b_bathy_use_banks and s_output_bathymetry_path != '':
+        x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(d_q_baseflow, d_slope_use, get_bathymetry())
+    #This method calculates the banks based on the Riverbank
+    elif b_bathy_use_banks and s_output_bathymetry_path != '':
+        x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, get_bathymetry())
+
+    # Calculate the volumes
+    # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
+    # This is preferred for VDTDatabase method.
+    
+    # Set output arrays to zero
+    hydraulic_data.reset_hydraulic_data()
+    
+    # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
+    b_outprint_yes = False
+    
+    # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
+    i_start_elevation_index = -1
+    i_last_elevation_index = 0
+    
+    # Here are the n values for each side of the cross-section
+    x_section.set_mannings_n_values(get_mannings_n())
+
+    # space between ordinates in the cross-section
+    d_ordinate_dist = x_section.d_ordinate_dist
+
+    # we'll assume the results are acceptable until we think otherwise
+    acceptable = True
+
+    # This is the bottom of the channel
+    d_maxflow_wse_initial = x_section.get_thalweg()
+
+    # set this as the default in case we don't find a better one
+    d_maxflow_wse_final = -999.0
+
+    # initialize some variables
+    d_q_sum = 0.0
+    slope_use_squared = d_slope_use ** 0.5
+
+    wse_lower = d_maxflow_wse_initial + 0.01
+    wse_upper = d_maxflow_wse_initial + 24.99
+    wse_obj_args = (x_section, slope_use_squared, d_q_maximum)
+
+    # Check if the objective function changes sign between the bounds.
+    f_lower = objective_with_wse(wse_lower, *wse_obj_args)
+    f_upper = objective_with_wse(wse_upper, *wse_obj_args)
+
+    if safe_signs_differ(f_lower, f_upper):
+        # The signs differ, so we have a valid bracket.
+        # For 3 decimal places, xtol only needs to be 0.001
+        d_maxflow_wse_final = np.round(brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.001, args=wse_obj_args), 3)
+        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
+    elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
+        # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+        d_maxflow_wse_final = np.round(wse_lower, 3) if np.round(f_lower, 5) == 0 else np.round(wse_upper, 3)
+        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
+
+    # Let's see if the volume-fill approach gave us a better answer and use that if it did
+    # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
+    d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, x_section, d_slope_use)
+
+
+    # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
+    d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, x_section.get_thalweg())
+    d_maxflow_wse_med = d_maxflow_wse_initial
+    d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, x_section, d_slope_use)
+
+    # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
+    d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, x_section.get_thalweg())
+    d_maxflow_wse_final_test = d_maxflow_wse_med
+    d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, x_section, d_slope_use)
+
+    # let's see if the iterative method gave use a better result and use that if it did
+    if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+        d_maxflow_wse_final = d_maxflow_wse_final_test
+        d_q_sum = d_q_sum_test
+
+    # here we will see if we can get a better answer with a revised slope
+    # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
+    # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
+    potential_slope_error = 0.6 / d_ordinate_dist
+    
+    # Set lower and upper bounds for the slope search.
+    slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
+    slope_upper = d_slope_use + potential_slope_error
+
+    # if slope is greater than the threshold, let's change it to the threshold
+    if slope_upper > 0.03:
+        slope_upper = 0.03
+
+    slope_obj_args = (d_maxflow_wse_initial, d_depth_increment_small, d_q_maximum, x_section)
+    # Check if the objective function changes sign between the bounds.
+    f_lower = objective_with_slope(slope_lower, *slope_obj_args)
+    f_upper = objective_with_slope(slope_upper, *slope_obj_args)
+    if safe_signs_differ(f_lower, f_upper):
+        # The signs differ, so we have a valid bracket.
+        # Needs xtol of 0.0001 to get to 3 decimal places
+        trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+        trial_slope_use = np.round(trial_slope_use, 3)
+        # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+        d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            2501, 
+            d_maxflow_wse_initial, 
+            d_depth_increment_small, 
+            d_q_maximum, 
+            x_section,
+            trial_slope_use
+        )
+        # Check if d_q_sum is within acceptable bounds
+        if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+            # Optionally update d_slope_use to the accepted value:
+            d_slope_use = trial_slope_use
+            d_maxflow_wse_final = d_maxflow_wse_final_test
+            d_q_sum = d_q_sum_test
+        else:
+            pass
+    # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+    elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
+        trial_slope_use = np.round(slope_lower, 3) if np.round(f_lower, 5) == 0 else np.round(slope_upper, 3)
+        # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+        d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            2501, 
+            d_maxflow_wse_initial, 
+            d_depth_increment_small, 
+            d_q_maximum, 
+            x_section,
+            trial_slope_use
+        )
+        # Check if d_q_sum is within acceptable bounds
+        if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+            # Optionally update d_slope_use to the accepted value:
+            d_slope_use = trial_slope_use
+            d_maxflow_wse_final = d_maxflow_wse_final_test
+            d_q_sum = d_q_sum_test
+        else:
+            pass
+
+
+    #If the max flow calculated from the cross-section is 50% high or low, let's try changing the slope
+    if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+
+        # print("I'm here because d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5")
+        # something isn't good with our results
+        acceptable = False
+
+        # here we will see if we can get a better answer with a revised slope
+        # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
+        # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
+        potential_slope_error = 0.6 / d_ordinate_dist
+
+        # Set lower and upper bounds for the slope search.
+        slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
+        slope_upper = d_slope_use + potential_slope_error
+
+        # if slope is greater than the threshold, let's change it to the threshold
+        if slope_upper > 0.03:
+            slope_upper = 0.03
+
+        # Check if the objective function changes sign between the bounds.
+        f_lower = objective_with_slope(slope_lower, *slope_obj_args)
+        f_upper = objective_with_slope(slope_upper, *slope_obj_args)
+
+
+        if safe_signs_differ(f_lower, f_upper):
+            # The signs differ, so we have a valid bracket.
+            new_slope = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            trial_slope_use = new_slope
+            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                2501, 
+                d_maxflow_wse_initial, 
+                d_depth_increment_small, 
+                d_q_maximum, 
+                x_section,
+                trial_slope_use
+            )
+            # Check if d_q_sum is within acceptable bounds
+            if d_q_maximum * 0.5 <= d_q_sum_test <= d_q_maximum * 1.5:
+                acceptable = True
+                d_slope_use = trial_slope_use
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+                return
+
+        # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+        elif np.round(f_lower, 5) == 0:          
+            trial_slope_use = np.round(slope_lower, 3)
+            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                2501, 
+                d_maxflow_wse_initial, 
+                d_depth_increment_small, 
+                d_q_maximum, 
+                x_section,
+                trial_slope_use
+            )
+            # Check if d_q_sum is within acceptable bounds
+            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                # Optionally update d_slope_use to the accepted value:
+                d_slope_use = trial_slope_use
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+            else:
+                pass
+
+        # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+        elif np.round(f_upper, 5) == 0:          
+            trial_slope_use = np.round(slope_upper, 3)
+            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                2501, 
+                d_maxflow_wse_initial, 
+                d_depth_increment_small, 
+                d_q_maximum, 
+                x_section,
+                trial_slope_use
+            )
+            # Check if d_q_sum is within acceptable bounds
+            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                # Optionally update d_slope_use to the accepted value:
+                d_slope_use = trial_slope_use
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+            else:
+                pass
+        
+        else:
+            pass
+
+    #This prevents the way-over simulated cells.  These are outliers.
+    # 20250808 Joseph changeed this
+    if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+
+        # something isn't good with our results
+        acceptable = False
+
+        # here we will see if we can get a better answer with a revised slope
+        # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_distance_z[i_precompute_angle_closest] gives us a round about
+        # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
+        potential_slope_error = 0.6 / d_ordinate_dist
+
+        # Set lower and upper bounds for the slope search.
+        slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
+        slope_upper = d_slope_use + potential_slope_error
+
+        # if slope is greater than the threshold, let's change it to the threshold
+        if slope_upper > 0.03:
+            slope_upper = 0.03
+
+        # Check if the objective function changes sign between the bounds.
+        f_lower = objective_with_slope(slope_lower, *slope_obj_args)
+        f_upper = objective_with_slope(slope_upper, *slope_obj_args)
+        
+        
+        if safe_signs_differ(f_lower, f_upper):
+            
+            # The signs differ, so we have a valid bracket.
+            trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+        
+            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                2501, 
+                d_maxflow_wse_initial, 
+                d_depth_increment_small, 
+                d_q_maximum, 
+                x_section,
+                trial_slope_use
+            )
+            # Check if d_q_sum is within acceptable bounds
+            # 20250808 Joseph changed this
+            if d_q_sum < d_q_maximum * 1.5 or d_q_sum > d_q_maximum * 0.5:
+                acceptable = True
+                d_slope_use = trial_slope_use
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+                
+        # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+        elif np.round(f_lower, 5) == 0:          
+            trial_slope_use = np.round(slope_lower, 3)
+            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                2501, 
+                d_maxflow_wse_initial, 
+                d_depth_increment_small, 
+                d_q_maximum, 
+                x_section,
+                trial_slope_use
+            )
+            # Check if d_q_sum is within acceptable bounds
+            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                # Optionally update d_slope_use to the accepted value:
+                d_slope_use = trial_slope_use
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+            else:
+                pass
+
+        # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
+        elif np.round(f_upper, 5) == 0:          
+            trial_slope_use = np.round(slope_upper, 3)
+            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
+            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+                2501, 
+                d_maxflow_wse_initial, 
+                d_depth_increment_small, 
+                d_q_maximum, 
+                x_section,
+                trial_slope_use
+            )
+            # Check if d_q_sum is within acceptable bounds
+            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
+                # Optionally update d_slope_use to the accepted value:
+                d_slope_use = trial_slope_use
+                d_maxflow_wse_final = d_maxflow_wse_final_test
+                d_q_sum = d_q_sum_test
+            else:
+                pass
+        
+        else:
+            pass
+    
+    # one more check of outliers to make sure we don't have any
+    if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
+        acceptable = False
+
+    if not acceptable:
+        hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_q_maximum, d_slope_use)
+        return
+    
+    # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
+    if acceptable and d_maxflow_wse_final > 0.0:
+        # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
+        d_inc_y = (d_maxflow_wse_final - x_section.get_thalweg()) / i_number_of_increments
+        i_number_of_elevations = i_number_of_increments + 1
+        i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
+                                                                        d_inc_y, 
+                                                                        x_section, d_slope_use, 
+                                                                        d_q_sum, hydraulic_data)
+
+        if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow):
+            hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001)
+            
+        # Process each of the elevations to the output file if feasbile values were produced
+        da_total_q_half_sum = sum(hydraulic_data.da_total_q[0 : int(i_number_of_elevations / 2.0)])
+        if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+            hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations)
+
+        if i_number_of_elevations > 0:
+            b_outprint_yes = True
+
+    # Gather up all the values for the stream cell if we are going to build a reach average curve file
+    hydraulic_data.set_non_vdt_data(b_outprint_yes, i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
+                                    d_slope_use, d_dem_low_point_elev, d_q_maximum)
+
+def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray):
+    global _DEM, _STREAMS, _MANNINGS_N, _BATHYMETRY
+    _DEM = dem
+    _STREAMS = stream_raster
+    _BATHYMETRY = bathymetry
+    _MANNINGS_N = mannings_n
+
+def run_main_loop(COMID, QBaseFlow, QMax, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, *args, quiet: bool = False, parallel: bool = False):
+    if parallel:
+        pass
+
+    init_serial(*args)
+
+    # Write the percentiles into the files
+    i_number_of_stream_cells = len(ia_valued_row_indices)
+    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
+
+
+    dm_stream = get_streams()
+    for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet): 
+        # Get the metadata for the loop
+        i_row_cell = ia_valued_row_indices[i_entry_cell]
+        i_column_cell = ia_valued_column_indices[i_entry_cell]
+
+        # Get the Flow Rates Associated with the Stream Cell
+        try:
+            i_cell_comid = dm_stream[i_row_cell,i_column_cell]
+            im_flow_index = np.where(COMID == i_cell_comid)[0][0]
+            d_q_baseflow = QBaseFlow[im_flow_index]
+            d_q_maximum = QMax[im_flow_index]
+        except:
+            continue
+        
+        calculate_hydraulic_data_for_cell(i_row_cell, i_column_cell, d_q_baseflow, d_q_maximum, params, *serial_args)
+
+
+
+
 # @profile
 def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
@@ -1523,9 +2008,8 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
 
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
-    i_general_direction_distance = params['i_general_direction_distance']
     i_general_slope_distance = params['i_general_slope_distance']
-    i_boundary_number = max(1, i_general_slope_distance, i_general_direction_distance)
+    i_boundary_number = max(1, params['i_general_direction_distance'], params['i_general_slope_distance'])
 
     dm_stream = np.pad(dm_stream, i_boundary_number, mode='constant', constant_values=0).astype(np.int64)
 
@@ -1536,25 +2020,21 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
     ##### Begin Calculations #####
     # Create working matrices
-    i_number_of_increments = params['i_number_of_increments']
     hydraulic_data = HydraulicData(params, b_modified_dem)
 
     # Create output rasters
-    # Create an array with NaN values instead of zeros
-    dm_output_bathymetry = np.full(
-        (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), 
-        np.nan, 
-        dtype=np.float32
-    )
+    if params['s_output_bathymetry_path']:
+        # Create an array with NaN values instead of zeros
+        dm_output_bathymetry = np.full(
+            (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), 
+            np.nan, 
+            dtype=np.float32
+        )
+    else:
+        dm_output_bathymetry = None
     
-    s_output_flood = params['s_output_flood']
-    if s_output_flood:
-        dm_out_flood = np.zeros((nrows + i_boundary_number * 2, ncols + i_boundary_number * 2)).astype(int)
-
     # Get the list of stream locations
     ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, COMID, kind='table'))
-
-    i_number_of_stream_cells = len(ia_valued_row_indices)
     
     # Make all Land Cover that is a stream look like water
     i_lc_water_value = params['i_lc_water_value']
@@ -1563,8 +2043,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     
     #Assing Manning n Values
     ### Read in the Manning Table ###
-    dm_manning_n_raster = np.copy(dm_land_use)
-    dm_manning_n_raster = read_manning_table(params['s_input_mannings_path'], dm_manning_n_raster)
+    dm_manning_n_raster = read_manning_table(params['s_input_mannings_path'], dm_land_use)
 
     # Correct the mannings values here
     dm_manning_n_raster[dm_manning_n_raster > 10] = 0.035
@@ -1578,501 +2057,32 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
     # Create cross section, with precomputed angles
     i_precompute_angles = 30
-    d_precompute_angles = np.pi / i_precompute_angles
-    x_section = CrossSection(dx, dy, i_precompute_angles, d_precompute_angles, dm_elevation, dm_land_use, params["d_x_section_distance"], params["b_FindBanksBasedOnLandCover"], params["i_lc_water_value"], params["d_bathymetry_trapzoid_height"], params["b_bathy_use_banks"])
+    x_section = CrossSection(dx, dy, i_precompute_angles, dm_elevation, dm_land_use, params["d_x_section_distance"], params["b_FindBanksBasedOnLandCover"], params["i_lc_water_value"], params["d_bathymetry_trapzoid_height"], params["b_bathy_use_banks"])
     hydraulic_data.associate_with_cross_section(x_section)
 
     # Find all the different angle increments to test
-    l_angles_to_test = [0.0]
-    d_increments = 0
-    d_degree_manipulation = params['d_degree_manipulation']
-    d_degree_interval = params['d_degree_interval']
-    if d_degree_manipulation > 0.0 and d_degree_interval > 0.0:
-        # Calculate the increment
-        d_increments = int(d_degree_manipulation / (2.0 * d_degree_interval))
-
-        # Test if the increment should be considered
-        if d_increments > 0:
-            for d in range(1, d_increments + 1):
-                for s in range(-1, 2, 2):
-                    l_angles_to_test.append(s * d * d_degree_interval)
-
-    LOG.info('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(l_angles_to_test))
-    l_angles_to_test = np.multiply(l_angles_to_test, math.pi / 180.0)
-    LOG.info('  Angles (radians) to evaluate= ' + str(l_angles_to_test))
+    x_section.set_angles_to_test(params)
 
     # Get the extents of the boundaries
     x_section.set_boundary_extents(i_boundary_number, nrows, ncols)
 
-    # Write the percentiles into the files
-    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
-
     # create a reach average slope before we go stream cell by stream cell
-    s_stream_slope_method = params['s_stream_slope_method']
-    if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
-        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance)
-    elif s_stream_slope_method == 'end_points':
-        dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
+    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, i_general_slope_distance)
 
     # Extract some parameters
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
-    b_reach_average_curve_file = params['b_reach_average_curve_file']
 
-    d_depth_increment_big = 0.5
-    d_depth_increment_med = 0.05
-    d_depth_increment_small = 0.01
     ### Begin the stream cell solution loop ###
-    pbar = tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet)
-    for i_entry_cell in pbar:
+    serial_args = (dx, dy, x_section, hydraulic_data)
+    run_main_loop(COMID, QBaseFlow, QMax, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, parallel=False)
 
-        # pbar.disable = True
-        
-        # Get the metadata for the loop
-        i_row_cell = ia_valued_row_indices[i_entry_cell]
-        i_column_cell = ia_valued_column_indices[i_entry_cell]
-        i_cell_comid = dm_stream[i_row_cell,i_column_cell]
-
-        # Get the Flow Rates Associated with the Stream Cell
-        try:
-            im_flow_index = np.where(COMID == i_cell_comid)[0][0]
-            # im_flow_index = np.where(COMID == int(dm_stream[i_row_cell, i_column_cell]))
-            # print("This is the flow index: ", im_flow_index)
-            d_q_baseflow = QBaseFlow[im_flow_index]
-            d_q_maximum = QMax[im_flow_index]
-        except:
-            # print("I cant find the flow index")
-            continue
-
-        # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
-        d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, i_general_direction_distance)
-
-        # Get the Slope of each Stream Cell. Slope should be in m/m
-        if s_stream_slope_method == 'local_average':
-            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
-        elif s_stream_slope_method =='reach_average' or s_stream_slope_method == 'end_points':
-            d_slope_use = dict_stream_slopes[i_cell_comid]
-        elif s_stream_slope_method == 'local_average_corrected':
-            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
-            d_slope_25th = dict_stream_slopes_25th[i_cell_comid]
-            d_slope_75th = dict_stream_slopes_75th[i_cell_comid]
-            # if the corrected slope is less than the streams 25th percentile slope, use the 25th percentile slope
-            if d_slope_use < d_slope_25th:
-                d_slope_use = d_slope_25th
-            # if the corrected slope is greater than the streams 75th percentile slope, use the 75th percentile slope
-            elif d_slope_use > d_slope_75th:
-                d_slope_use = d_slope_75th  
-        else: 
-            #Default to using the 'local_average' method
-            d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
-
-        # Now Pull the Cross-Section again with the new angle
-        if d_xs_direction > np.pi:
-            i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
-        else:
-            i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
-
-        x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
-        
-        # Adjust to the lowest-point in the Cross-Section
-        i_low_spot_range = params['i_low_spot_range']
-        if i_low_spot_range > 0:
-            x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
-            # The r and c for the stream cell is adjusted because it may have moved
-            i_row_cell, i_column_cell = x_section.get_row_col()
-        
-        d_dem_low_point_elev = x_section.get_thalweg()
-
-        # Adjust cross-section angle to ensure shortest top-width at a specified depth
-        if d_increments > 0:
-            d_xs_direction = x_section.get_best_xsection_angle(d_precompute_angles, l_angles_to_test)
-
-            # Now Pull the Cross-Section again with the new angle
-            if d_xs_direction > np.pi:
-                i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
-            else:
-                i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
-
-            x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
-
-        # Burn bathymetry profile into cross-section profile
-        # "Be the banks for your river" - Needtobreathe
-                
-        # If you don't have a cross-section, skip it and fill in empty values for the reach average processing
-        if not x_section.is_valid():
-            hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_q_maximum, d_slope_use)
-            continue
-
-        #BATHYMETRY CALCULATION
-        #This method calculates bathymetry based on the water surface elevation or LandCover ("FindBanksBasedOnLandCover" and "LC_Water_Value").
-        if not b_bathy_use_banks and s_output_bathymetry_path != '':
-            x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(d_q_baseflow, d_slope_use, dm_output_bathymetry)
-        #This method calculates the banks based on the Riverbank
-        elif b_bathy_use_banks and s_output_bathymetry_path != '':
-            x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, dm_output_bathymetry)
-
-        # Calculate the volumes
-        # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
-        # This is preferred for VDTDatabase method.
-        
-        #This is the Stream Cell Location
-        if s_output_flood:
-            dm_out_flood[i_row_cell,i_column_cell] = 3
-        
-        # Set output arrays to zero
-        hydraulic_data.reset_hydraulic_data()
-        
-        # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
-        b_outprint_yes = False
-        
-        # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
-        i_start_elevation_index = -1
-        i_last_elevation_index = 0
-        
-        
-        # Here are the n values for each side of the cross-section
-        x_section.set_mannings_n_values(dm_manning_n_raster)
-
-        # space between ordinates in the cross-section
-        d_ordinate_dist = x_section.d_ordinate_dist
-
-        # we'll assume the results are acceptable until we think otherwise
-        acceptable = True
-
-        # This is the bottom of the channel
-        d_maxflow_wse_initial = x_section.get_thalweg()
-
-        # set this as the default in case we don't find a better one
-        d_maxflow_wse_final = -999.0
-
-        # initialize some variables
-        d_q_sum = 0.0
-        slope_use_squared = d_slope_use ** 0.5
-
-        wse_lower = d_maxflow_wse_initial + 0.01
-        wse_upper = d_maxflow_wse_initial + 24.99
-        wse_obj_args = (x_section, slope_use_squared, d_q_maximum)
-
-        # Check if the objective function changes sign between the bounds.
-        f_lower = objective_with_wse(wse_lower, *wse_obj_args)
-        f_upper = objective_with_wse(wse_upper, *wse_obj_args)
-
-        if safe_signs_differ(f_lower, f_upper):
-            # The signs differ, so we have a valid bracket.
-            # For 3 decimal places, xtol only needs to be 0.001
-            d_maxflow_wse_final = np.round(brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.001, args=wse_obj_args), 3)
-            d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
-        elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
-            # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-            d_maxflow_wse_final = np.round(wse_lower, 3) if np.round(f_lower, 5) == 0 else np.round(wse_upper, 3)
-            d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
-
-        # Let's see if the volume-fill approach gave us a better answer and use that if it did
-        # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
-        d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, x_section, d_slope_use)
-
-
-        # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
-        d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, x_section.get_thalweg())
-        d_maxflow_wse_med = d_maxflow_wse_initial
-        d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, x_section, d_slope_use)
-
-        # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
-        d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, x_section.get_thalweg())
-        d_maxflow_wse_final_test = d_maxflow_wse_med
-        d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, x_section, d_slope_use)
-
-        # let's see if the iterative method gave use a better result and use that if it did
-        if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-            d_maxflow_wse_final = d_maxflow_wse_final_test
-            d_q_sum = d_q_sum_test
-
-        # here we will see if we can get a better answer with a revised slope
-        # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
-        # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
-        potential_slope_error = 0.6 / d_ordinate_dist
-        
-        # Set lower and upper bounds for the slope search.
-        slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
-        slope_upper = d_slope_use + potential_slope_error
-
-        # if slope is greater than the threshold, let's change it to the threshold
-        if slope_upper > 0.03:
-            slope_upper = 0.03
-
-        slope_obj_args = (d_maxflow_wse_initial, d_depth_increment_small, d_q_maximum, x_section)
-        # Check if the objective function changes sign between the bounds.
-        f_lower = objective_with_slope(slope_lower, *slope_obj_args)
-        f_upper = objective_with_slope(slope_upper, *slope_obj_args)
-        if safe_signs_differ(f_lower, f_upper):
-            # The signs differ, so we have a valid bracket.
-            # Needs xtol of 0.0001 to get to 3 decimal places
-            trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
-            trial_slope_use = np.round(trial_slope_use, 3)
-            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                2501, 
-                d_maxflow_wse_initial, 
-                d_depth_increment_small, 
-                d_q_maximum, 
-                x_section,
-                trial_slope_use
-            )
-            # Check if d_q_sum is within acceptable bounds
-            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-                # Optionally update d_slope_use to the accepted value:
-                d_slope_use = trial_slope_use
-                d_maxflow_wse_final = d_maxflow_wse_final_test
-                d_q_sum = d_q_sum_test
-            else:
-                pass
-        # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-        elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
-            trial_slope_use = np.round(slope_lower, 3) if np.round(f_lower, 5) == 0 else np.round(slope_upper, 3)
-            # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                2501, 
-                d_maxflow_wse_initial, 
-                d_depth_increment_small, 
-                d_q_maximum, 
-                x_section,
-                trial_slope_use
-            )
-            # Check if d_q_sum is within acceptable bounds
-            if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-                # Optionally update d_slope_use to the accepted value:
-                d_slope_use = trial_slope_use
-                d_maxflow_wse_final = d_maxflow_wse_final_test
-                d_q_sum = d_q_sum_test
-            else:
-                pass
-
-
-        #If the max flow calculated from the cross-section is 50% high or low, let's try changing the slope
-        if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
-
-            # print("I'm here because d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5")
-            # something isn't good with our results
-            acceptable = False
-
-            # here we will see if we can get a better answer with a revised slope
-            # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
-            # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
-            potential_slope_error = 0.6 / d_ordinate_dist
-
-            # Set lower and upper bounds for the slope search.
-            slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
-            slope_upper = d_slope_use + potential_slope_error
-
-            # if slope is greater than the threshold, let's change it to the threshold
-            if slope_upper > 0.03:
-                slope_upper = 0.03
-
-            # Check if the objective function changes sign between the bounds.
-            f_lower = objective_with_slope(slope_lower, *slope_obj_args)
-            f_upper = objective_with_slope(slope_upper, *slope_obj_args)
-
-
-            if safe_signs_differ(f_lower, f_upper):
-                # The signs differ, so we have a valid bracket.
-                new_slope = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
-                trial_slope_use = new_slope
-                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                    2501, 
-                    d_maxflow_wse_initial, 
-                    d_depth_increment_small, 
-                    d_q_maximum, 
-                    x_section,
-                    trial_slope_use
-                )
-                # Check if d_q_sum is within acceptable bounds
-                if d_q_maximum * 0.5 <= d_q_sum_test <= d_q_maximum * 1.5:
-                    acceptable = True
-                    d_slope_use = trial_slope_use
-                    d_maxflow_wse_final = d_maxflow_wse_final_test
-                    d_q_sum = d_q_sum_test
-                    continue
-
-            # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-            elif np.round(f_lower, 5) == 0:          
-                trial_slope_use = np.round(slope_lower, 3)
-                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                    2501, 
-                    d_maxflow_wse_initial, 
-                    d_depth_increment_small, 
-                    d_q_maximum, 
-                    x_section,
-                    trial_slope_use
-                )
-                # Check if d_q_sum is within acceptable bounds
-                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-                    # Optionally update d_slope_use to the accepted value:
-                    d_slope_use = trial_slope_use
-                    d_maxflow_wse_final = d_maxflow_wse_final_test
-                    d_q_sum = d_q_sum_test
-                else:
-                    pass
-
-            # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-            elif np.round(f_upper, 5) == 0:          
-                trial_slope_use = np.round(slope_upper, 3)
-                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                    2501, 
-                    d_maxflow_wse_initial, 
-                    d_depth_increment_small, 
-                    d_q_maximum, 
-                    x_section,
-                    trial_slope_use
-                )
-                # Check if d_q_sum is within acceptable bounds
-                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-                    # Optionally update d_slope_use to the accepted value:
-                    d_slope_use = trial_slope_use
-                    d_maxflow_wse_final = d_maxflow_wse_final_test
-                    d_q_sum = d_q_sum_test
-                else:
-                    pass
-            
-            else:
-                pass
-
-        #This prevents the way-over simulated cells.  These are outliers.
-        # 20250808 Joseph changeed this
-        if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
-
-            # something isn't good with our results
-            acceptable = False
-
-            # here we will see if we can get a better answer with a revised slope
-            # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_distance_z[i_precompute_angle_closest] gives us a round about
-            # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
-            potential_slope_error = 0.6 / d_ordinate_dist
-
-            # Set lower and upper bounds for the slope search.
-            slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
-            slope_upper = d_slope_use + potential_slope_error
-
-            # if slope is greater than the threshold, let's change it to the threshold
-            if slope_upper > 0.03:
-                slope_upper = 0.03
-
-            # Check if the objective function changes sign between the bounds.
-            f_lower = objective_with_slope(slope_lower, *slope_obj_args)
-            f_upper = objective_with_slope(slope_upper, *slope_obj_args)
-            
-            
-            if safe_signs_differ(f_lower, f_upper):
-                
-                # The signs differ, so we have a valid bracket.
-                trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
-            
-                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                    2501, 
-                    d_maxflow_wse_initial, 
-                    d_depth_increment_small, 
-                    d_q_maximum, 
-                    x_section,
-                    trial_slope_use
-                )
-                # Check if d_q_sum is within acceptable bounds
-                # 20250808 Joseph changed this
-                if d_q_sum < d_q_maximum * 1.5 or d_q_sum > d_q_maximum * 0.5:
-                    acceptable = True
-                    d_slope_use = trial_slope_use
-                    d_maxflow_wse_final = d_maxflow_wse_final_test
-                    d_q_sum = d_q_sum_test
-                    
-            # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-            elif np.round(f_lower, 5) == 0:          
-                trial_slope_use = np.round(slope_lower, 3)
-                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                    2501, 
-                    d_maxflow_wse_initial, 
-                    d_depth_increment_small, 
-                    d_q_maximum, 
-                    x_section,
-                    trial_slope_use
-                )
-                # Check if d_q_sum is within acceptable bounds
-                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-                    # Optionally update d_slope_use to the accepted value:
-                    d_slope_use = trial_slope_use
-                    d_maxflow_wse_final = d_maxflow_wse_final_test
-                    d_q_sum = d_q_sum_test
-                else:
-                    pass
-
-            # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-            elif np.round(f_upper, 5) == 0:          
-                trial_slope_use = np.round(slope_upper, 3)
-                # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-                d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-                    2501, 
-                    d_maxflow_wse_initial, 
-                    d_depth_increment_small, 
-                    d_q_maximum, 
-                    x_section,
-                    trial_slope_use
-                )
-                # Check if d_q_sum is within acceptable bounds
-                if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-                    # Optionally update d_slope_use to the accepted value:
-                    d_slope_use = trial_slope_use
-                    d_maxflow_wse_final = d_maxflow_wse_final_test
-                    d_q_sum = d_q_sum_test
-                else:
-                    pass
-            
-            else:
-                pass
-        
-        # one more check of outliers to make sure we don't have any
-        if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
-            acceptable = False
-
-        if not acceptable:
-            hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_q_maximum, d_slope_use)
-            continue
-        
-        # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
-        if acceptable and d_maxflow_wse_final > 0.0:
-            # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
-            d_inc_y = (d_maxflow_wse_final - x_section.get_thalweg()) / i_number_of_increments
-            i_number_of_elevations = i_number_of_increments + 1
-            i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
-                                                                            d_inc_y, 
-                                                                            x_section, d_slope_use, 
-                                                                            d_q_sum, hydraulic_data)
-
-            if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow):
-                hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001)
-                
-            # Process each of the elevations to the output file if feasbile values were produced
-            da_total_q_half_sum = sum(hydraulic_data.da_total_q[0 : int(i_number_of_elevations / 2.0)])
-            if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-                hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations)
-
-            if i_number_of_elevations > 0:
-                b_outprint_yes = True
-
-        # Gather up all the values for the stream cell if we are going to build a reach average curve file
-        hydraulic_data.set_non_vdt_data(b_outprint_yes, i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
-                                        d_slope_use, d_dem_low_point_elev, d_q_maximum)
-   
     # Create the output VDT Database file - datatypes are figured out automatically
     if not hydraulic_data.vdt_data_exists():
         LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
         return
     
     hydraulic_data.save_files()
-    
-    #write_output_raster('StreamAngles.tif', dm_output_streamangles[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
-    
 
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
@@ -2087,9 +2097,6 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         # if b_bathy_use_banks:
         #     dm_output_bathymetry = smooth_bathymetry_gaussian_numba(dm_output_bathymetry)
         write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
-
-    if len(s_output_flood) > 1:
-        write_output_raster(s_output_flood, dm_out_flood[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
 
     # Log the compute time
     d_sim_time = datetime.now() - starttime

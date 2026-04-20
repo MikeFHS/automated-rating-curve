@@ -4,14 +4,18 @@ import numpy as np
 from numba import njit
 from scipy.signal import savgol_filter
 
+from arc import LOG
+
 class CrossSection:
     def __init__(self, 
                  dx: float, dy: float,
-                 i_precompute_angles: int, d_precompute_angles: float,
+                 i_precompute_angles: int, 
                  dm_elevation: np.ndarray, dm_land_use: np.ndarray,
                  d_x_section_distance: float, b_FindBanksBasedOnLandCover: bool, i_lc_water_value: int, d_bathymetry_trapzoid_height: float, b_bathy_use_banks: bool):
         self.d_x_section_distance = d_x_section_distance
         self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
+        self.i_precompute_angles = i_precompute_angles
+        self.d_precompute_angles = np.pi / i_precompute_angles
 
         self.da_xs_profile1 = np.zeros(self.i_center_point + 1, dtype=np.float64)
         self.da_xs_profile2 = np.zeros(self.i_center_point + 1, dtype=np.float64)
@@ -28,26 +32,60 @@ class CrossSection:
         self.d_bathymetry_trapzoid_height = d_bathymetry_trapzoid_height
         self.b_bathy_use_banks = b_bathy_use_banks
 
-        self.create_cross_section_ordinates(dx, dy, i_precompute_angles, d_precompute_angles)
+        self.create_cross_section_ordinates(dx, dy)
 
     def is_valid(self) -> bool:
         return self.xs1_n > 0 or self.xs2_n > 0
 
-    def create_cross_section_ordinates(self, dx: float, dy: float, i_precompute_angles: int, d_precompute_angles: float):
+    def create_cross_section_ordinates(self, dx: float, dy: float):
         i_center_point = self.i_center_point
-        self.ia_xc_dr_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dc_index_main = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dr_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dc_index_second = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.d_distance_z = np.zeros(i_precompute_angles + 1, dtype=np.float64)
-        self.da_xc_main_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
-        self.da_xc_second_fract = np.zeros((i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
+        self.ia_xc_dr_index_main = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.ia_xc_dc_index_main = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.ia_xc_dr_index_second = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.ia_xc_dc_index_second = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
+        self.d_distance_z = np.zeros(self.i_precompute_angles + 1, dtype=np.float64)
+        self.da_xc_main_fract = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
+        self.da_xc_second_fract = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
 
-        for i in range(i_precompute_angles+1):
-            d_xs_direction = d_precompute_angles * i
+        for i in range(self.i_precompute_angles+1):
+            d_xs_direction = self.d_precompute_angles * i
             # Get the Cross-Section Ordinates
-            self.d_distance_z[i]= get_xs_index_values_precalculated(self.ia_xc_dr_index_main[i], self.ia_xc_dc_index_main[i], self.ia_xc_dr_index_second[i], self.ia_xc_dc_index_second[i], self.da_xc_main_fract[i], self.da_xc_second_fract[i], d_xs_direction,
+            self.d_distance_z[i] = get_xs_index_values_precalculated(self.ia_xc_dr_index_main[i], self.ia_xc_dc_index_main[i], self.ia_xc_dr_index_second[i], self.ia_xc_dc_index_second[i], self.da_xc_main_fract[i], self.da_xc_second_fract[i], d_xs_direction,
                                                                                            i_center_point, dx, dy)
+
+    def set_angles_to_test(self, params: dict):
+        self.l_angles_to_test = [0.0]
+        self.d_increments = 0
+        d_degree_manipulation = params['d_degree_manipulation']
+        d_degree_interval = params['d_degree_interval']
+        if d_degree_manipulation > 0.0 and d_degree_interval > 0.0:
+            # Calculate the increment
+            self.d_increments = int(d_degree_manipulation / (2.0 * d_degree_interval))
+
+            # Test if the increment should be considered
+            if self.d_increments > 0:
+                for d in range(1, self.d_increments + 1):
+                    for s in range(-1, 2, 2):
+                        self.l_angles_to_test.append(s * d * d_degree_interval)
+
+        LOG.info('With Degree_Manip=' + str(d_degree_manipulation) + '  and  Degree_Interval=' + str(d_degree_interval) + '\n  Angles to evaluate= ' + str(self.l_angles_to_test))
+        self.l_angles_to_test = np.multiply(self.l_angles_to_test, math.pi / 180.0)
+        LOG.info('  Angles (radians) to evaluate= ' + str(self.l_angles_to_test))
+
+    def has_angles_to_test(self) -> bool:
+        return len(self.l_angles_to_test) > 0
+    
+    def test_angles_and_reset_cross_section(self, i_row_cell, i_column_cell):
+        d_precompute_angles = np.pi / self.i_precompute_angles
+        d_xs_direction = self.get_best_xsection_angle(d_precompute_angles)
+
+        # Now Pull the Cross-Section again with the new angle
+        if d_xs_direction > np.pi:
+            i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / d_precompute_angles))
+        else:
+            i_precompute_angle_closest = int(round(d_xs_direction / d_precompute_angles))
+
+        self.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
 
     def set_boundary_extents(self, i_boundary_number: int, nrows: int, ncols: int):
         """
@@ -144,13 +182,13 @@ class CrossSection:
     def get_thalweg(self):
         return self.da_xs_profile1[0]
     
-    def get_best_xsection_angle(self, d_precompute_angles: float, l_angles_to_test: list[float]):
+    def get_best_xsection_angle(self, d_precompute_angles: float):
         d_test_depth = 0.5
         d_shortest_tw_angle = 0.0
         d_t_test = np.inf
 
         # Loop through the angles to test
-        for d_entry_angle_adjustment in l_angles_to_test:
+        for d_entry_angle_adjustment in self.l_angles_to_test:
             # Ensure angle is between 0 and pi
             d_xs_angle_use = (self.d_xs_direction + d_entry_angle_adjustment) % np.pi
         
