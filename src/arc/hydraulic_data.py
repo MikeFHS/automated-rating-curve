@@ -9,6 +9,7 @@ from arc import LOG
 
 class HydraulicData:
     def __init__(self,  params: dict, b_modified_dem: bool):
+        self._has_vdt_data = False
         self.ap_file: str = params['s_output_ap_database']
         self.vdt_file: str = params["s_output_vdt_database"]
         self.curve_file: str = params["s_output_curve_file"]
@@ -23,16 +24,6 @@ class HydraulicData:
         self.da_total_v = np.zeros(self.i_number_of_increments + 1, dtype=float)
         self.da_total_q = np.zeros(self.i_number_of_increments + 1, dtype=float)
         self.da_total_wse = np.zeros(self.i_number_of_increments + 1, dtype=float)
-
-        # Here we will capture a list of all stream cell values that will be used if we build a reach average curve file
-        self.All_COMID_curve_list = []
-        self.All_Row_curve_list = []
-        self.All_Col_curve_list = []
-        self.All_BaseElev_curve_list = []
-        self.All_DEM_Elev_curve_list = []
-        self.All_QMax_curve_list = []
-        self.All_Slope_curve_list = []
-        self.All_XS_Angle_curve_list = []
 
         # instantiate the lists we will use to create the XS File
         self.XS_COMID_List = []
@@ -52,13 +43,6 @@ class HydraulicData:
         self.XS_r2 = []
         self.XS_c2 = []
 
-        # Create the dictionary and lists that will be used to create our VDT database
-        self.vdt_list: list = []
-        self.q_list = []
-        self.v_list = []
-        self.t_list = []
-        self.wse_list = []
-
         # Create the dictionary and lists that will be used to create our ATW database
         self.o_ap_file_dict: dict[str, list] = {}
         self.o_ap_file_dict['COMID'] = []
@@ -74,38 +58,25 @@ class HydraulicData:
             self.o_ap_file_dict[f'p_{i}'] = []
             self.ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
 
-        # Create the list that we will use to generate the output Curve file
-        self.COMID_curve_list = []
-        self.Row_curve_list = []
-        self.Col_curve_list = []
-        self.Slope_curve_list = []
-        self.XS_Angle_curve_list = []
-        self.BaseElev_curve_list = []
-        self.DEM_Elev_curve_list = []
-        self.QMax_curve_list = []
-        self.depth_a_curve_list = []
-        self.depth_b_curve_list = []
-        self.tw_a_curve_list = []
-        self.tw_b_curve_list = []
-        self.vel_a_curve_list = []
-        self.vel_b_curve_list = []
-
     def associate_with_cross_section(self, x_section: CrossSection):
         self.x_section = x_section
     
-    def add_empty_x_section_for_curve_file(self,i_cell_comid: int, d_q_maximum: float, d_slope_use: float):
+    def add_empty_x_section_for_curve_file(self,i_cell_comid: int, d_slope_use: float, i_entry_cell: int, vdt_array: np.ndarray):
         if not self.b_reach_average_curve_file:
             return
         
         i_row_cell, i_column_cell = self.x_section.get_row_col()
-        self.All_COMID_curve_list.append(i_cell_comid)
-        self.All_Row_curve_list.append(i_row_cell - self.x_section.i_boundary_number)
-        self.All_Col_curve_list.append(i_column_cell - self.x_section.i_boundary_number)
-        self.All_BaseElev_curve_list.append(round(self.x_section.dm_elevation[i_row_cell,i_column_cell], 3))
-        self.All_DEM_Elev_curve_list.append(round(self.x_section.dm_elevation[i_row_cell,i_column_cell], 3))
-        self.All_QMax_curve_list.append(d_q_maximum)
-        self.All_Slope_curve_list.append(round(d_slope_use, 8))
-        self.All_XS_Angle_curve_list.append(round(self.x_section.d_xs_direction, 3))
+        vdt_array[i_entry_cell, 0:4] = [
+            i_cell_comid, 
+            i_row_cell - self.x_section.i_boundary_number, 
+            i_column_cell - self.x_section.i_boundary_number, 
+            self.x_section.dm_elevation[i_row_cell, i_column_cell]  # DEM elevation
+        ]
+        vdt_array[i_entry_cell, 5:8] = [
+            d_slope_use, 
+            self.x_section.d_xs_direction,
+            self.x_section.dm_elevation[i_row_cell,i_column_cell] # Base elevation
+        ]
 
     def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float, vdt_array: np.ndarray, i_entry_cell: int):
         vdt_array[i_entry_cell, 8 + ((n-1) * 4):8 + ((n-1) * 4) + 4] = [q, v, t, wse - 100 if self.b_modified_dem else wse]
@@ -133,6 +104,7 @@ class HydraulicData:
         return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
 
     def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_number_of_elevations: int, vdt_array: np.ndarray, i_entry_cell: int):
+        self._has_vdt_data = True
         i_row_cell, i_column_cell = self.x_section.get_row_col()
         if self.ap_file:
             self.comid_ap_dict_list.append(i_cell_comid)
@@ -154,72 +126,28 @@ class HydraulicData:
             self.x_section.d_xs_direction,
             self.x_section.get_thalweg()-100 if self.b_modified_dem else self.x_section.get_thalweg() # Base elevation
         ]
-        vdt_row = [i_cell_comid, i_row_cell - self.x_section.i_boundary_number, i_column_cell - self.x_section.i_boundary_number]
-        vdt_row.append(self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell])
-        vdt_row.append(d_q_baseflow)
-        vdt_row.append(np.round(d_slope_use, 8))
-        vdt_row.append(np.round(self.x_section.d_xs_direction, 3))
-        self.vdt_list.append(vdt_row)
-
-        # Loop backward through the elevations
-        if self.vdt_file:
-            if self.b_modified_dem:
-                self.da_total_wse -= 100
-
-            self.q_list.append(self.da_total_q[1:].copy())
-            self.v_list.append(self.da_total_v[1:].copy())
-            self.t_list.append(self.da_total_t[1:].copy())
-            self.wse_list.append(self.da_total_wse[1:].copy())
-
-            if self.b_modified_dem:
-                self.da_total_wse += 100
         
     def set_non_vdt_data(self, print_curve_file: bool, i_start_elevation_index: int, i_last_elevation_index: int,
-                         i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, d_q_maximum: float):
+                         i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, d_q_maximum: float, i_entry_cell: int, vdt_array: np.ndarray):
         if self.b_reach_average_curve_file:
-            self._set_reach_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_q_maximum, d_slope_use, d_dem_low_point_elev)
-        if print_curve_file and self.curve_file and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
-            self._set_curve_file_data(i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell, d_slope_use, d_dem_low_point_elev)
+            self._set_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_q_maximum, d_slope_use, d_dem_low_point_elev, i_entry_cell, vdt_array)
+        elif print_curve_file and self.curve_file and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
+            self._set_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_q_maximum, d_slope_use, d_dem_low_point_elev, i_entry_cell, vdt_array)
         if self.s_xs_output_file:
             self._set_cross_section_data(i_cell_comid, i_row_cell, i_column_cell)
 
-    def _set_reach_curve_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_q_maximum: float, d_slope_use: float, d_dem_low_point_elev: float):
-        self.All_COMID_curve_list.append(int(i_cell_comid))
-        self.All_Row_curve_list.append(int(i_row_cell - self.x_section.i_boundary_number))
-        self.All_Col_curve_list.append(int(i_column_cell - self.x_section.i_boundary_number))
-        if self.b_modified_dem:
-            self.All_BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3)-100)
-            self.All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3)-100)
-        else:
-            self.All_BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3))
-            self.All_DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
-        self.All_QMax_curve_list.append(np.round(d_q_maximum, 3))
-        self.All_Slope_curve_list.append(np.round(d_slope_use, 8))
-        self.All_XS_Angle_curve_list.append(np.round(self.x_section.d_xs_direction, 3))
-
-    def _set_curve_file_data(self, i_start_elevation_index: int, i_last_elevation_index: int, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float):
-        (d_t_a, d_t_b, d_t_R2) = self._linear_regression_power_function(self.da_total_q[i_start_elevation_index + 1 : i_last_elevation_index + 1], self.da_total_t[i_start_elevation_index + 1 : i_last_elevation_index + 1], [12, 0.3])
-        (d_v_a, d_v_b, d_v_R2) = self._linear_regression_power_function(self.da_total_q[i_start_elevation_index + 1 : i_last_elevation_index + 1], self.da_total_v[i_start_elevation_index + 1 : i_last_elevation_index + 1], [1, 0.3])
-        da_total_depth = self.da_total_wse - self.x_section.get_thalweg()
-        (d_d_a, d_d_b, d_d_R2) = self._linear_regression_power_function(self.da_total_q[i_start_elevation_index + 1 : i_last_elevation_index + 1], da_total_depth[i_start_elevation_index + 1 : i_last_elevation_index + 1], [0.2, 0.5])
-        self.COMID_curve_list.append(int(i_cell_comid))
-        self.Row_curve_list.append(int(i_row_cell - self.x_section.i_boundary_number))
-        self.Col_curve_list.append(int(i_column_cell - self.x_section.i_boundary_number))
-        if self.b_modified_dem:
-            self.BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3)-100)
-            self.DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3)-100)
-        else:
-            self.BaseElev_curve_list.append(np.round(self.x_section.get_thalweg(), 3))
-            self.DEM_Elev_curve_list.append(np.round(d_dem_low_point_elev, 3))
-        self.QMax_curve_list.append(np.round(self.da_total_q[i_last_elevation_index], 3))
-        self.Slope_curve_list.append(np.round(d_slope_use, 8))
-        self.XS_Angle_curve_list.append(np.round(self.x_section.d_xs_direction, 3))
-        self.depth_a_curve_list.append(np.round(d_d_a, 3))
-        self.depth_b_curve_list.append(np.round(d_d_b, 3))
-        self.tw_a_curve_list.append(np.round(d_t_a, 3))
-        self.tw_b_curve_list.append(np.round(d_t_b, 3))
-        self.vel_a_curve_list.append(np.round(d_v_a, 3))
-        self.vel_b_curve_list.append(np.round(d_v_b, 3))
+    def _set_curve_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_q_maximum: float, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int, vdt_array: np.ndarray):
+        vdt_array[i_entry_cell, 0:4] = [
+            i_cell_comid, 
+            i_row_cell - self.x_section.i_boundary_number, 
+            i_column_cell - self.x_section.i_boundary_number, 
+            d_dem_low_point_elev-100 if self.b_modified_dem else d_dem_low_point_elev # DEM elevation
+        ]
+        vdt_array[i_entry_cell, 5:8] = [
+            d_slope_use, 
+            self.x_section.d_xs_direction,
+            self.x_section.get_thalweg()-100 if self.b_modified_dem else self.x_section.get_thalweg() # Base elevation
+        ]
 
     def _set_cross_section_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int,):
         self.XS_COMID_List.append(i_cell_comid)
@@ -250,8 +178,8 @@ class HydraulicData:
         self.XS_r2.append(r2)
         self.XS_c2.append(c2)
 
-    def vdt_data_exists(self):
-        return bool(self.q_list)
+    def has_vdt_data(self):
+        return self._has_vdt_data
 
     def _linear_regression_power_function(self, da_x_input: np.ndarray, da_y_input: np.ndarray, init_guess: list = [1.0, 1.0]):
         """
@@ -292,8 +220,8 @@ class HydraulicData:
         # Return to the calling function
         return d_coefficient, d_power, d_R2
     
-    def save_files(self, vdt_data):
-        if not self.q_list:
+    def save_files(self, vdt_data, id_flow_dict):
+        if not self.has_vdt_data():
             LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
             return
         
@@ -303,9 +231,9 @@ class HydraulicData:
         if self.ap_file:
             self.save_ap()
         if self.b_reach_average_curve_file:
-            self.save_reach_average_curve_file(vdt_df)
+            self.save_reach_average_curve_file(vdt_df, vdt_data, id_flow_dict)
         elif self.curve_file:
-            self.save_curve_file(vdt_data)
+            self.save_curve_file(vdt_data, id_flow_dict)
         if self.s_xs_output_file:
             self.save_cross_section_file()
 
@@ -373,26 +301,32 @@ class HydraulicData:
             o_ap_file_df.to_csv(self.ap_file, index=False)
         LOG.info('Finished writing ' + str(self.ap_file))
 
-    def save_reach_average_curve_file(self, vdt_df):
-        data = {
-            "COMID": self.All_COMID_curve_list,
-            "Row": self.All_Row_curve_list,
-            "Col": self.All_Col_curve_list,
-            "BaseElev":  [np.round(num, 3) for num in self.All_BaseElev_curve_list],
-            "DEM_Elev": [np.round(num, 3) for num in self.All_DEM_Elev_curve_list],
-            "QMax": self.All_QMax_curve_list,
-            "Slope": self.All_Slope_curve_list,
-            "XS_Angle": self.All_XS_Angle_curve_list,
-        }
-
+    def save_reach_average_curve_file(self, vdt_df: pd.DataFrame, vdt_data: np.ndarray, id_flow_dict: dict):
         # Creating the DataFrame
-        reach_average_curvefile_df = pd.DataFrame(data)
+        reach_average_curvefile_df = pd.DataFrame(vdt_data[:, 0:8], columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
+        reach_average_curvefile_df = reach_average_curvefile_df.dropna(how='all')
+        reach_average_curvefile_df = reach_average_curvefile_df[['COMID', 'Row', 'Col', 'BaseElev', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle']]
+
+        # First columns as int
+        for col in ['COMID', 'Row', 'Col']:
+            reach_average_curvefile_df[col] = reach_average_curvefile_df[col].astype(int)
+
+        # rename baseflow as qmax and set values
+        reach_average_curvefile_df = reach_average_curvefile_df.rename(columns={'QBaseflow': 'QMax', 'Elev': 'DEM_Elev'})
+        reach_average_curvefile_df['QMax'] = reach_average_curvefile_df['COMID'].map(pd.DataFrame.from_dict(id_flow_dict, orient='index').iloc[:, 1])
+
+        # All columns but slope rounded to 3
+        for col in reach_average_curvefile_df.columns:
+            if col != 'Slope':
+                reach_average_curvefile_df[col] = reach_average_curvefile_df[col].round(3)
+
+        reach_average_curvefile_df['Slope'] = reach_average_curvefile_df['Slope'].round(8)
 
         # Dynamically select columns, starting with prefixes
-        q_prefixes = [f'q_{i}' for i in range(1, len(self.q_list[0]) + 1)]
-        t_prefixes = [f't_{i}' for i in range(1, len(self.t_list[0]) + 1)]
-        v_prefixes = [f'v_{i}' for i in range(1, len(self.v_list[0]) + 1)]
-        wse_prefixes = [f'wse_{i}' for i in range(1, len(self.wse_list[0]) + 1)]
+        q_prefixes = [f'q_{i}' for i in range(1, self.i_number_of_increments + 1)]
+        t_prefixes = [f't_{i}' for i in range(1, self.i_number_of_increments + 1)]
+        v_prefixes = [f'v_{i}' for i in range(1, self.i_number_of_increments + 1)]
+        wse_prefixes = [f'wse_{i}' for i in range(1, self.i_number_of_increments + 1)]
 
         # Initialize lists to store regression coefficients
         comid_list = []
@@ -495,7 +429,7 @@ class HydraulicData:
             reach_average_curvefile_df.to_csv(self.curve_file, index=False)        
         LOG.info('Finished writing ' + str(self.curve_file))
 
-    def save_curve_file(self, vdt_array: np.ndarray):
+    def save_curve_file(self, vdt_array: np.ndarray, id_flow_dict: dict):
         o_curve_file_df = pd.DataFrame(vdt_array[:, 0:8], columns=['COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
 
         # Reorder
@@ -510,7 +444,7 @@ class HydraulicData:
 
         # rename baseflow as qmax and set values
         o_curve_file_df = o_curve_file_df.rename(columns={'QBaseflow': 'QMax'})
-        o_curve_file_df['QMax'] = pd.DataFrame(vdt_array[:, range(8, 8+self.i_number_of_increments*4, 4)]).max(axis=1).dropna()
+        o_curve_file_df['QMax'] = o_curve_file_df['COMID'].map(pd.DataFrame.from_dict(id_flow_dict, orient='index').iloc[:, 1])
         
         # Round all numeric columns to 3, except 'Slope'
         for col in o_curve_file_df.columns:
