@@ -11,10 +11,11 @@ class Arc():
     _mifn: str = ""
     _args: dict = {}
     
-    def __init__(self, mifn: str = "", args: dict = {}, quiet: bool = False) -> None:
+    def __init__(self, mifn: str = "", args: dict = {}, quiet: bool = False, processes: int = 1) -> None:
         self._mifn = mifn
         self._args = args
         self.quiet = quiet
+        self.processes = processes
         if quiet:
             self.set_log_level('error')
         
@@ -37,7 +38,7 @@ class Arc():
             MIF_Name = r"C:\Projects\2024_FHS_FloodForecasting\ARC_Shields_Nencarta\nencarta_test_wsebathy_clean\yellowstone_wsebathy_clean\ARC_InputFiles\ARC_Input_Shields_Bathy.txt"
             LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
             
-        main(MIF_Name, self._args, self.quiet)
+        main(MIF_Name, self._args, self.quiet, self.processes)
 
     def flood(self):
         with open(self._mifn, 'r') as file:

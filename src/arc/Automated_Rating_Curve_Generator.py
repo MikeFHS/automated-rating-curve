@@ -20,6 +20,7 @@ from osgeo import gdal
 from pyproj import CRS, Geod
 from numba import njit, vectorize
 from numba.core.errors import TypingError
+from multiprocessing import Pool, shared_memory
 
 from arc import LOG
 from arc.cross_section import CrossSection, calculate_discharge_from_wse
@@ -32,7 +33,9 @@ _DEM: np.ndarray = None
 _STREAMS: np.ndarray = None
 _BATHYMETRY: np.ndarray = None
 _MANNINGS_N: np.ndarray = None
+_VDT_ARRAY: np.ndarray = None
 _STREAM_SLOPE_DICT: tuple[dict, dict, dict] = None
+_SHARED = []
 
 def get_dem():
     global _DEM
@@ -41,6 +44,10 @@ def get_dem():
 def get_bathymetry():
     global _BATHYMETRY
     return _BATHYMETRY
+
+def get_vdt_array():
+    global _VDT_ARRAY
+    return _VDT_ARRAY
 
 def get_streams():
     global _STREAMS
@@ -54,6 +61,9 @@ def get_stream_slope_dicts():
     global _STREAM_SLOPE_DICT
     return _STREAM_SLOPE_DICT
 
+def _set_shared(*args):
+    global _SHARED
+    _SHARED = args
 
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
     """
@@ -1282,9 +1292,9 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_
 
     return d_wse, d_q_sum
 
-def flood_increments(i_number_of_increments, d_inc_y, x_section: CrossSection, d_slope_use, d_q_sum, hydraulic_data: HydraulicData):
-
+def flood_increments(i_number_of_increments: int, d_inc_y: float, x_section: CrossSection, d_slope_use: float, d_q_sum: float, hydraulic_data: HydraulicData, i_entry_cell: int):
     i_start_elevation_index, i_last_elevation_index = 0, 0
+    vdt_array = get_vdt_array()
 
     # Initialize previous values
     prev_t = 0.0
@@ -1326,11 +1336,11 @@ def flood_increments(i_number_of_increments, d_inc_y, x_section: CrossSection, d
             # also add a top‑level guard before saving the initial (non‑refined) Q
             # right after computing the first Q/V for this increment:
             if (Q <= prev_q) or (Q > d_q_sum) or Q > d_q_sum:
-                hydraulic_data.add_hydraulic_data(i_entry_elevation, prev_wse, prev_t, prev_a, prev_p, prev_q, prev_v)
+                hydraulic_data.add_hydraulic_data(i_entry_elevation, prev_wse, prev_t, prev_a, prev_p, prev_q, prev_v, vdt_array, i_entry_cell)
                 continue
 
             # Save the values
-            hydraulic_data.add_hydraulic_data(i_entry_elevation, d_wse, T, A, P, Q, V)
+            hydraulic_data.add_hydraulic_data(i_entry_elevation, d_wse, T, A, P, Q, V, vdt_array, i_entry_cell)
 
             # Update previous values
             prev_t = T
@@ -1438,10 +1448,15 @@ def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, 
         _STREAM_SLOPE_DICT = (dict_stream_slopes, None, None)
 
 
-def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_baseflow: float, d_q_maximum: float, params: dict, dx: float, dy: float, x_section: CrossSection, hydraulic_data: HydraulicData):
+def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_column_cell: int, d_q_baseflow: float, d_q_maximum: float, params: dict, dx: float, dy: float, x_section: CrossSection, hydraulic_data: HydraulicData):
     dm_stream = get_streams()
     dm_elevation = get_dem()
     i_cell_comid = dm_stream[i_row_cell, i_column_cell]
+    if i_cell_comid not in get_stream_slope_dicts()[0]:
+        print("BAD COMID:", i_cell_comid)
+        print("Row, Col:", i_row_cell, i_column_cell)
+        print("Local window:", dm_stream[i_row_cell-1:i_row_cell+2, i_column_cell-1:i_column_cell+2])
+        raise ValueError("Invalid COMID")
     i_number_of_increments = params['i_number_of_increments']
     i_general_direction_distance = params['i_general_direction_distance']
     i_general_slope_distance = params['i_general_slope_distance']
@@ -1839,6 +1854,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
         return
     
     # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
+    vdt_array = get_vdt_array()
     if acceptable and d_maxflow_wse_final > 0.0:
         # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
         d_inc_y = (d_maxflow_wse_final - x_section.get_thalweg()) / i_number_of_increments
@@ -1846,15 +1862,15 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
         i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                         d_inc_y, 
                                                                         x_section, d_slope_use, 
-                                                                        d_q_sum, hydraulic_data)
+                                                                        d_q_sum, hydraulic_data, i_entry_cell)
 
         if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow):
-            hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001)
+            hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, vdt_array, i_entry_cell)
             
         # Process each of the elevations to the output file if feasbile values were produced
         da_total_q_half_sum = np.sum(hydraulic_data.da_total_q[0 : int(i_number_of_elevations / 2.0)])
         if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
-            hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations)
+            hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations, vdt_array, i_entry_cell)
 
         if i_number_of_elevations > 0:
             b_outprint_yes = True
@@ -1863,25 +1879,57 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
     hydraulic_data.set_non_vdt_data(b_outprint_yes, i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
                                     d_slope_use, d_dem_low_point_elev, d_q_maximum)
 
-def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray):
-    global _DEM, _STREAMS, _MANNINGS_N, _BATHYMETRY
+def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray, vdt_array: np.ndarray):
+    global _DEM, _STREAMS, _MANNINGS_N, _BATHYMETRY, _VDT_ARRAY
     _DEM = dem
     _STREAMS = stream_raster
     _BATHYMETRY = bathymetry
     _MANNINGS_N = mannings_n
+    _VDT_ARRAY = vdt_array
 
-def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, *args, quiet: bool = False, parallel: bool = False):
-    if parallel:
-        pass
+def create_shared_arrays(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray):
+    shm_dem = shared_memory.SharedMemory(create=True, size=int(np.dtype(dem.dtype).itemsize * np.prod(dem.shape)))
+    shm_stream = shared_memory.SharedMemory(create=True, size=int(np.dtype(stream_raster.dtype).itemsize * np.prod(stream_raster.shape)))
+    shm_bathymetry = shared_memory.SharedMemory(create=True, size=int(np.dtype(bathymetry.dtype).itemsize * np.prod(bathymetry.shape)))
+    shm_mannings_n = shared_memory.SharedMemory(create=True, size=int(np.dtype(mannings_n.dtype).itemsize * np.prod(mannings_n.shape)))
 
-    init_serial(*args)
+    # Create numpy arrays backed by shared memory
+    global _DEM, _STREAMS, _BATHYMETRY, _MANNINGS_N
+    _DEM = np.ndarray(dem.shape, dtype=dem.dtype, buffer=shm_dem.buf)
+    _STREAMS = np.ndarray(stream_raster.shape, dtype=stream_raster.dtype, buffer=shm_stream.buf)
+    _BATHYMETRY = np.ndarray(bathymetry.shape, dtype=bathymetry.dtype, buffer=shm_bathymetry.buf)
+    _MANNINGS_N = np.ndarray(mannings_n.shape, dtype=mannings_n.dtype, buffer=shm_mannings_n.buf)
 
-    # Write the percentiles into the files
-    i_number_of_stream_cells = len(ia_valued_row_indices)
-    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
+    # Copy data into shared memory
+    np.copyto(_DEM, dem)
+    np.copyto(_STREAMS, stream_raster)
+    np.copyto(_BATHYMETRY, bathymetry)
+    np.copyto(_MANNINGS_N, mannings_n)
 
-    dm_stream = get_streams()
-    for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet): 
+    return (shm_dem, shm_stream, shm_bathymetry, shm_mannings_n)
+
+def init_parallel(shm_dem_name: str, shm_stream_name: str, shm_bathymetry_name: str, shm_mannings_n_name: str, dem_shape: tuple, stream_shape: tuple, bathymetry_shape: tuple, mannings_n_shape: tuple, dem_dtype, stream_dtype, bathymetry_dtype, mannings_n_dtype, stream_slope_dict):
+    global _DEM, _STREAMS, _BATHYMETRY, _MANNINGS_N, _STREAM_SLOPE_DICT
+    shm_dem = shared_memory.SharedMemory(name=shm_dem_name)
+    shm_stream = shared_memory.SharedMemory(name=shm_stream_name)
+    shm_bathymetry = shared_memory.SharedMemory(name=shm_bathymetry_name)
+    shm_mannings_n = shared_memory.SharedMemory(name=shm_mannings_n_name)
+    _set_shared(shm_dem, shm_stream, shm_bathymetry, shm_mannings_n)
+
+    _DEM = np.ndarray(dem_shape, dtype=dem_dtype, buffer=shm_dem.buf)
+    _STREAMS = np.ndarray(stream_shape, dtype=stream_dtype, buffer=shm_stream.buf)
+    _BATHYMETRY = np.ndarray(bathymetry_shape, dtype=bathymetry_dtype, buffer=shm_bathymetry.buf)
+    _MANNINGS_N = np.ndarray(mannings_n_shape, dtype=mannings_n_dtype, buffer=shm_mannings_n.buf)
+
+    _STREAM_SLOPE_DICT = stream_slope_dict
+
+def calculate_hydraulic_data_for_cell_wrapper(args):
+    return calculate_hydraulic_data_for_cell(*args)
+
+def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, *arrays, data_arrays: tuple[np.ndarray, ...], quiet: bool = False, processes: int):
+    dm_stream = arrays[1]
+    loop_args = []
+    for i_entry_cell in range(len(ia_valued_row_indices)): 
         # Get the metadata for the loop
         i_row_cell = ia_valued_row_indices[i_entry_cell]
         i_column_cell = ia_valued_column_indices[i_entry_cell]
@@ -1892,10 +1940,38 @@ def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices,
             continue
         d_q_baseflow = id_flow_dict[i_cell_comid][params['s_flow_file_baseflow']]
         d_q_maximum = id_flow_dict[i_cell_comid][params['s_flow_file_qmax']]
+        loop_args.append((i_entry_cell, i_row_cell, i_column_cell, d_q_baseflow, d_q_maximum, params) + serial_args)
 
-        calculate_hydraulic_data_for_cell(i_row_cell, i_column_cell, d_q_baseflow, d_q_maximum, params, *serial_args)
 
-def main(MIF_Name: str, args: dict, quiet: bool):
+    if processes != 1:
+        shms = create_shared_arrays(*arrays)
+        try:
+            names = [shm.name for shm in shms]
+            shapes = [arr.shape for arr in arrays]
+            dtypes = [arr.dtype for arr in arrays]
+
+            if processes < 1:
+                processes = max(os.cpu_count() - 1, 1)
+
+            with Pool(processes=processes, initializer=init_parallel, initargs=(*names, *shapes, *dtypes, get_stream_slope_dicts())) as pool:
+                list(tqdm.tqdm(pool.imap_unordered(calculate_hydraulic_data_for_cell_wrapper, loop_args), total=len(loop_args), disable=quiet))
+        finally:
+            for shm in shms:
+                shm.close()
+                shm.unlink()
+
+            return
+
+    init_serial(*arrays, *data_arrays)
+
+    # Write the percentiles into the files
+    i_number_of_stream_cells = len(ia_valued_row_indices)
+    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
+
+    for arg in tqdm.tqdm(loop_args, total=len(loop_args), disable=quiet): 
+        calculate_hydraulic_data_for_cell(*arg)
+
+def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
     starttime = datetime.now()  
     ### Read Main Input File ###
     params = read_main_input_file(MIF_Name, args)
@@ -1966,9 +2042,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
             LOG.error(f'{raster_name} raster CRS units are not meters or degrees: {", ".join(invalid_units)}')
             return
 
-
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
-    i_general_slope_distance = params['i_general_slope_distance']
     i_boundary_number = max(1, params['i_general_direction_distance'], params['i_general_slope_distance'])
 
     dm_stream = np.pad(dm_stream, i_boundary_number, mode='constant', constant_values=0).astype(np.int64)
@@ -2027,22 +2101,26 @@ def main(MIF_Name: str, args: dict, quiet: bool):
     x_section.set_boundary_extents(i_boundary_number, nrows, ncols)
 
     # create a reach average slope before we go stream cell by stream cell
-    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, i_general_slope_distance)
+    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, params['i_general_slope_distance'])
 
     # Extract some parameters
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
+    # Data holders
+    vdt_data = np.full((len(ia_valued_row_indices), 7 + params['i_number_of_increments']*4), np.nan, dtype=np.float64)
+    data_arrays = (vdt_data, )
+
     ### Begin the stream cell solution loop ###
     serial_args = (dx, dy, x_section, hydraulic_data)
-    run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, parallel=False)
+    run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, data_arrays=data_arrays, quiet=quiet, processes=processes)
 
     # Create the output VDT Database file - datatypes are figured out automatically
     if not hydraulic_data.vdt_data_exists():
         LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
         return
     
-    hydraulic_data.save_files()
+    hydraulic_data.save_files(vdt_data)
 
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:

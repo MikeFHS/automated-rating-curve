@@ -107,7 +107,8 @@ class HydraulicData:
         self.All_Slope_curve_list.append(round(d_slope_use, 8))
         self.All_XS_Angle_curve_list.append(round(self.x_section.d_xs_direction, 3))
 
-    def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float):
+    def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float, vdt_array: np.ndarray, i_entry_cell: int):
+        vdt_array[i_entry_cell, 7 + ((n-1) * 4):7 + ((n-1) * 4) + 4] = [q, v, t, wse - 100 if self.b_modified_dem else wse]
         self.da_total_wse[n] = wse
         self.da_total_t[n] = t
         self.da_total_a[n] = a
@@ -115,7 +116,8 @@ class HydraulicData:
         self.da_total_q[n] = q
         self.da_total_v[n] = v
 
-    def set_q_at_index(self, n: int, q: float):
+    def set_q_at_index(self, n: int, q: float, vdt_array: np.ndarray, i_entry_cell: int):
+        vdt_array[i_entry_cell, 7 + ((n-1) * 4)] = q
         self.da_total_q[n] = q
 
     def reset_hydraulic_data(self):
@@ -130,7 +132,7 @@ class HydraulicData:
         idx = i_start_elevation_index + 1
         return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
 
-    def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_number_of_elevations: int):
+    def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_number_of_elevations: int, vdt_array: np.ndarray, i_entry_cell: int):
         i_row_cell, i_column_cell = self.x_section.get_row_col()
         if self.ap_file:
             self.comid_ap_dict_list.append(i_cell_comid)
@@ -142,6 +144,15 @@ class HydraulicData:
                 self.o_ap_file_dict[a_name].append(self.da_total_a[i])
                 self.o_ap_file_dict[p_name].append(self.da_total_p[i])
 
+        vdt_array[i_entry_cell, 0:7] = [
+            i_cell_comid, 
+            i_row_cell - self.x_section.i_boundary_number, 
+            i_column_cell - self.x_section.i_boundary_number, 
+            self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell], 
+            d_q_baseflow, 
+            d_slope_use, 
+            self.x_section.d_xs_direction
+        ]
         vdt_row = [i_cell_comid, i_row_cell - self.x_section.i_boundary_number, i_column_cell - self.x_section.i_boundary_number]
         vdt_row.append(self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell])
         vdt_row.append(d_q_baseflow)
@@ -280,14 +291,14 @@ class HydraulicData:
         # Return to the calling function
         return d_coefficient, d_power, d_R2
     
-    def save_files(self):
+    def save_files(self, vdt_data):
         if not self.q_list:
             LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
             return
         
         vdt_df = None
         if self.vdt_file:
-            vdt_df = self.save_vdt()
+            vdt_df = self.save_vdt(vdt_data)
         if self.ap_file:
             self.save_ap()
         if self.b_reach_average_curve_file:
@@ -297,19 +308,23 @@ class HydraulicData:
         if self.s_xs_output_file:
             self.save_cross_section_file()
 
-    def save_vdt(self):
+    def save_vdt(self, vdt_data: np.ndarray):
         colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
             f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']
         ]
 
         # Combine the data first (without rounding yet)
-        vdt_df = pd.concat([
-            pd.DataFrame(self.vdt_list, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle']),
-            pd.DataFrame(self.q_list, columns=[f'q_{i}' for i in range(1, len(self.q_list[0]) + 1)]),
-            pd.DataFrame(self.v_list, columns=[f'v_{i}' for i in range(1, len(self.v_list[0]) + 1)]),
-            pd.DataFrame(self.t_list, columns=[f't_{i}' for i in range(1, len(self.t_list[0]) + 1)]),
-            pd.DataFrame(self.wse_list, columns=[f'wse_{i}' for i in range(1, len(self.wse_list[0]) + 1)])
-        ], axis=1)
+        vdt_df = pd.DataFrame(vdt_data, columns=colorder)
+        
+        # Remove rows with NaN values
+        vdt_df = vdt_df.dropna()
+
+        # Drop duplicate rows
+        vdt_df = vdt_df.drop_duplicates()
+
+        # Make First 3 columns int
+        for col in ['COMID', 'Row', 'Col']:
+            vdt_df[col] = vdt_df[col].astype(int)
 
         # Round all numeric columns to 3, except 'Slope'
         for col in vdt_df.columns:
@@ -320,11 +335,6 @@ class HydraulicData:
         vdt_df['Slope'] = vdt_df['Slope'].round(8)
         vdt_df['XS_Angle'] = vdt_df['XS_Angle'].round(3)
 
-        # Reorder columns
-        vdt_df = vdt_df[colorder]
-        
-        # Remove rows with NaN values
-        vdt_df = vdt_df.dropna()
         # # Remove rows where any column has a negative value except wse or elevation
         # Select columns NOT starting with 'wse' or 'Elev'
         cols_to_check = [col for col in vdt_df.columns if (col.startswith('q') or col.startswith('t') or col.startswith('v'))]
