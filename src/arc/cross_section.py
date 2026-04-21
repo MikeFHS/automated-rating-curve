@@ -280,66 +280,6 @@ class CrossSection:
         # Return to the calling function
         return i_cross_section_number
     
-    def _find_bank_using_width_to_depth_ratio(self):
-        """
-        da_xs_profile1: ndarray
-            Elevations of the stream cross section on one side
-        da_xs_profile2: ndarray
-            Elevations of the stream cross section on the other side
-        xs1_n: int
-            Index of the cross section cells on one of the cross section
-        xs2_n: int
-            Index of the cross section cells on the other side of the cross section
-        d_distance_z: float
-            Incremental distance per cell parallel to the orientation of the cross section
-
-        """
-
-        # We don't use mannings n in this func, so these are just dummys (they are generated really quickly)
-        d_bottom_elevation = self.get_thalweg()
-        d_depth = 0
-        d_new_width_to_depth_ratio = 0
-        d_width_to_depth_ratio = np.inf  # Start with a large value
-
-        prev_t1 = 0.
-        prev_t2 = 0.
-
-        # we will assume that if we get to a depth of 25 meters, something has gone wrong
-        while d_new_width_to_depth_ratio <= d_width_to_depth_ratio and d_depth <= 25:
-            d_depth += 0.01
-            d_wse = d_bottom_elevation + d_depth
-            
-            # Calculate stream geometry for both sides
-            # T1 = calculate_top_width(da_xs_profile1_sliced, d_wse, d_distance_z)
-            # T2 = calculate_top_width(da_xs_profile2_sliced, d_wse, d_distance_z)
-            
-            # TW = T1 + T2
-            T1 = _calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n, self.d_ordinate_dist)
-            T2 = _calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n, self.d_ordinate_dist)
-            TW = T1 + T2
-            d_new_width_to_depth_ratio = TW / d_depth
-
-            if d_new_width_to_depth_ratio > d_width_to_depth_ratio:
-                # Recalculate the last valid depth
-                d_depth -= 0.01
-                T1 = prev_t1
-                T2 = prev_t2            
-                break
-
-            d_width_to_depth_ratio = d_new_width_to_depth_ratio
-            prev_t1 = T1
-            prev_t2 = T2
-
-        if d_depth < 25:
-            i_bank_1_index = int(T1 / self.d_ordinate_dist)
-            i_bank_2_index = int(T2 / self.d_ordinate_dist)
-        # if we have made it to 25 on d_depth, something is wrong and the banks will be set at the stream cell
-        elif d_depth >= 25:
-            i_bank_1_index = 0
-            i_bank_2_index = 0
-
-        return (i_bank_1_index, i_bank_2_index)
-    
     def _find_bank_inflection_point(self, da_xs_profile: np.ndarray, i_cross_section_number: int, window_length: int = 11, polyorder: int = 3):
         """
         Finds the cell containing the bank of the cross section, with smoothing applied.
@@ -374,32 +314,8 @@ class CrossSection:
             # If the rare case smoothing fails, just use original profile
             da_xs_smooth = da_xs_profile
             
-        return self._find_bank_inflection_point_helper(da_xs_smooth, i_cross_section_number)
+        return _find_bank_inflection_point_helper(da_xs_smooth, i_cross_section_number, self.d_ordinate_dist)
 
-    def _find_bank_inflection_point_helper(self, da_xs_smooth: np.ndarray, i_cross_section_number: int) -> int:
-        # Loop on the smoothed cross-section cells
-        entry = 0
-        previous_delta_elevation = 0.0
-        total_width = 0.0
-        while entry < min(i_cross_section_number, len(da_xs_smooth) - 1):
-            elevation_0 = da_xs_smooth[entry]
-            elevation_1 = da_xs_smooth[entry + 1]
-
-            current_delta_elevation = elevation_1 - elevation_0
-
-            if current_delta_elevation >= previous_delta_elevation:
-                previous_delta_elevation = current_delta_elevation
-                total_width += self.d_ordinate_dist
-                entry += 1  # move forward
-            else:
-                # Found the bank – go back one if needed
-                return entry  # or return entry - 1 if you want the previous one
-
-        # Return to the calling function
-        return 0
-    
-    
-    
     def Calculate_Bathymetry_Based_on_WSE_or_LC(self, d_q_baseflow: float, d_slope_use: float, output_bathymetry: np.ndarray):
         """
         Calculate bathymetry based on water surface elevations.
@@ -423,7 +339,7 @@ class CrossSection:
                 function_used = "find_wse_and_banks_by_flat_water"
 
         if i_total_bank_cells <= 1:
-            (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
+            (i_bank_1_index, i_bank_2_index) = _find_bank_using_width_to_depth_ratio(self.get_thalweg(), self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
             i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
             if i_total_bank_cells > 1:
                 function_used = "find_bank_using_width_to_depth_ratio"
@@ -462,7 +378,7 @@ class CrossSection:
             d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
             if d_y_depth >= 25:
                 if i_total_bank_cells <= 1:
-                    (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
+                    (i_bank_1_index, i_bank_2_index) = _find_bank_using_width_to_depth_ratio(self.get_thalweg(), self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
                     i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
                     d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
                     d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
@@ -511,6 +427,9 @@ class CrossSection:
     
     def calculate_stream_geometry_and_topwidth_side_2(self, wse: float):
         return _calculate_stream_geometry_and_topwidth(self.da_xs_profile2, wse, self.xs2_n, self.d_ordinate_dist, self.mannings_n2)
+    
+    def calculate_all(self, wse: float, sqrt_slope: float):
+        return _calculate_all(self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist, wse, sqrt_slope)
     
     def _calc_side_distance(self, profile, bank_index, bankfull_elev):
             """Compute the horizontal distance along a side based on elevation difference."""
@@ -590,7 +509,7 @@ class CrossSection:
 
         # Try the width-to-depth ratio method if the banks are not found
         if i_total_bank_cells <= 1:
-            (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
+            (i_bank_1_index, i_bank_2_index) = _find_bank_using_width_to_depth_ratio(self.get_thalweg(), self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
             bank_elev_1 = self.da_xs_profile1[i_bank_1_index]
             bank_elev_2 = self.da_xs_profile2[i_bank_2_index]
             i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
@@ -630,7 +549,7 @@ class CrossSection:
             if d_y_depth >= 25 or d_y_bathy > d_bankfull_elevation and (function_used == "find_wse_and_banks_by_lc" or
                                     function_used == "find_wse_and_banks_by_flat_water"):
                 # Recalculate using width-to-depth ratio
-                (i_bank_1_index, i_bank_2_index) = self._find_bank_using_width_to_depth_ratio()
+                (i_bank_1_index, i_bank_2_index) =  _find_bank_using_width_to_depth_ratio(base_elev, self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
                 i_total_bank_cells = i_bank_1_index + i_bank_2_index -1
                 if i_total_bank_cells <= 1:
                     i_total_bank_cells = 1
@@ -756,6 +675,27 @@ class CrossSection:
             # )
 
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
+    
+@njit(cache=True)
+def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarray, da_xs_profile2: np.ndarray, xs2_n: int, mannings_n2: np.ndarray, d_ordinate_dist: float, wse: float, sqrt_slope: float):
+    A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(da_xs_profile1, wse, xs1_n, d_ordinate_dist, mannings_n1)
+    A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(da_xs_profile2, wse, xs2_n, d_ordinate_dist, mannings_n2)
+
+    T = T1 + T2
+    A = A1 + A2
+    P = P1 + P2
+
+    if A <= 0.0 or P <= 0.0:
+        return 0.0, 0.0, 0.0, 0.0, T
+
+    # Estimate mannings n
+    d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
+
+    # use Manning's equation to estimate the flow
+    Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * sqrt_slope
+    V = Q / A
+
+    return A, P, V, Q, T
 
 @njit(cache=True)
 def _adjust_cross_section_to_lowest_point(i_low_spot_range: int,
@@ -1446,3 +1386,86 @@ def calc_bankfull_elevation(base_elev, bank_elev_1, bank_elev_2):
     """
     valid_banks = [elev for elev in (bank_elev_1, bank_elev_2) if is_valid_number(elev) and elev >= base_elev]
     return min(valid_banks, default=base_elev)
+
+@njit(cache=True)
+def _find_bank_inflection_point_helper(da_xs_smooth: np.ndarray, i_cross_section_number: int, d_ordinate_dist: float) -> int:
+    # Loop on the smoothed cross-section cells
+    entry = 0
+    previous_delta_elevation = 0.0
+    total_width = 0.0
+    while entry < min(i_cross_section_number, len(da_xs_smooth) - 1):
+        elevation_0 = da_xs_smooth[entry]
+        elevation_1 = da_xs_smooth[entry + 1]
+
+        current_delta_elevation = elevation_1 - elevation_0
+
+        if current_delta_elevation >= previous_delta_elevation:
+            previous_delta_elevation = current_delta_elevation
+            total_width += d_ordinate_dist
+            entry += 1  # move forward
+        else:
+            # Found the bank – go back one if needed
+            return entry  # or return entry - 1 if you want the previous one
+
+    # Return to the calling function
+    return 0
+
+@njit(cache=True)
+def _find_bank_using_width_to_depth_ratio(d_bottom_elevation: float, da_xs_profile1: np.ndarray, da_xs_profile2: np.ndarray, xs1_n: int, xs2_n: int, d_ordinate_dist: float) -> tuple[int, int]:
+    """
+    da_xs_profile1: ndarray
+        Elevations of the stream cross section on one side
+    da_xs_profile2: ndarray
+        Elevations of the stream cross section on the other side
+    xs1_n: int
+        Index of the cross section cells on one of the cross section
+    xs2_n: int
+        Index of the cross section cells on the other side of the cross section
+    d_distance_z: float
+        Incremental distance per cell parallel to the orientation of the cross section
+
+    """
+
+    # We don't use mannings n in this func, so these are just dummys (they are generated really quickly)
+    d_depth = 0
+    d_new_width_to_depth_ratio = 0
+    d_width_to_depth_ratio = np.inf  # Start with a large value
+
+    prev_t1 = 0.
+    prev_t2 = 0.
+
+    # we will assume that if we get to a depth of 25 meters, something has gone wrong
+    while d_new_width_to_depth_ratio <= d_width_to_depth_ratio and d_depth <= 25:
+        d_depth += 0.01
+        d_wse = d_bottom_elevation + d_depth
+        
+        # Calculate stream geometry for both sides
+        # T1 = calculate_top_width(da_xs_profile1_sliced, d_wse, d_distance_z)
+        # T2 = calculate_top_width(da_xs_profile2_sliced, d_wse, d_distance_z)
+        
+        # TW = T1 + T2
+        T1 = _calculate_side_top_width(d_wse, da_xs_profile1, xs1_n, d_ordinate_dist)
+        T2 = _calculate_side_top_width(d_wse, da_xs_profile2, xs2_n, d_ordinate_dist)
+        TW = T1 + T2
+        d_new_width_to_depth_ratio = TW / d_depth
+
+        if d_new_width_to_depth_ratio > d_width_to_depth_ratio:
+            # Recalculate the last valid depth
+            d_depth -= 0.01
+            T1 = prev_t1
+            T2 = prev_t2            
+            break
+
+        d_width_to_depth_ratio = d_new_width_to_depth_ratio
+        prev_t1 = T1
+        prev_t2 = T2
+
+    if d_depth < 25:
+        i_bank_1_index = int(T1 / d_ordinate_dist)
+        i_bank_2_index = int(T2 / d_ordinate_dist)
+    # if we have made it to 25 on d_depth, something is wrong and the banks will be set at the stream cell
+    elif d_depth >= 25:
+        i_bank_1_index = 0
+        i_bank_2_index = 0
+
+    return (i_bank_1_index, i_bank_2_index)

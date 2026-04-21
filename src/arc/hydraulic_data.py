@@ -39,11 +39,11 @@ class HydraulicData:
         self.XS_Row_List = []
         self.XS_Col_List = []
         # da_xs_profile1_str
-        self.XS_da_xs_profile1_str = []
-        self.XS_da_xs_profile2_str = []
+        self.XS_da_xs_profile1 = []
+        self.XS_da_xs_profile2 = []
         # dm_manning_n_raster1_str
-        self.XS_dm_manning_n_raster1_str = []
-        self.XS_dm_manning_n_raster2_str = []
+        self.XS_dm_manning_n_raster1 = []
+        self.XS_dm_manning_n_raster2 = []
         # d_ordinate_dist
         self.XS_d_ordinate_dist = []
         # r1, c1, r2, c2
@@ -215,24 +215,21 @@ class HydraulicData:
         self.XS_Col_List.append(i_column_cell - self.x_section.i_boundary_number)
         if self.b_modified_dem:
             # This is to remove the +100 if a negative value was in the DEM elevation
-            da_xs_profile1_str = array_to_string(self.x_section.da_xs_profile1[0:self.x_section.xs1_n]-100)
-            da_xs_profile2_str = array_to_string(self.x_section.da_xs_profile2[0:self.x_section.xs2_n]-100) 
+            self.XS_da_xs_profile1.append(self.x_section.da_xs_profile1[0:self.x_section.xs1_n]-100)
+            self.XS_da_xs_profile2.append(self.x_section.da_xs_profile2[0:self.x_section.xs2_n]-100) 
         else:
-            da_xs_profile1_str = array_to_string(self.x_section.da_xs_profile1[0:self.x_section.xs1_n])
-            da_xs_profile2_str = array_to_string(self.x_section.da_xs_profile2[0:self.x_section.xs2_n]) 
-        dm_manning_n_raster1_str = array_to_string(self.x_section.mannings_n1[:self.x_section.xs1_n]) 
-        dm_manning_n_raster2_str = array_to_string(self.x_section.mannings_n2[:self.x_section.xs2_n])
+            self.XS_da_xs_profile1.append(self.x_section.da_xs_profile1[0:self.x_section.xs1_n])
+            self.XS_da_xs_profile2.append(self.x_section.da_xs_profile2[0:self.x_section.xs2_n])
 
         # calculate the location of the cross-section end points
         r1 = self.x_section.ia_xc_row1_index_main[self.x_section.xs1_n-1]-self.x_section.i_boundary_number
         c1 = self.x_section.ia_xc_column1_index_main[self.x_section.xs1_n-1]-self.x_section.i_boundary_number
         r2 = self.x_section.ia_xc_row2_index_main[self.x_section.xs2_n-1]-self.x_section.i_boundary_number
         c2 = self.x_section.ia_xc_column2_index_main[self.x_section.xs2_n-1]-self.x_section.i_boundary_number
-        self.XS_da_xs_profile1_str.append(da_xs_profile1_str)
-        self.XS_da_xs_profile2_str.append(da_xs_profile2_str)
+      
         # dm_manning_n_raster1_str
-        self.XS_dm_manning_n_raster1_str.append(dm_manning_n_raster1_str)
-        self.XS_dm_manning_n_raster2_str.append(dm_manning_n_raster2_str)
+        self.XS_dm_manning_n_raster1.append(self.x_section.mannings_n1[:self.x_section.xs1_n].copy())
+        self.XS_dm_manning_n_raster2.append(self.x_section.mannings_n2[:self.x_section.xs2_n].copy())
         # d_ordinate_dist
         self.XS_d_ordinate_dist.append(self.x_section.d_ordinate_dist)
         # r1, c1, r2, c2
@@ -297,6 +294,8 @@ class HydraulicData:
             self.save_reach_average_curve_file(vdt_df)
         elif self.curve_file:
             self.save_curve_file()
+        if self.s_xs_output_file:
+            self.save_cross_section_file()
 
     def save_vdt(self):
         colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
@@ -513,11 +512,21 @@ class HydraulicData:
         LOG.info('Finished writing ' + str(self.curve_file))
 
     def save_cross_section_file(self):
-        with open(self.s_xs_output_file, 'w') as o_xs_file:
-            o_xs_file.write('COMID\tRow\tCol\tXS1_Profile\tOrdinate_Dist\tManning_N_Raster1\tXS2_Profile\tOrdinate_Dist\tManning_N_Raster2\tr1\tc1\tr2\tc2\n')
-            for i in range(len(self.XS_COMID_List)):
-                o_xs_file.write(f"{self.XS_COMID_List[i]}\t{self.XS_Row_List[i]}\t{self.XS_Col_List[i]}\t{self.XS_da_xs_profile1_str[i]}\t{self.XS_d_ordinate_dist[i]}\t{self.XS_dm_manning_n_raster1_str[i]}\t{self.XS_da_xs_profile2_str[i]}\t{self.XS_d_ordinate_dist[i]}\t{self.XS_dm_manning_n_raster2_str[i]}\t{self.XS_r1[i]}\t{self.XS_c1[i]}\t{self.XS_r2[i]}\t{self.XS_c2[i]}\n")
-        
+        pd.DataFrame({
+            'COMID': self.XS_COMID_List,
+            'Row': self.XS_Row_List,
+            'Col': self.XS_Col_List,
+            'XS1_Profile': self.XS_da_xs_profile1,
+            'Ordinate_Dist': self.XS_d_ordinate_dist,
+            'Manning_N_Raster1': self.XS_dm_manning_n_raster1,
+            'XS2_Profile': self.XS_da_xs_profile2,
+            'Manning_N_Raster2': self.XS_dm_manning_n_raster2,
+            'r1': self.XS_r1,
+            'c1': self.XS_c1,
+            'r2': self.XS_r2,
+            'c2': self.XS_c2,
+        }).to_csv(self.s_xs_output_file, index=False, sep='\t', float_format='%.6f')
+
         LOG.info('Finished writing ' + str(self.s_xs_output_file))
 
 # Power function equation
@@ -547,63 +556,3 @@ def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
 
     # Return to the calling function
     return d_power_value
-
-def format_array(da_array: np.ndarray, s_format: str):
-    """
-    Formats a string. Helper function to allow multidimensional formats
-
-    Parameters
-    ----------
-    da_array: np.array
-        Array to be formatted
-    s_format: str
-        Specifies the format of the output
-
-    Returns
-    -------
-    s_formatted_output: str
-        Formatted output as a string
-
-    """
-
-    # Format the output
-    s_formatted_output = "[" + ",".join(s_format.format(x) for x in da_array) + "]"
-
-    # Return to the calling function
-    return s_formatted_output
-
-
-def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
-    """
-    Convert a NumPy array to a formatted string with consistent spacing and no new lines.
-
-    Parameters
-    ----------
-    da_array: np.ndarray
-        Array to conver to a string
-    i_decimal_places: int
-        Number oof decimal places to return in the string
-
-    Returns
-    -------
-
-    """
-
-    # Define the format string
-    s_format = f"{{:.{i_decimal_places}f}}"
-
-    # Format the string based on the dimensionality of the array
-    if da_array.ndim == 1:
-        # Array is one-dimensional
-        s_output = format_array(da_array, s_format)
-
-    elif da_array.ndim == 2:
-        # Array is two-dimensional
-        s_output = "[" + ",".join(format_array(row, s_format) for row in da_array) + "]"
-
-    else:
-        # Array is ill formated. Throw an error.
-        raise ValueError("Only 1D and 2D arrays are supported")
-
-    # Return to the calling function
-    return s_output

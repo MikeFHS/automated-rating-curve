@@ -731,11 +731,7 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
     """
     df = pd.read_csv(s_flow_file_name)
-    da_comid = df[s_flow_id].values
-    da_base_flow = df[s_flow_baseflow].values
-    da_flow_maximum = df[s_flow_qmax].values
-
-    return da_comid, da_base_flow, da_flow_maximum
+    return df.set_index(s_flow_id)[[s_flow_baseflow, s_flow_qmax]].to_dict(orient='index')
 
 @vectorize(target='cpu', cache=True)
 def round_sig(x, sig=3):
@@ -1238,25 +1234,19 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     lookup_array[idx] = df.iloc[:, 2].values
     return lookup_array[da_input_mannings.astype(int)]
 
-def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSection, d_slope_use):
+@njit(cache=True)
+def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_use):
     d_q_sum = 0.0
     sqrt_slope = d_slope_use**0.5
 
     low = 0
     high = range_end
-
-    # Let us try the maximum depth increment first. If it cannot give us an answer, return
-    wse_high = start_wse + high * increment
-    d_q_sum_high = calculate_discharge_from_wse(wse_high, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
-
-    if d_q_sum_high < d_q_maximum:
-        return wse_high, d_q_sum_high
     
     # Use bisection algorithm to find the water surface elevation that corresponds to the target discharge
     while high - low > 1:
         mid = (low + high) // 2
         wse = start_wse + mid * increment
-        d_q_sum = calculate_discharge_from_wse(wse, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
+        d_q_sum = calculate_discharge_from_wse(wse, sqrt_slope, *x_sect_args)
 
         if d_q_sum < d_q_maximum:
             low = mid
@@ -1269,7 +1259,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSecti
     can_interpolate = False
     for i_depthincrement in range(low, high + 1):
         d_wse = start_wse + i_depthincrement * increment
-        d_q_sum = calculate_discharge_from_wse(d_wse, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
+        d_q_sum = calculate_discharge_from_wse(d_wse, sqrt_slope, *x_sect_args)
 
         # Check for overshoot in discharge
         if d_q_sum == d_q_maximum:
@@ -1281,7 +1271,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_section: CrossSecti
                 # interp_wse = prev_wse + (target_q - prev_q) * (d_wse - prev_wse) / (d_q_sum - prev_q)
                 interp_wse = prev_wse + (d_q_maximum - prev_q) * (d_wse - prev_wse) / (d_q_sum - prev_q)
                 # Recalculate geometry and discharge at the interpolated water surface elevation
-                d_q_sum = calculate_discharge_from_wse(interp_wse, sqrt_slope, *x_section.get_calculate_discharge_from_wse_args())
+                d_q_sum = calculate_discharge_from_wse(interp_wse, sqrt_slope, *x_sect_args)
                 d_wse = interp_wse
             break
 
@@ -1303,28 +1293,16 @@ def flood_increments(i_number_of_increments, d_inc_y, x_section: CrossSection, d
     prev_q = 0.0
     prev_v = 0.0
     prev_wse = 0.0
+    sqrt_slope = d_slope_use**0.5
 
     for i_entry_elevation in range(i_number_of_increments):
         d_wse = x_section.get_thalweg() + d_inc_y * i_entry_elevation
         d_wse = np.round(d_wse, 3)
 
         # Calculate the geometry          
-        A1, P1, np1, T1 = x_section.calculate_stream_geometry_and_topwidth_side_1(d_wse)
-        A2, P2, np2, T2 = x_section.calculate_stream_geometry_and_topwidth_side_2(d_wse)
-
-        T = T1 + T2
-        A = A1 + A2
-        P = P1 + P2
+        A, P, V, Q, T = x_section.calculate_all(d_wse, sqrt_slope)
 
         if T > 0 and A > 0 and P > 0:
-
-            # Estimate mannings n
-            d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
-
-            # use Manning's equation to estimate the flow
-            Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * d_slope_use**0.5
-            V = Q / A
-
             if Q < prev_q:
                 # increase d_wse by 1 cm to try to make sure Q is greater than prev_q
                 d_wse_lower_bound = d_wse + 0.01
@@ -1332,20 +1310,8 @@ def flood_increments(i_number_of_increments, d_inc_y, x_section: CrossSection, d
                 d_wse_upper_bound = x_section.get_thalweg() + d_inc_y * (i_entry_elevation + 1)
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
                 while d_wse_lower_bound < d_wse_upper_bound:
-                    # Calculate the geometry          
-                    A1, P1, np1, T1 = x_section.calculate_stream_geometry_and_topwidth_side_1(d_wse_lower_bound)
-                    A2, P2, np2, T2 = x_section.calculate_stream_geometry_and_topwidth_side_2(d_wse_lower_bound)
-
-                    T = T1 + T2
-                    A = A1 + A2
-                    P = P1 + P2
-
-                    # Estimate mannings n
-                    d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
-
-                    # use a local candidate to avoid reusing stale Q in the while condition
-                    Q_cand = (1.0 / d_composite_n) * A * (A / P) ** (2.0 / 3.0) * d_slope_use ** 0.5
-                    V_cand = Q_cand / A
+                    # Calculate the geometry       
+                    A, P, V_cand, Q_cand, T = x_section.calculate_all(d_wse, sqrt_slope)   
 
                     # accept only if it improves AND respects the cap
                     if (A > prev_a) and (P > prev_p) and (Q_cand > prev_q) and (Q_cand <= d_q_sum):
@@ -1430,12 +1396,12 @@ def dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform,
 
     return dict_stream_slopes
 
-def objective_with_wse(trial_wse: float, x_section: CrossSection, slope_squared: float,
-                       d_q_maximum: float) -> float:
+def objective_with_wse(trial_wse: float, slope_squared: float,
+                       d_q_maximum: float, x_sect_args: tuple) -> float:
     # Define an objective function: the difference between the calculated max flow and d_q_maximum.
     trial_wse = np.round(trial_wse, 3)
 
-    trial_d_q_sum = calculate_discharge_from_wse(trial_wse, slope_squared, *x_section.get_calculate_discharge_from_wse_args())
+    trial_d_q_sum = calculate_discharge_from_wse(trial_wse, slope_squared, *x_sect_args)
 
     # trial_d_q_sum = round(trial_d_q_sum, 3)
     difference = trial_d_q_sum - d_q_maximum
@@ -1445,17 +1411,17 @@ def objective_with_wse(trial_wse: float, x_section: CrossSection, slope_squared:
 
 
 # Define an objective function: the difference between the calculated max flow and d_q_maximum.
-# @njit(cache=True)
+@njit(cache=True)
 def objective_with_slope(trial_slope: float,
                          d_maxflow_wse_initial: float, d_depth_increment_small: float, d_q_maximum: float,
-                         x_section: CrossSection) -> float:
+                         x_sect_args) -> float:
     # find_wse returns a tuple: (d_maxflow_wse_final, d_q_sum)
     _, trial_d_q_sum = find_wse(
         2501, 
         d_maxflow_wse_initial, 
         d_depth_increment_small, 
         d_q_maximum, 
-        x_section,
+        x_sect_args,
         trial_slope
     )
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
@@ -1583,7 +1549,8 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
 
     wse_lower = d_maxflow_wse_initial + 0.01
     wse_upper = d_maxflow_wse_initial + 24.99
-    wse_obj_args = (x_section, slope_use_squared, d_q_maximum)
+    x_sect_args = x_section.get_calculate_discharge_from_wse_args()
+    wse_obj_args = (slope_use_squared, d_q_maximum, x_sect_args)
 
     # Check if the objective function changes sign between the bounds.
     f_lower = objective_with_wse(wse_lower, *wse_obj_args)
@@ -1601,18 +1568,18 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
 
     # Let's see if the volume-fill approach gave us a better answer and use that if it did
     # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
-    d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, x_section, d_slope_use)
+    d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, x_sect_args, d_slope_use)
 
 
     # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
     d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, x_section.get_thalweg())
     d_maxflow_wse_med = d_maxflow_wse_initial
-    d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, x_section, d_slope_use)
+    d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, x_sect_args, d_slope_use)
 
     # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
     d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, x_section.get_thalweg())
     d_maxflow_wse_final_test = d_maxflow_wse_med
-    d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, x_section, d_slope_use)
+    d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, x_sect_args, d_slope_use)
 
     # let's see if the iterative method gave use a better result and use that if it did
     if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
@@ -1632,7 +1599,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
     if slope_upper > 0.03:
         slope_upper = 0.03
 
-    slope_obj_args = (d_maxflow_wse_initial, d_depth_increment_small, d_q_maximum, x_section)
+    slope_obj_args = (d_maxflow_wse_initial, d_depth_increment_small, d_q_maximum, x_sect_args)
     # Check if the objective function changes sign between the bounds.
     f_lower = objective_with_slope(slope_lower, *slope_obj_args)
     f_upper = objective_with_slope(slope_upper, *slope_obj_args)
@@ -1647,7 +1614,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
             d_maxflow_wse_initial, 
             d_depth_increment_small, 
             d_q_maximum, 
-            x_section,
+            x_sect_args,
             trial_slope_use
         )
         # Check if d_q_sum is within acceptable bounds
@@ -1667,7 +1634,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
             d_maxflow_wse_initial, 
             d_depth_increment_small, 
             d_q_maximum, 
-            x_section,
+            x_sect_args,
             trial_slope_use
         )
         # Check if d_q_sum is within acceptable bounds
@@ -1715,7 +1682,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
                 d_maxflow_wse_initial, 
                 d_depth_increment_small, 
                 d_q_maximum, 
-                x_section,
+                x_sect_args,
                 trial_slope_use
             )
             # Check if d_q_sum is within acceptable bounds
@@ -1735,7 +1702,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
                 d_maxflow_wse_initial, 
                 d_depth_increment_small, 
                 d_q_maximum, 
-                x_section,
+                x_sect_args,
                 trial_slope_use
             )
             # Check if d_q_sum is within acceptable bounds
@@ -1756,7 +1723,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
                 d_maxflow_wse_initial, 
                 d_depth_increment_small, 
                 d_q_maximum, 
-                x_section,
+                x_sect_args,
                 trial_slope_use
             )
             # Check if d_q_sum is within acceptable bounds
@@ -1807,7 +1774,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
                 d_maxflow_wse_initial, 
                 d_depth_increment_small, 
                 d_q_maximum, 
-                x_section,
+                x_sect_args,
                 trial_slope_use
             )
             # Check if d_q_sum is within acceptable bounds
@@ -1827,7 +1794,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
                 d_maxflow_wse_initial, 
                 d_depth_increment_small, 
                 d_q_maximum, 
-                x_section,
+                x_sect_args,
                 trial_slope_use
             )
             # Check if d_q_sum is within acceptable bounds
@@ -1848,7 +1815,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
                 d_maxflow_wse_initial, 
                 d_depth_increment_small, 
                 d_q_maximum, 
-                x_section,
+                x_sect_args,
                 trial_slope_use
             )
             # Check if d_q_sum is within acceptable bounds
@@ -1885,7 +1852,7 @@ def calculate_hydraulic_data_for_cell(i_row_cell: int, i_column_cell: int, d_q_b
             hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001)
             
         # Process each of the elevations to the output file if feasbile values were produced
-        da_total_q_half_sum = sum(hydraulic_data.da_total_q[0 : int(i_number_of_elevations / 2.0)])
+        da_total_q_half_sum = np.sum(hydraulic_data.da_total_q[0 : int(i_number_of_elevations / 2.0)])
         if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
             hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations)
 
@@ -1903,7 +1870,7 @@ def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarr
     _BATHYMETRY = bathymetry
     _MANNINGS_N = mannings_n
 
-def run_main_loop(COMID, QBaseFlow, QMax, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, *args, quiet: bool = False, parallel: bool = False):
+def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, *args, quiet: bool = False, parallel: bool = False):
     if parallel:
         pass
 
@@ -1913,7 +1880,6 @@ def run_main_loop(COMID, QBaseFlow, QMax, ia_valued_row_indices, ia_valued_colum
     i_number_of_stream_cells = len(ia_valued_row_indices)
     LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
 
-
     dm_stream = get_streams()
     for i_entry_cell in tqdm.tqdm(range(i_number_of_stream_cells), total=i_number_of_stream_cells, disable=quiet): 
         # Get the metadata for the loop
@@ -1921,27 +1887,21 @@ def run_main_loop(COMID, QBaseFlow, QMax, ia_valued_row_indices, ia_valued_colum
         i_column_cell = ia_valued_column_indices[i_entry_cell]
 
         # Get the Flow Rates Associated with the Stream Cell
-        try:
-            i_cell_comid = dm_stream[i_row_cell,i_column_cell]
-            im_flow_index = np.where(COMID == i_cell_comid)[0][0]
-            d_q_baseflow = QBaseFlow[im_flow_index]
-            d_q_maximum = QMax[im_flow_index]
-        except:
+        i_cell_comid = dm_stream[i_row_cell,i_column_cell]
+        if i_cell_comid not in id_flow_dict:
             continue
-        
+        d_q_baseflow = id_flow_dict[i_cell_comid][params['s_flow_file_baseflow']]
+        d_q_maximum = id_flow_dict[i_cell_comid][params['s_flow_file_qmax']]
+
         calculate_hydraulic_data_for_cell(i_row_cell, i_column_cell, d_q_baseflow, d_q_maximum, params, *serial_args)
 
-
-
-
-# @profile
 def main(MIF_Name: str, args: dict, quiet: bool):
     starttime = datetime.now()  
     ### Read Main Input File ###
     params = read_main_input_file(MIF_Name, args)
     
     ### Read the Flow Information ###
-    COMID, QBaseFlow, QMax = read_flow_file(params['s_input_flow_file_path'], params['s_flow_file_id'], params['s_flow_file_baseflow'], params['s_flow_file_qmax'])
+    id_flow_dict = read_flow_file(params['s_input_flow_file_path'], params['s_flow_file_id'], params['s_flow_file_baseflow'], params['s_flow_file_qmax'])
 
     ### Read Raster Data ###
     dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection, dem_maxx, dem_miny, dem_dy = read_raster_gdal(params['s_input_dem_path'])
@@ -2034,7 +1994,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
         dm_output_bathymetry = None
     
     # Get the list of stream locations
-    ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, COMID, kind='table'))
+    ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, list(id_flow_dict.keys())))
     
     # Make all Land Cover that is a stream look like water
     i_lc_water_value = params['i_lc_water_value']
@@ -2075,7 +2035,7 @@ def main(MIF_Name: str, args: dict, quiet: bool):
 
     ### Begin the stream cell solution loop ###
     serial_args = (dx, dy, x_section, hydraulic_data)
-    run_main_loop(COMID, QBaseFlow, QMax, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, parallel=False)
+    run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, serial_args, params, dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, parallel=False)
 
     # Create the output VDT Database file - datatypes are figured out automatically
     if not hydraulic_data.vdt_data_exists():
