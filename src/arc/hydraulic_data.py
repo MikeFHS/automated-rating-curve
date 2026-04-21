@@ -9,13 +9,13 @@ from arc import LOG
 
 class HydraulicData:
     def __init__(self,  params: dict, b_modified_dem: bool):
-        self.ap_file = params['s_output_ap_database']
-        self.vdt_file = params["s_output_vdt_database"]
-        self.curve_file = params["s_output_curve_file"]
-        self.i_number_of_increments = params['i_number_of_increments']
-        self.b_reach_average_curve_file = params['b_reach_average_curve_file']
-        self.s_xs_output_file = params['s_xs_output_file']
-        self.b_modified_dem = b_modified_dem
+        self.ap_file: str = params['s_output_ap_database']
+        self.vdt_file: str = params["s_output_vdt_database"]
+        self.curve_file: str = params["s_output_curve_file"]
+        self.i_number_of_increments: int = params['i_number_of_increments']
+        self.b_reach_average_curve_file: bool = params['b_reach_average_curve_file']
+        self.s_xs_output_file: str = params['s_xs_output_file']
+        self.b_modified_dem: bool = b_modified_dem
 
         self.da_total_t = np.zeros(self.i_number_of_increments + 1, dtype=float)
         self.da_total_a = np.zeros(self.i_number_of_increments + 1, dtype=float)
@@ -108,7 +108,7 @@ class HydraulicData:
         self.All_XS_Angle_curve_list.append(round(self.x_section.d_xs_direction, 3))
 
     def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float, vdt_array: np.ndarray, i_entry_cell: int):
-        vdt_array[i_entry_cell, 7 + ((n-1) * 4):7 + ((n-1) * 4) + 4] = [q, v, t, wse - 100 if self.b_modified_dem else wse]
+        vdt_array[i_entry_cell, 8 + ((n-1) * 4):8 + ((n-1) * 4) + 4] = [q, v, t, wse - 100 if self.b_modified_dem else wse]
         self.da_total_wse[n] = wse
         self.da_total_t[n] = t
         self.da_total_a[n] = a
@@ -117,7 +117,7 @@ class HydraulicData:
         self.da_total_v[n] = v
 
     def set_q_at_index(self, n: int, q: float, vdt_array: np.ndarray, i_entry_cell: int):
-        vdt_array[i_entry_cell, 7 + ((n-1) * 4)] = q
+        vdt_array[i_entry_cell, 8 + ((n-1) * 4)] = q
         self.da_total_q[n] = q
 
     def reset_hydraulic_data(self):
@@ -144,14 +144,15 @@ class HydraulicData:
                 self.o_ap_file_dict[a_name].append(self.da_total_a[i])
                 self.o_ap_file_dict[p_name].append(self.da_total_p[i])
 
-        vdt_array[i_entry_cell, 0:7] = [
+        vdt_array[i_entry_cell, 0:8] = [
             i_cell_comid, 
             i_row_cell - self.x_section.i_boundary_number, 
             i_column_cell - self.x_section.i_boundary_number, 
-            self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell], 
+            self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell],  # DEM elevatin
             d_q_baseflow, 
             d_slope_use, 
-            self.x_section.d_xs_direction
+            self.x_section.d_xs_direction,
+            self.x_section.get_thalweg()-100 if self.b_modified_dem else self.x_section.get_thalweg() # Base elevation
         ]
         vdt_row = [i_cell_comid, i_row_cell - self.x_section.i_boundary_number, i_column_cell - self.x_section.i_boundary_number]
         vdt_row.append(self.x_section.dm_elevation[i_row_cell, i_column_cell] - 100 if self.b_modified_dem else self.x_section.dm_elevation[i_row_cell, i_column_cell])
@@ -304,17 +305,17 @@ class HydraulicData:
         if self.b_reach_average_curve_file:
             self.save_reach_average_curve_file(vdt_df)
         elif self.curve_file:
-            self.save_curve_file()
+            self.save_curve_file(vdt_data)
         if self.s_xs_output_file:
             self.save_cross_section_file()
 
-    def save_vdt(self, vdt_data: np.ndarray):
+    def save_vdt(self, vdt_array: np.ndarray):
         colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
             f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']
         ]
 
         # Combine the data first (without rounding yet)
-        vdt_df = pd.DataFrame(vdt_data, columns=colorder)
+        vdt_df = pd.DataFrame(np.delete(vdt_array, [7], axis=1), columns=colorder)
         
         # Remove rows with NaN values
         vdt_df = vdt_df.dropna()
@@ -328,12 +329,11 @@ class HydraulicData:
 
         # Round all numeric columns to 3, except 'Slope'
         for col in vdt_df.columns:
-            if col not in ('Slope', 'XS_Angle'):
+            if col not in ('Slope', ):
                 vdt_df[col] = vdt_df[col].round(3)
 
-        # Now round Slope separately to 8 and XS_Angle to 3
+        # Now round Slope separately to 8
         vdt_df['Slope'] = vdt_df['Slope'].round(8)
-        vdt_df['XS_Angle'] = vdt_df['XS_Angle'].round(3)
 
         # # Remove rows where any column has a negative value except wse or elevation
         # Select columns NOT starting with 'wse' or 'Elev'
@@ -495,25 +495,79 @@ class HydraulicData:
             reach_average_curvefile_df.to_csv(self.curve_file, index=False)        
         LOG.info('Finished writing ' + str(self.curve_file))
 
-    def save_curve_file(self):
-        o_curve_file_dict = {'COMID': self.COMID_curve_list,
-                            'Row': self.Row_curve_list,
-                            'Col': self.Col_curve_list,
-                            'BaseElev': self.BaseElev_curve_list,
-                            'DEM_Elev': self.DEM_Elev_curve_list,
-                            'QMax': self.QMax_curve_list,
-                            'Slope': self.Slope_curve_list,
-                            'XS_Angle': self.XS_Angle_curve_list,
-                            'depth_a': self.depth_a_curve_list,
-                            'depth_b': self.depth_b_curve_list,
-                            'tw_a': self.tw_a_curve_list,
-                            'tw_b': self.tw_b_curve_list,
-                            'vel_a': self.vel_a_curve_list,
-                            'vel_b': self.vel_b_curve_list,}
-        o_curve_file_df = pd.DataFrame(o_curve_file_dict)
+    def save_curve_file(self, vdt_array: np.ndarray):
+        o_curve_file_df = pd.DataFrame(vdt_array[:, 0:8], columns=['COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
+
+        # Reorder
+        o_curve_file_df = o_curve_file_df[['COMID', 'Row', 'Col', 'BaseElev', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle']]
+
         # Remove rows with NaN values
         o_curve_file_df = o_curve_file_df.dropna()
-        # # Remove rows where any column has negative a coefficient value
+
+        # First 3 cols as int
+        for col in ['COMID', 'Row', 'Col']:
+            o_curve_file_df[col] = o_curve_file_df[col].astype(int)
+
+        # rename baseflow as qmax and set values
+        o_curve_file_df = o_curve_file_df.rename(columns={'QBaseflow': 'QMax'})
+        o_curve_file_df['QMax'] = pd.DataFrame(vdt_array[:, range(8, 8+self.i_number_of_increments*4, 4)]).max(axis=1).dropna()
+        
+        # Round all numeric columns to 3, except 'Slope'
+        for col in o_curve_file_df.columns:
+            if col not in ('Slope', ):
+                o_curve_file_df[col] = o_curve_file_df[col].round(3)
+
+        # Now round Slope separately to 8
+        o_curve_file_df['Slope'] = o_curve_file_df['Slope'].round(8)
+
+        # Now, we need to loop through the rows of the curve file and perform the regression for each row
+        depth_a = []
+        depth_b = []
+        tw_a = []
+        tw_b = []
+        vel_a = []
+        vel_b = []
+
+        for i in o_curve_file_df.index:
+            idx = np.arange(8, 8 + self.i_number_of_increments * 4, 4)
+            da_total_q = vdt_array[i, idx]
+            da_total_v = vdt_array[i, idx + 1]
+            da_total_t = vdt_array[i, idx + 2]
+            da_total_wse = vdt_array[i, idx + 3]
+            base_elev = o_curve_file_df.loc[i, 'BaseElev']
+            da_total_depth = da_total_wse - base_elev
+
+            mask = ~np.isnan(da_total_q)
+
+            if not mask.all():
+                # There are nans at the start or end, so we need to trim those off before performing the regression
+                da_total_q = da_total_q[mask]
+                da_total_t = da_total_t[mask]
+                da_total_v = da_total_v[mask]
+                da_total_depth = da_total_depth[mask]
+
+            (d_t_a, d_t_b, d_t_R2) = self._linear_regression_power_function(da_total_q, da_total_t, [12, 0.3])
+            (d_v_a, d_v_b, d_v_R2) = self._linear_regression_power_function(da_total_q, da_total_v, [1, 0.3])
+            (d_d_a, d_d_b, d_d_R2) = self._linear_regression_power_function(da_total_q, da_total_depth, [0.2, 0.5])
+
+            depth_a.append(d_d_a)
+            depth_b.append(d_d_b)
+            tw_a.append(d_t_a)
+            tw_b.append(d_t_b)
+            vel_a.append(d_v_a)
+            vel_b.append(d_v_b)
+
+        regression_df = pd.DataFrame({
+            'depth_a': depth_a,
+            'depth_b': depth_b,
+            'tw_a': tw_a,
+            'tw_b': tw_b,
+            'vel_a': vel_a,
+            'vel_b': vel_b,
+        }).round(3)
+        o_curve_file_df = pd.concat([o_curve_file_df.reset_index(drop=True), regression_df], axis=1)
+
+        # Remove rows where any column has negative a coefficient value
         o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
         if self.curve_file.endswith('.parquet'):
             o_curve_file_df.to_parquet(self.curve_file, compression='brotli', index=False, engine='fastparquet')

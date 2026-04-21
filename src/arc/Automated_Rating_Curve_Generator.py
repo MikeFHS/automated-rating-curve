@@ -1536,9 +1536,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     # Set output arrays to zero
     hydraulic_data.reset_hydraulic_data()
     
-    # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
-    b_outprint_yes = False
-    
     # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
     i_start_elevation_index = -1
     i_last_elevation_index = 0
@@ -1638,8 +1635,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
             d_slope_use = trial_slope_use
             d_maxflow_wse_final = d_maxflow_wse_final_test
             d_q_sum = d_q_sum_test
-        else:
-            pass
     # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
     elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
         trial_slope_use = np.round(slope_lower, 3) if np.round(f_lower, 5) == 0 else np.round(slope_upper, 3)
@@ -1658,9 +1653,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
             d_slope_use = trial_slope_use
             d_maxflow_wse_final = d_maxflow_wse_final_test
             d_q_sum = d_q_sum_test
-        else:
-            pass
-
 
     #If the max flow calculated from the cross-section is 50% high or low, let's try changing the slope
     if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
@@ -1706,7 +1698,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
                 d_slope_use = trial_slope_use
                 d_maxflow_wse_final = d_maxflow_wse_final_test
                 d_q_sum = d_q_sum_test
-                return
+                return # Why is there a return here? This seems wrong, but I am leaving it assuming Joseph or Mike know why we should exit early if we find an acceptable solution here.
 
         # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_lower, 5) == 0:          
@@ -1726,8 +1718,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
                 d_slope_use = trial_slope_use
                 d_maxflow_wse_final = d_maxflow_wse_final_test
                 d_q_sum = d_q_sum_test
-            else:
-                pass
 
         # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_upper, 5) == 0:          
@@ -1747,11 +1737,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
                 d_slope_use = trial_slope_use
                 d_maxflow_wse_final = d_maxflow_wse_final_test
                 d_q_sum = d_q_sum_test
-            else:
-                pass
-        
-        else:
-            pass
 
     #This prevents the way-over simulated cells.  These are outliers.
     # 20250808 Joseph changeed this
@@ -1818,8 +1803,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
                 d_slope_use = trial_slope_use
                 d_maxflow_wse_final = d_maxflow_wse_final_test
                 d_q_sum = d_q_sum_test
-            else:
-                pass
 
         # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_upper, 5) == 0:          
@@ -1839,11 +1822,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
                 d_slope_use = trial_slope_use
                 d_maxflow_wse_final = d_maxflow_wse_final_test
                 d_q_sum = d_q_sum_test
-            else:
-                pass
-        
-        else:
-            pass
     
     # one more check of outliers to make sure we don't have any
     if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
@@ -1853,6 +1831,9 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
         hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_q_maximum, d_slope_use)
         return
     
+    # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
+    add_curve_file_data = False
+
     # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
     vdt_array = get_vdt_array()
     if acceptable and d_maxflow_wse_final > 0.0:
@@ -1872,11 +1853,10 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
         if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
             hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations, vdt_array, i_entry_cell)
 
-        if i_number_of_elevations > 0:
-            b_outprint_yes = True
+        add_curve_file_data = i_number_of_elevations > 0
 
     # Gather up all the values for the stream cell if we are going to build a reach average curve file
-    hydraulic_data.set_non_vdt_data(b_outprint_yes, i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
+    hydraulic_data.set_non_vdt_data(add_curve_file_data, i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
                                     d_slope_use, d_dem_low_point_elev, d_q_maximum)
 
 def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray, vdt_array: np.ndarray):
@@ -1887,40 +1867,44 @@ def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarr
     _MANNINGS_N = mannings_n
     _VDT_ARRAY = vdt_array
 
-def create_shared_arrays(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray):
+def create_shared_arrays(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray, vdt_array: np.ndarray):
     shm_dem = shared_memory.SharedMemory(create=True, size=int(np.dtype(dem.dtype).itemsize * np.prod(dem.shape)))
     shm_stream = shared_memory.SharedMemory(create=True, size=int(np.dtype(stream_raster.dtype).itemsize * np.prod(stream_raster.shape)))
     shm_bathymetry = shared_memory.SharedMemory(create=True, size=int(np.dtype(bathymetry.dtype).itemsize * np.prod(bathymetry.shape)))
     shm_mannings_n = shared_memory.SharedMemory(create=True, size=int(np.dtype(mannings_n.dtype).itemsize * np.prod(mannings_n.shape)))
+    shm_vdt_array = shared_memory.SharedMemory(create=True, size=int(np.dtype(vdt_array.dtype).itemsize * np.prod(vdt_array.shape)))
 
     # Create numpy arrays backed by shared memory
-    global _DEM, _STREAMS, _BATHYMETRY, _MANNINGS_N
+    global _DEM, _STREAMS, _BATHYMETRY, _MANNINGS_N, _VDT_ARRAY
     _DEM = np.ndarray(dem.shape, dtype=dem.dtype, buffer=shm_dem.buf)
     _STREAMS = np.ndarray(stream_raster.shape, dtype=stream_raster.dtype, buffer=shm_stream.buf)
     _BATHYMETRY = np.ndarray(bathymetry.shape, dtype=bathymetry.dtype, buffer=shm_bathymetry.buf)
     _MANNINGS_N = np.ndarray(mannings_n.shape, dtype=mannings_n.dtype, buffer=shm_mannings_n.buf)
+    _VDT_ARRAY = np.ndarray(vdt_array.shape, dtype=vdt_array.dtype, buffer=shm_vdt_array.buf)
 
     # Copy data into shared memory
     np.copyto(_DEM, dem)
     np.copyto(_STREAMS, stream_raster)
     np.copyto(_BATHYMETRY, bathymetry)
     np.copyto(_MANNINGS_N, mannings_n)
+    np.copyto(_VDT_ARRAY, vdt_array)
 
-    return (shm_dem, shm_stream, shm_bathymetry, shm_mannings_n)
+    return (shm_dem, shm_stream, shm_bathymetry, shm_mannings_n, shm_vdt_array)
 
-def init_parallel(shm_dem_name: str, shm_stream_name: str, shm_bathymetry_name: str, shm_mannings_n_name: str, dem_shape: tuple, stream_shape: tuple, bathymetry_shape: tuple, mannings_n_shape: tuple, dem_dtype, stream_dtype, bathymetry_dtype, mannings_n_dtype, stream_slope_dict):
-    global _DEM, _STREAMS, _BATHYMETRY, _MANNINGS_N, _STREAM_SLOPE_DICT
+def init_parallel(shm_dem_name: str, shm_stream_name: str, shm_bathymetry_name: str, shm_mannings_n_name: str, shm_vdt_array_name: str, dem_shape: tuple, stream_shape: tuple, bathymetry_shape: tuple, mannings_n_shape: tuple, vdt_array_shape: tuple, dem_dtype, stream_dtype, bathymetry_dtype, mannings_n_dtype, vdt_array_dtype, stream_slope_dict):
+    global _DEM, _STREAMS, _BATHYMETRY, _MANNINGS_N, _VDT_ARRAY, _STREAM_SLOPE_DICT
     shm_dem = shared_memory.SharedMemory(name=shm_dem_name)
     shm_stream = shared_memory.SharedMemory(name=shm_stream_name)
     shm_bathymetry = shared_memory.SharedMemory(name=shm_bathymetry_name)
     shm_mannings_n = shared_memory.SharedMemory(name=shm_mannings_n_name)
-    _set_shared(shm_dem, shm_stream, shm_bathymetry, shm_mannings_n)
+    shm_vdt_array = shared_memory.SharedMemory(name=shm_vdt_array_name)
+    _set_shared(shm_dem, shm_stream, shm_bathymetry, shm_mannings_n, shm_vdt_array)
 
     _DEM = np.ndarray(dem_shape, dtype=dem_dtype, buffer=shm_dem.buf)
     _STREAMS = np.ndarray(stream_shape, dtype=stream_dtype, buffer=shm_stream.buf)
     _BATHYMETRY = np.ndarray(bathymetry_shape, dtype=bathymetry_dtype, buffer=shm_bathymetry.buf)
     _MANNINGS_N = np.ndarray(mannings_n_shape, dtype=mannings_n_dtype, buffer=shm_mannings_n.buf)
-
+    _VDT_ARRAY = np.ndarray(vdt_array_shape, dtype=vdt_array_dtype, buffer=shm_vdt_array.buf)
     _STREAM_SLOPE_DICT = stream_slope_dict
 
 def calculate_hydraulic_data_for_cell_wrapper(args):
@@ -1944,11 +1928,11 @@ def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices,
 
 
     if processes != 1:
-        shms = create_shared_arrays(*arrays)
+        shms = create_shared_arrays(*arrays, *data_arrays)
         try:
             names = [shm.name for shm in shms]
-            shapes = [arr.shape for arr in arrays]
-            dtypes = [arr.dtype for arr in arrays]
+            shapes = [arr.shape for arr in arrays + data_arrays]
+            dtypes = [arr.dtype for arr in arrays + data_arrays]
 
             if processes < 1:
                 processes = max(os.cpu_count() - 1, 1)
@@ -2108,7 +2092,7 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
     # Data holders
-    vdt_data = np.full((len(ia_valued_row_indices), 7 + params['i_number_of_increments']*4), np.nan, dtype=np.float64)
+    vdt_data = np.full((len(ia_valued_row_indices), 8 + params['i_number_of_increments']*4), np.nan, dtype=np.float64)
     data_arrays = (vdt_data, )
 
     ### Begin the stream cell solution loop ###
