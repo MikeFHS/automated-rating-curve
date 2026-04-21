@@ -1355,6 +1355,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, x_section: Cro
         else:
             # Invalid geometry case
             i_start_elevation_index = i_entry_elevation
+            hydraulic_data.add_hydraulic_data(i_entry_elevation, 0, 0, 0, 0, 0, 0, output_data_array, i_entry_cell)
 
     return i_start_elevation_index, i_last_elevation_index
 
@@ -1533,13 +1534,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     # Calculate the volumes
     # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
     # This is preferred for VDTDatabase method.
-    
-    # Set output arrays to zero
-    hydraulic_data.reset_hydraulic_data()
-    
-    # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
-    i_start_elevation_index = -1
-    i_last_elevation_index = 0
     
     # Here are the n values for each side of the cross-section
     x_section.set_mannings_n_values(get_mannings_n())
@@ -1835,6 +1829,10 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
     add_curve_file_data = False
 
+    # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
+    i_start_elevation_index = -1
+    i_last_elevation_index = 0
+
     # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
     if acceptable and d_maxflow_wse_final > 0.0:
         # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
@@ -1845,12 +1843,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
                                                                         x_section, d_slope_use, 
                                                                         d_q_sum, hydraulic_data, i_entry_cell)
 
-        if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow):
+        if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell, output_data):
             hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, output_data, i_entry_cell)
             
         # Process each of the elevations to the output file if feasbile values were produced
-        da_total_q_half_sum = np.sum(hydraulic_data.da_total_q[0 : int(i_number_of_elevations / 2.0)])
-        if da_total_q_half_sum > 1e-16 and i_row_cell >= 0 and i_column_cell >= 0 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
+        da_total_q_half_sum = np.sum(output_data[i_entry_cell, range(8, (i_number_of_elevations // 2) * 5, 5)])
+        if da_total_q_half_sum > 1e-16 and dm_elevation[i_row_cell, i_column_cell] > 1e-16:
             hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_number_of_elevations, output_data, i_entry_cell)
 
         add_curve_file_data = i_number_of_elevations > 0
@@ -2092,7 +2090,7 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
     # Data holders
-    vdt_data = np.full((len(ia_valued_row_indices), 8 + params['i_number_of_increments']*4), np.nan, dtype=np.float64)
+    vdt_data = np.full((len(ia_valued_row_indices), 8 + params['i_number_of_increments']*5), np.nan, dtype=np.float64)
     data_arrays = (vdt_data, )
 
     ### Begin the stream cell solution loop ###

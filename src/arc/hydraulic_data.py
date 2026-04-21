@@ -18,13 +18,6 @@ class HydraulicData:
         self.s_xs_output_file: str = params['s_xs_output_file']
         self.b_modified_dem: bool = b_modified_dem
 
-        self.da_total_t = np.zeros(self.i_number_of_increments + 1, dtype=float)
-        self.da_total_a = np.zeros(self.i_number_of_increments + 1, dtype=float)
-        self.da_total_p = np.zeros(self.i_number_of_increments + 1, dtype=float)
-        self.da_total_v = np.zeros(self.i_number_of_increments + 1, dtype=float)
-        self.da_total_q = np.zeros(self.i_number_of_increments + 1, dtype=float)
-        self.da_total_wse = np.zeros(self.i_number_of_increments + 1, dtype=float)
-
         # instantiate the lists we will use to create the XS File
         self.XS_COMID_List = []
         self.XS_Row_List = []
@@ -42,21 +35,6 @@ class HydraulicData:
         self.XS_c1 = []
         self.XS_r2 = []
         self.XS_c2 = []
-
-        # Create the dictionary and lists that will be used to create our ATW database
-        self.o_ap_file_dict: dict[str, list] = {}
-        self.o_ap_file_dict['COMID'] = []
-        self.o_ap_file_dict['Row'] = []
-        self.o_ap_file_dict['Col'] = []
-        self.comid_ap_dict_list = self.o_ap_file_dict['COMID']
-        self.row_ap_dict_list = self.o_ap_file_dict['Row']
-        self.col_ap_dict_list = self.o_ap_file_dict['Col']
-        self.ap_column_names = []
-        for i in range(1, self.i_number_of_increments+1):
-            self.o_ap_file_dict[f'q_{i}'] = []
-            self.o_ap_file_dict[f'a_{i}'] = []
-            self.o_ap_file_dict[f'p_{i}'] = []
-            self.ap_column_names.append((f'q_{i}', f'a_{i}', f'p_{i}'))
 
     def associate_with_cross_section(self, x_section: CrossSection):
         self.x_section = x_section
@@ -79,42 +57,19 @@ class HydraulicData:
         ]
 
     def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float, vdt_array: np.ndarray, i_entry_cell: int):
-        vdt_array[i_entry_cell, 8 + ((n-1) * 4):8 + ((n-1) * 4) + 4] = [q, v, t, wse - 100 if self.b_modified_dem else wse]
-        self.da_total_wse[n] = wse
-        self.da_total_t[n] = t
-        self.da_total_a[n] = a
-        self.da_total_p[n] = p
-        self.da_total_q[n] = q
-        self.da_total_v[n] = v
+        vdt_array[i_entry_cell, 8 + ((n-1) * 5):8 + ((n-1) * 5) + 5] = [q, v, t, wse - 100 if self.b_modified_dem else wse, p]
 
     def set_q_at_index(self, n: int, q: float, vdt_array: np.ndarray, i_entry_cell: int):
-        vdt_array[i_entry_cell, 8 + ((n-1) * 4)] = q
-        self.da_total_q[n] = q
+        vdt_array[i_entry_cell, 8 + ((n-1) * 5)] = q
 
-    def reset_hydraulic_data(self):
-        self.da_total_t.fill(0)
-        self.da_total_a.fill(0)
-        self.da_total_p.fill(0)
-        self.da_total_v.fill(0)
-        self.da_total_q.fill(0)
-        self.da_total_wse.fill(0)
-
-    def is_start_q_greater_than_baseflow(self, i_start_elevation_index: int, d_q_baseflow: float):
+    def is_start_q_greater_than_baseflow(self, i_start_elevation_index: int, d_q_baseflow: float, i_entry_cell: int, output_data):
         idx = i_start_elevation_index + 1
-        return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
+        # return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
+        return output_data[i_entry_cell, 8 + ((idx-1) * 5)] >= d_q_baseflow
 
     def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_number_of_elevations: int, vdt_array: np.ndarray, i_entry_cell: int):
         self._has_vdt_data = True
         i_row_cell, i_column_cell = self.x_section.get_row_col()
-        if self.ap_file:
-            self.comid_ap_dict_list.append(i_cell_comid)
-            self.row_ap_dict_list.append(i_row_cell - self.x_section.i_boundary_number)
-            self.col_ap_dict_list.append(i_column_cell - self.x_section.i_boundary_number)
-        
-            for i, (q_name, a_name, p_name) in enumerate(self.ap_column_names[:i_number_of_elevations - 1], start=1):
-                self.o_ap_file_dict[q_name].append(self.da_total_q[i])
-                self.o_ap_file_dict[a_name].append(self.da_total_a[i])
-                self.o_ap_file_dict[p_name].append(self.da_total_p[i])
 
         vdt_array[i_entry_cell, 0:8] = [
             i_cell_comid, 
@@ -229,7 +184,7 @@ class HydraulicData:
         if self.vdt_file:
             vdt_df = self.save_vdt(vdt_data)
         if self.ap_file:
-            self.save_ap()
+            self.save_ap(vdt_data)
         if self.b_reach_average_curve_file:
             self.save_reach_average_curve_file(vdt_df, vdt_data, id_flow_dict)
         elif self.curve_file:
@@ -239,11 +194,14 @@ class HydraulicData:
 
     def save_vdt(self, vdt_array: np.ndarray):
         colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
-            f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse']
+            f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse', 'p']
         ]
 
         # Combine the data first (without rounding yet)
         vdt_df = pd.DataFrame(np.delete(vdt_array, [7], axis=1), columns=colorder)
+
+        # Remove perimeter columns
+        vdt_df = vdt_df.drop(columns=[col for col in vdt_df.columns if col.startswith('p_')])
         
         # Remove rows with NaN values
         vdt_df = vdt_df.dropna()
@@ -275,21 +233,32 @@ class HydraulicData:
         LOG.info('Finished writing ' + str(self.vdt_file))
         return vdt_df
 
-    def save_ap(self):
-        # Write the output VDT Database file
-        dtypes = {
-                    "COMID": 'int64',
-                    "Row": 'int64',
-                    "Col": 'int64',
-        }
-        for i in range(1, self.i_number_of_increments + 1):
-            self.o_ap_file_dict[f'a_{i}'] = np.round(self.o_ap_file_dict[f'a_{i}'], 3)
-            self.o_ap_file_dict[f'q_{i}'] = np.round(self.o_ap_file_dict[f'q_{i}'], 3)
-            self.o_ap_file_dict[f'p_{i}'] = np.round(self.o_ap_file_dict[f'p_{i}'], 3)
+    def save_ap(self, vdt_data: np.ndarray):
+        o_ap_file_df = pd.DataFrame(vdt_data, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'] + [
+            f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse', 'p']
+        ])
 
-        o_ap_file_df = pd.DataFrame(self.o_ap_file_dict).astype(dtypes)
-        # Remove rows with NaN values
+        o_ap_file_df = o_ap_file_df.drop(columns=['Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'] + [col for col in o_ap_file_df.columns if col.startswith('t_') or col.startswith('wse_')])
+
+        # Remove rows with NaN values, and duplicates
         o_ap_file_df = o_ap_file_df.dropna()
+        o_ap_file_df = o_ap_file_df.drop_duplicates()
+
+        # Set first 3 columns as int
+        for col in ['COMID', 'Row', 'Col']:
+            o_ap_file_df[col] = o_ap_file_df[col].astype(int)
+
+        # Calculate area columns based on q and v columns
+        for i in range(1, self.i_number_of_increments + 1):
+            o_ap_file_df[f'a_{i}'] = o_ap_file_df[f'q_{i}'].div(o_ap_file_df[f'v_{i}'], fill_value=0)
+            o_ap_file_df.loc[ o_ap_file_df[f'v_{i}'] == 0, f'a_{i}'] = 0 # Fill in area with 0 where velocity is 0 to avoid infinite area values
+
+        # Reorder columns to have q, a, p together for each increment
+        column_order = ['COMID', 'Row', 'Col'] + [col for i in range(1, self.i_number_of_increments + 1) for col in (f'q_{i}', f'a_{i}', f'p_{i}')]
+        o_ap_file_df = o_ap_file_df[column_order]
+
+        o_ap_file_df = o_ap_file_df.round(3)
+
         # # Remove rows where any column has a negative value except wse or elevation
         # Select columns NOT starting with 'wse' or 'Elev'
         cols_to_check = [col for col in o_ap_file_df.columns if (col.startswith('q') or col.startswith('a') or col.startswith('p'))]
@@ -463,7 +432,7 @@ class HydraulicData:
         vel_b = []
 
         for i in o_curve_file_df.index:
-            idx = np.arange(8, 8 + self.i_number_of_increments * 4, 4)
+            idx = np.arange(8, 8 + self.i_number_of_increments * 5, 5)
             da_total_q = vdt_array[i, idx]
             da_total_v = vdt_array[i, idx + 1]
             da_total_t = vdt_array[i, idx + 2]
