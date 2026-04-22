@@ -7,15 +7,17 @@ from scipy.signal import savgol_filter
 from arc import LOG
 
 class CrossSection:
+    i_precompute_angles = 30
+    d_precompute_angles = np.pi / i_precompute_angles
+
     def __init__(self, 
                  dx: float, dy: float,
-                 i_precompute_angles: int, 
                  dm_elevation: np.ndarray, dm_land_use: np.ndarray,
-                 d_x_section_distance: float, b_FindBanksBasedOnLandCover: bool, i_lc_water_value: int, d_bathymetry_trapzoid_height: float, b_bathy_use_banks: bool):
-        self.d_x_section_distance = d_x_section_distance
+                 params: dict):
+        self.d_x_section_distance = params["d_x_section_distance"]
         self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
-        self.i_precompute_angles = i_precompute_angles
-        self.d_precompute_angles = np.pi / i_precompute_angles
+        self.dx = dx
+        self.dy = dy
 
         self.da_xs_profile1 = np.zeros(self.i_center_point + 1, dtype=np.float64)
         self.da_xs_profile2 = np.zeros(self.i_center_point + 1, dtype=np.float64)
@@ -27,31 +29,51 @@ class CrossSection:
         self.dm_elevation = dm_elevation
         self.dm_land_use = dm_land_use
 
-        self.b_FindBanksBasedOnLandCover = b_FindBanksBasedOnLandCover
-        self.i_lc_water_value = i_lc_water_value
-        self.d_bathymetry_trapzoid_height = d_bathymetry_trapzoid_height
-        self.b_bathy_use_banks = b_bathy_use_banks
+        self.b_FindBanksBasedOnLandCover = params["b_FindBanksBasedOnLandCover"]
+        self.i_lc_water_value = params["i_lc_water_value"]
+        self.d_bathymetry_trapzoid_height = params["d_bathymetry_trapzoid_height"]
+        self.b_bathy_use_banks = params["b_bathy_use_banks"]
 
-        self.create_cross_section_ordinates(dx, dy)
+        # self.create_cross_section_ordinates()
+
+        # Find all the different angle increments to test
+        self.set_angles_to_test(params)
+
+        # Get the extents of the boundaries
+        self.set_boundary_extents(params["i_boundary_number"], params["nrows"], params["ncols"])
 
     def is_valid(self) -> bool:
         return self.xs1_n > 0 or self.xs2_n > 0
 
-    def create_cross_section_ordinates(self, dx: float, dy: float):
-        i_center_point = self.i_center_point
-        self.ia_xc_dr_index_main = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dc_index_main = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dr_index_second = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.ia_xc_dc_index_second = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.int64)  # Only need to go to center point, because the other side of xs we can just use *-1
-        self.d_distance_z = np.zeros(self.i_precompute_angles + 1, dtype=np.float64)
-        self.da_xc_main_fract = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
-        self.da_xc_second_fract = np.zeros((self.i_precompute_angles + 1, i_center_point + 1), dtype=np.float64)
+    @classmethod
+    def create_cross_section_ordinates(cls, params: dict):
+        # Only need to go to center point, because the other side of xs we can just use *-1
+        i_center_point = int((params["d_x_section_distance"] / (sum([params["dx"], params["dy"]]) * 0.5)) / 2.0) + 1
+        index_arrays = np.zeros((cls.i_precompute_angles + 1, i_center_point + 1, 4), dtype=np.int64)  
+        z_distance_array = np.zeros(cls.i_precompute_angles + 1, dtype=np.float64)
+        index_fract_arrays = np.zeros((cls.i_precompute_angles + 1, i_center_point + 1, 2), dtype=np.float64)
 
-        for i in range(self.i_precompute_angles+1):
-            d_xs_direction = self.d_precompute_angles * i
+        ia_xc_dr_index_main = index_arrays[:, :, 0]
+        ia_xc_dc_index_main = index_arrays[:, :, 1]
+        ia_xc_dr_index_second = index_arrays[:, :, 2]
+        ia_xc_dc_index_second = index_arrays[:, :, 3]
+
+        for i in range(cls.i_precompute_angles+1):
+            d_xs_direction = cls.d_precompute_angles * i
             # Get the Cross-Section Ordinates
-            self.d_distance_z[i] = get_xs_index_values_precalculated(self.ia_xc_dr_index_main[i], self.ia_xc_dc_index_main[i], self.ia_xc_dr_index_second[i], self.ia_xc_dc_index_second[i], self.da_xc_main_fract[i], self.da_xc_second_fract[i], d_xs_direction,
-                                                                                           i_center_point, dx, dy)
+            z_distance_array[i] = get_xs_index_values_precalculated(ia_xc_dr_index_main[i], ia_xc_dc_index_main[i], ia_xc_dr_index_second[i], ia_xc_dc_index_second[i], index_fract_arrays[i, :, 0], index_fract_arrays[i, :, 1], d_xs_direction,
+                                                                                           i_center_point, params["dx"], params["dy"])
+            
+        return index_arrays, z_distance_array, index_fract_arrays
+    
+    def associate_with_precomputed_index_arrays(self, index_arrays: np.ndarray, z_distance_array: np.ndarray, index_fract_arrays: np.ndarray):
+        self.ia_xc_dr_index_main = index_arrays[:, :, 0]
+        self.ia_xc_dc_index_main = index_arrays[:, :, 1]
+        self.ia_xc_dr_index_second = index_arrays[:, :, 2]
+        self.ia_xc_dc_index_second = index_arrays[:, :, 3]
+        self.d_distance_z = z_distance_array
+        self.da_xc_main_fract = index_fract_arrays[:, :, 0]
+        self.da_xc_second_fract = index_fract_arrays[:, :, 1]
 
     def set_angles_to_test(self, params: dict):
         self.l_angles_to_test = [0.0]
