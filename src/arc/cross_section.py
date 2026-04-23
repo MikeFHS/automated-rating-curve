@@ -96,7 +96,7 @@ class CrossSection:
 
     def has_angles_to_test(self) -> bool:
         return len(self.l_angles_to_test) > 0
-    
+
     def test_angles_and_reset_cross_section(self, i_row_cell, i_column_cell):
         d_precompute_angles = np.pi / self.i_precompute_angles
         d_xs_direction = self.get_best_xsection_angle(d_precompute_angles)
@@ -203,7 +203,7 @@ class CrossSection:
     
     def get_thalweg(self):
         return self.da_xs_profile1[0]
-    
+
     def get_best_xsection_angle(self, d_precompute_angles: float):
         d_test_depth = 0.5
         d_shortest_tw_angle = 0.0
@@ -215,7 +215,7 @@ class CrossSection:
             d_xs_angle_use = (self.d_xs_direction + d_entry_angle_adjustment) % np.pi
         
             #We now precompute the cross-section ordinates
-            i_precompute_angle_closest = int(round(d_xs_angle_use / d_precompute_angles))
+            i_precompute_angle_closest = round(d_xs_angle_use / d_precompute_angles)
 
             # Pull the cross-section again
             self.set_cross_section(self.row, self.col, i_precompute_angle_closest, self.d_xs_direction)
@@ -438,21 +438,9 @@ class CrossSection:
         self.mannings_n1 = dm_manning_n_raster[self.ia_xc_row1_index_main[:self.xs1_n], self.ia_xc_column1_index_main[:self.xs1_n]]
         self.mannings_n2 = dm_manning_n_raster[self.ia_xc_row2_index_main[:self.xs2_n], self.ia_xc_column2_index_main[:self.xs2_n]]
     
-    def calculate_stream_geometry_side_1(self, wse: float):
-        return _calculate_stream_geometry(self.da_xs_profile1, wse, self.xs1_n, self.d_ordinate_dist, self.mannings_n1)
-    
-    def calculate_stream_geometry_side_2(self, wse: float):
-        return _calculate_stream_geometry(self.da_xs_profile2, wse, self.xs2_n, self.d_ordinate_dist, self.mannings_n2)
-    
-    def calculate_stream_geometry_and_topwidth_side_1(self, wse: float):
-        return _calculate_stream_geometry_and_topwidth(self.da_xs_profile1, wse, self.xs1_n, self.d_ordinate_dist, self.mannings_n1)
-    
-    def calculate_stream_geometry_and_topwidth_side_2(self, wse: float):
-        return _calculate_stream_geometry_and_topwidth(self.da_xs_profile2, wse, self.xs2_n, self.d_ordinate_dist, self.mannings_n2)
-    
-    def calculate_all(self, wse: float, sqrt_slope: float):
-        return _calculate_all(self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist, wse, sqrt_slope)
-    
+    def get_flood_increment_args(self):
+        return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist
+
     def _calc_side_distance(self, profile, bank_index, bankfull_elev):
             """Compute the horizontal distance along a side based on elevation difference."""
             try:
@@ -700,6 +688,7 @@ class CrossSection:
     
 @njit(cache=True)
 def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarray, da_xs_profile2: np.ndarray, xs2_n: int, mannings_n2: np.ndarray, d_ordinate_dist: float, wse: float, sqrt_slope: float):
+    wse = np.round(wse, 3)
     A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(da_xs_profile1, wse, xs1_n, d_ordinate_dist, mannings_n1)
     A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(da_xs_profile2, wse, xs2_n, d_ordinate_dist, mannings_n2)
 

@@ -18,8 +18,8 @@ class HydraulicData:
         self.b_modified_dem: bool = params['b_modified_dem']
 
     @classmethod
-    def generate_output_data_array(cls, params: dict, ia_valued_row_indices: np.ndarray):
-        return np.full((len(ia_valued_row_indices), 8 + params['i_number_of_increments']*5), np.nan, dtype=np.float64)
+    def generate_output_data_array(cls, params: dict, nrows: int):
+        return np.full((nrows, 8 + params['i_number_of_increments']*5), np.nan, dtype=np.float64)
 
     def associate_with_cross_section(self, x_section: CrossSection):
         self.x_section = x_section
@@ -43,9 +43,6 @@ class HydraulicData:
             self.x_section.d_xs_direction,
             self.x_section.dm_elevation[i_row_cell,i_column_cell] # Base elevation
         ]
-
-    def add_hydraulic_data(self, n: int, wse: float, t: float, a: float, p: float, q: float, v: float, i_entry_cell: int):
-        self.output_data[i_entry_cell, 8 + ((n-1) * 5):8 + ((n-1) * 5) + 5] = [q, v, t, wse - 100 if self.b_modified_dem else wse, p]
 
     def set_q_at_index(self, n: int, q: float, i_entry_cell: int):
         self.output_data[i_entry_cell, 8 + ((n-1) * 5)] = q
@@ -166,7 +163,7 @@ class HydraulicData:
             self.save_curve_file(id_flow_dict)
         if self.s_xs_output_file:
             self.save_cross_section_file()
-
+    
     def save_vdt(self):
         colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
             f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse', 'p']
@@ -279,12 +276,7 @@ class HydraulicData:
         d_d_a_list, d_d_b_list = [], []
 
         # Extract all unique COMID values
-        unique_comids = vdt_df["COMID"].unique()
-
-        # Process each unique COMID
-        for comid in unique_comids:
-            group = vdt_df[vdt_df["COMID"] == comid]
-            
+        for comid, group in vdt_df.groupby("COMID"):
             # Create a MultiIndex from the current group's Row and Col for precise matching
             group_index = pd.MultiIndex.from_arrays([group["Row"].values, group["Col"].values], names=["Row", "Col"])
 
@@ -449,6 +441,10 @@ class HydraulicData:
         ]).to_csv(self.s_xs_output_file, index=False, sep='\t', float_format='%.6f')
 
         LOG.info('Finished writing ' + str(self.s_xs_output_file))
+
+@njit(cache=True)
+def add_hydraulic_data(output_data: np.ndarray, n: int, wse: float, t: float, p: float, q: float, v: float, i_entry_cell: int, b_modified_dem: bool):
+    output_data[i_entry_cell, 8 + ((n-1) * 5):8 + ((n-1) * 5) + 5] = [q, v, t, wse - 100 if b_modified_dem else wse, p]
 
 # Power function equation
 @njit(cache=True)

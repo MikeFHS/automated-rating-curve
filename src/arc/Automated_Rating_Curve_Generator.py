@@ -23,8 +23,8 @@ from numba.core.errors import TypingError
 from multiprocessing import Pool, shared_memory
 
 from arc import LOG
-from arc.cross_section import CrossSection, calculate_discharge_from_wse
-from arc.hydraulic_data import HydraulicData
+from arc.cross_section import CrossSection, calculate_discharge_from_wse, _calculate_all
+from arc.hydraulic_data import HydraulicData, add_hydraulic_data
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 gdal.UseExceptions()
@@ -879,7 +879,7 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
                 dist = math.sqrt(dx * dx + dy * dy)
 
                 if dist > 0.0:
-                    slope = round(abs(za - zb) / dist, 8)
+                    slope = np.round(abs(za - zb) / dist, 8)
                     if slope > 0.0:
                         total_slope += slope
                         count += 1
@@ -889,8 +889,8 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
     if len(slope_list) > 0:
         slope_arr = np.array(slope_list)
         slope_arr = round_sig(slope_arr, 8)   
-        Q1 = round(np.percentile(slope_arr, 25), 8)
-        Q3 = round(np.percentile(slope_arr, 75), 8)
+        Q1 = np.round(np.percentile(slope_arr, 25), 8)
+        Q3 = np.round(np.percentile(slope_arr, 75), 8)
         IQR = Q3 - Q1
         lower_bound = Q1
         upper_bound = Q3
@@ -946,80 +946,40 @@ def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem
     # Get the stream id of the cell
     i_cell_value = im_streams[i_row, i_column]
 
-    # Slice a box around both the stream and elevations
-    im_stream_box = im_streams[i_row - i_general_slope_distance:i_row + i_general_slope_distance, i_column - i_general_slope_distance:i_column + i_general_slope_distance]
-    dm_elevation_box = dm_dem[i_row - i_general_slope_distance:i_row + i_general_slope_distance, i_column - i_general_slope_distance:i_column + i_general_slope_distance]
+    # Get the indices of all locations of the stream id within a box around the cell of interest
+    row_min = i_row - i_general_slope_distance
+    row_max = i_row + i_general_slope_distance
+    col_min = i_column - i_general_slope_distance
+    col_max = i_column + i_general_slope_distance
 
-    # Get the indices of all locations of the stream id within the box
-    ia_matching_row_indices, ia_matching_column_indices = np.where(im_stream_box == i_cell_value)
-
+    total = 0.0
+    count = 0
     # Find the slope if there are stream cells
-    if len(ia_matching_row_indices) > 0:
-        # da_matching_elevations = dm_elevation_box[ia_matching_row_indices, ia_matching_column_indices]
-        da_matching_elevations = dm_elevation_box.ravel()[ia_matching_row_indices * dm_elevation_box.shape[1] + ia_matching_column_indices]
-        # The Gen_Slope_Dist is the row/col for the cell of interest within the subsample box
-        # Distance between the cell of interest and every cell with a similar stream id
-        dz_list = np.sqrt(np.square((ia_matching_row_indices - i_general_slope_distance) * d_dy) + np.square((ia_matching_column_indices - i_general_slope_distance) * d_dx))
+    for r in range(row_min, row_max):
+        for c in range(col_min, col_max):
+            if im_streams[r, c] != i_cell_value:
+                continue
+            
+            dr = r - i_row
+            dc = c - i_column
 
-        for x in range(len(ia_matching_row_indices)):
-            if dz_list[x] > 0.0:
-                d_stream_slope = d_stream_slope + abs(d_cell_of_interest-da_matching_elevations[x]) / dz_list[x]
+            if dr == 0 and dc == 0:
+                continue
 
-        # Average across the cells
-        if len(ia_matching_row_indices)>1:
-            d_stream_slope = d_stream_slope / (len(ia_matching_row_indices)-1)  #Add the minus one because the cell of interest was in the list
-        
-        
-        #if ia_matching_row_indices has less than 2 values then the slope will be set to the default value
-    
-    # # if slope is less than the threshold, reset it
-    # if d_stream_slope < 0.0002:
-    #     d_stream_slope = 0.0002
-    # # if slope is greater than the threshold, reset it
-    # elif d_stream_slope > 0.03:
-    #     d_stream_slope = 0.03
+            # Distance between the cell of interest and a cell with a similar stream id
+            dx = dc * d_dx
+            dy = dr * d_dy
+            dist = math.sqrt(dx*dx + dy*dy)
 
-    # Return the slope to the calling function
+            if dist > 0.0:
+                total += abs(d_cell_of_interest - dm_dem[r, c]) / dist
+                count += 1
+
+    # Average across the cells
+    if count > 0:
+        d_stream_slope = total / count
+
     return d_stream_slope
-
-@njit(cache=True)
-def polyfit_linear_plus_angle(x, y):
-    """
-    Perform linear regression (degree 1 polynomial fitting) with Numba.
-    
-    Args:
-        x (np.ndarray): Array of x values.
-        y (np.ndarray): Array of y values.
-        
-    Returns:
-        (float, float): Slope and intercept of the best-fit line.
-    """
-    x_mean = np.mean(x)
-    y_mean = np.mean(y)
-    
-    # Compute slope (m) and intercept (b)
-    numerator = np.sum((x - x_mean) * (y - y_mean))
-    denominator = np.sum((x - x_mean) ** 2)
-
-    
-    #If this occurs it means the line is straight up
-    if denominator<=0.000001 or abs(numerator)<=0.000001:
-        DX = np.max(x) - np.min(x)
-        DY = np.max(y) - np.min(y)
-        # Even though the regression cant find the slope, it is dominated in the X direction, meaning angle of zero
-        if DX>DY:
-            return -1, -1, 0
-        #The change in Y direction is dominant, meaning a stream angle of pi
-        else:
-            return -1, -1, np.pi/2.0
-
-    slope = numerator / denominator
-    intercept = y_mean - slope * x_mean
-
-    # Convert slope to angle in radians (normalized to be between 0 and 2pi)
-    d_stream_direction = np.arctan(slope) % (2 * np.pi)
-    
-    return slope, intercept, d_stream_direction
 
 @njit(cache=True)
 def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.ndarray, i_general_direction_distance: int):
@@ -1054,207 +1014,70 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
         Direction of the cross section
 
     """
-    # Initialize default values
-    d_stream_direction = 0.0
-    d_xs_direction = 0.0
+    # Get the COMID from the stream raster
+    stream_id = im_streams[i_row, i_column]
 
-    # Get the values from the stream raster
-    i_cell_value = im_streams[i_row,i_column]
+    # Define the search box around the cell of interest
+    row_min = i_row - i_general_direction_distance
+    row_max = i_row + i_general_direction_distance
+    col_min = i_column - i_general_direction_distance
+    col_max = i_column + i_general_direction_distance
 
-    # Slice the search box from the stream raster
-    im_stream_box = im_streams[i_row - i_general_direction_distance:i_row + i_general_direction_distance, i_column - i_general_direction_distance:i_column + i_general_direction_distance]
-    
-    # The Gen_Dir_Dist is the row/col for the cell of interest within the subsample box
-    ia_matching_row_indices, ia_matching_column_indices = np.where(im_stream_box == i_cell_value)
+    # Regression accumulators
+    n = 0
+    sum_x = 0.0
+    sum_y = 0.0
+    sum_xy = 0.0
+    sum_x2 = 0.0
 
-    # Find the direction if there are stream cells
-    if len(ia_matching_row_indices) > 1:  #Need at least a few cells to determine direction
+    # Search for stream cells within the box and accumulate values for linear regression to find the dominant direction of the stream
+    for r in range(row_min, row_max):
+        for c in range(col_min, col_max):
+            if im_streams[r, c] != stream_id:
+                continue
 
-        # METHOD 1 - Calculate the angle based on all of the stream cells in the search box and do distance weighting
-        '''
-        # Adjust the cell indices with the general direction distance
-        ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
-        ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
+            # local coordinates centered at target cell
+            x = c - i_column
+            y = r - i_row
 
-        # Calculate the distance between the cell of interest and every cell with a similar stream id
-        da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
-        da_dz_list = da_dz_list / max(da_dz_list)
-        
-        # Calculate the angle to the cells within the search box
-        da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
-        
-        
-        # Account for the angle sign when aggregating the distance
-        for x in range(len(ia_matching_row_indices)):
-            if da_dz_list[x] > 0.0:
-                if da_atanvals[x] > math.pi:
-                    d_stream_direction = d_stream_direction + (da_atanvals[x] - math.pi) * da_dz_list[x]
-                elif da_atanvals[x] < 0.0:
-                    d_stream_direction = d_stream_direction + (da_atanvals[x] + math.pi) * da_dz_list[x]
-                else:
-                    d_stream_direction = d_stream_direction + da_atanvals[x] * da_dz_list[x]
-        d_stream_direction = d_stream_direction / sum(da_dz_list)
-        '''
-        
-        # METHOD 2 - Calculate the angle based on the streamcells that are the furthest in the search box
-        '''
-        # Adjust the cell indices with the general direction distance
-        ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
-        ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
+            sum_x += x
+            sum_y += y
+            sum_xy += x * y
+            sum_x2 += x * x
+            n += 1
 
-        # Account for the angle sign when aggregating the distance
-        # Calculate the distance between the cell of interest and every cell with a similar stream id
-        da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
-        
-        # Calculate the angle to the cells within the search box
-        #da_atanvals = np.arctan2( np.multiply(ia_matching_row_indices, d_dy), np.multiply(ia_matching_column_indices, d_dx) )
-        #da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
-        
-        #Finds the cell within the scan box that is the farthest away the stream cell of interest.
-        x = np.argmax(da_dz_list)
-        #print(x)
-        
-        da_atanvals_single = np.arctan2(ia_matching_row_indices[x], ia_matching_column_indices[x])
-        if da_atanvals_single >= math.pi:
-            d_stream_direction = (da_atanvals_single - math.pi)
-        elif da_atanvals_single < 0.0:
-            d_stream_direction = (da_atanvals_single + math.pi)
+    if n <= 1:
+        return 0.0, 0.0
+
+    denom = n * sum_x2 - sum_x * sum_x
+    numer = n * sum_xy - sum_x * sum_y
+
+    #If this occurs it means the line is straight up
+    if denom <= 1e-6 or abs(numer) <= 1e-6:
+        dx = 0.0
+        dy = 0.0
+
+        for r in range(row_min, row_max):
+            for c in range(col_min, col_max):
+                if im_streams[r, c] == stream_id:
+                    dx = max(dx, abs(c - i_column))
+                    dy = max(dy, abs(r - i_row))
+
+        # Even though the regression cant find the slope, it is dominated in the X direction, meaning angle of zero
+        if dx > dy:
+            d_stream_direction = 0.0
         else:
-            d_stream_direction = da_atanvals_single
-        '''
-        
-        
-        
-        # METHOD 3 - Calculate the angle to each stream cell around and then take the median
-        '''
-        # Adjust the cell indices with the general direction distance
-        ia_matching_row_indices = ia_matching_row_indices - i_general_direction_distance
-        ia_matching_column_indices = ia_matching_column_indices - i_general_direction_distance
+            #The change in Y direction is dominant, meaning a stream angle of pi/2
+            d_stream_direction = np.pi / 2.0
+    else:
+        slope = numer / denom
+        # Convert slope to angle in radians (normalized to be between 0 and 2pi)
+        d_stream_direction = np.arctan(slope) % (2 * np.pi)
 
-        # Calculate the angle to the cells within the search box
-        #da_atanvals = np.arctan2(ia_matching_row_indices, ia_matching_column_indices)
-        da_atanvals = np.arctan2( np.multiply(ia_matching_row_indices, d_dy), np.multiply(ia_matching_column_indices, d_dx) )
-        
-        # Calculate the distance between the cell of interest and every cell with a similar stream id
-        da_dz_list = np.sqrt(np.square((ia_matching_row_indices) * d_dy) + np.square((ia_matching_column_indices) * d_dx))
-        zone = np.zeros(len(da_dz_list))
-        
-        for x in range(len(ia_matching_row_indices)):
-            if da_dz_list[x] <= 0.0:
-                da_atanvals[x] = np.nan
-            elif da_atanvals[x]>math.pi:
-                da_atanvals[x] = da_atanvals[x] - math.pi
-            elif da_atanvals[x]<0:
-                da_atanvals[x] = da_atanvals[x] + math.pi
-            
-            if da_atanvals[x] >= (3*math.pi/4):
-                zone[x]=4
-            elif da_atanvals[x] >= (2*math.pi/4):
-                zone[x]=3
-            elif da_atanvals[x] >= (1*math.pi/4):
-                zone[x]=2
-            else:
-                zone[x]=1
-        
-        n1 = int((zone==1).sum())
-        n2 = int((zone==2).sum())
-        n3 = int((zone==3).sum())
-        n4 = int((zone==4).sum())
-        max_n = max(n1, n2, n3, n4)
-        
-        a1=np.nan
-        a2=np.nan
-        a3=np.nan
-        a4=np.nan
-        da_atanvals_single = 0.0
-        
-        if n4 == max_n:
-            a4 = np.nanmean(da_atanvals[zone==4])
-            da_atanvals_single = a4
-            #if n1>0:
-            #    a1 = np.nanmean(da_atanvals[zone==1])
-            #    a1 = a1 + math.pi
-            #    da_atanvals_single = (a4*n4 + a1*n1) / (n4+n1)
-        elif n3 == max_n:
-            a3 = np.nanmean(da_atanvals[zone==3])
-            da_atanvals_single = a3
-            #if n2>0:
-            #    a2 = np.nanmean(da_atanvals[zone==2])
-            #    da_atanvals_single = (a3*n3 + a2*n2) / (n3+n2)
-        elif n2 == max_n:
-            a2 = np.nanmean(da_atanvals[zone==2])
-            da_atanvals_single = a2
-            #if n3>0:
-            #    a3 = np.nanmean(da_atanvals[zone==3])
-            #    da_atanvals_single = (a3*n3 + a2*n2) / (n3+n2)
-        elif n1 == max_n:
-            a1 = np.nanmean(da_atanvals[zone==1])
-            da_atanvals_single = a1
-            #if n4>0:
-            #    a4 = np.nanmean(da_atanvals[zone==4])
-            #    a4 = a4 - math.pi
-            #    da_atanvals_single = (a4*n4 + a1*n1) / (n4+n1)
-        
-        if da_atanvals_single<0.0:
-            da_atanvals_single = da_atanvals_single + math.pi
-        if da_atanvals_single!=np.nan and da_atanvals_single>=0.0 and da_atanvals_single<=math.pi:
-            da_atanvals_single = da_atanvals_single
-        else:
-            da_atanvals_single = 0.12345
-        
-        d_stream_direction = da_atanvals_single
-        '''
+    d_xs_direction = d_stream_direction - np.pi / 2.0
+    if d_xs_direction < 0.0:
+        d_xs_direction += np.pi
 
-
-
-        # METHOD 4 - Using precalculated angles, find which one best serves the data points in the box
-
-        # Use numpy.polyfit for linear regression, but does not work with njit
-        #    Because the ia_matching_row_indices came from a np.where() function, no need to multiply by -1 due to rows increasing downward, it is a mute point due to the np.where()
-        #slope, intercept = np.polyfit(ia_matching_column_indices, ia_matching_row_indices, 1)  # Degree 1 for linear
-        #d_stream_direction = np.arctan(slope) % (2 * np.pi)   # Convert slope to angle in radians (normalized to be between 0 and 2pi)
-
-        # Uses njit compatable functions
-        #    Because rows increase in the downward direction, readjust so the rows to be positive in the upward direction
-        #slope, intercept, d_stream_direction = linear_regression_plus_angle_njit(ia_matching_column_indices, ia_matching_row_indices)
-        slope, intercept, d_stream_direction = polyfit_linear_plus_angle(ia_matching_column_indices, ia_matching_row_indices)
-        
-        
-        
-        '''
-        # Account for the angle sign when aggregating the distance
-        for x in range(len(ia_matching_row_indices)):
-            if da_dz_list[x] > 0.0:
-                if da_atanvals[x] > math.pi:
-                    da_atanvals[x] = da_atanvals[x] - math.pi
-                elif da_atanvals[x] < 0.0:
-                    da_atanvals[x] = da_atanvals[x] + math.pi
-                
-                danglediff = abs(da_atanvals_single-da_atanvals[x])
-                if danglediff > (math.pi/2):
-                    da_atanvals[x] = da_atanvals[x] - math.pi
-                    if da_atanvals[x]<0.0:
-                        da_atanvals[x] = da_atanvals[x] + 2*math.pi
-        #print(da_atanvals)
-        d_stream_direction = np.nanmedian(da_atanvals)
-        #print(d_stream_direction)
-        '''
-        
-        
-        # Cross-Section Direction is just perpendicular to the Stream Direction
-        d_xs_direction = d_stream_direction - math.pi / 2.0
-
-        if d_xs_direction < 0.0:
-            # Check that the cross section direction is reasonable
-            d_xs_direction = d_xs_direction + math.pi
-        
-        #print('r=' + str(ia_matching_row_indices[x]) + '  c=' + str(ia_matching_column_indices[x]) + '  a=' + str(d_stream_direction*180.0/math.pi))
-       
-    #if int(i_cell_value) == 760748000:
-        #print(da_atanvals)
-    #    print(str(d_stream_direction) + '  ' + str(d_xs_direction))
-    
-    # Return to the calling function
     return d_stream_direction, d_xs_direction
 
 def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
@@ -1333,7 +1156,8 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_
 
     return d_wse, d_q_sum
 
-def flood_increments(i_number_of_increments: int, d_inc_y: float, x_section: CrossSection, d_slope_use: float, d_q_sum: float, hydraulic_data: HydraulicData, i_entry_cell: int):
+@njit(cache=True)
+def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_increments_args: tuple, thalweg: float, d_slope_use: float, d_q_sum: float, output_data: np.ndarray, i_entry_cell: int, b_modified_dem: bool):
     i_start_elevation_index, i_last_elevation_index = 0, 0
 
     # Initialize previous values
@@ -1346,22 +1170,21 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, x_section: Cro
     sqrt_slope = d_slope_use**0.5
 
     for i_entry_elevation in range(i_number_of_increments):
-        d_wse = x_section.get_thalweg() + d_inc_y * i_entry_elevation
-        d_wse = np.round(d_wse, 3)
+        d_wse = thalweg + d_inc_y * i_entry_elevation
 
         # Calculate the geometry          
-        A, P, V, Q, T = x_section.calculate_all(d_wse, sqrt_slope)
+        A, P, V, Q, T = _calculate_all(*flood_increments_args, d_wse, sqrt_slope)
 
         if T > 0 and A > 0 and P > 0:
             if Q < prev_q:
                 # increase d_wse by 1 cm to try to make sure Q is greater than prev_q
                 d_wse_lower_bound = d_wse + 0.01
                 # set the upper bound for the water surface elevation to the next increment
-                d_wse_upper_bound = x_section.get_thalweg() + d_inc_y * (i_entry_elevation + 1)
+                d_wse_upper_bound = thalweg + d_inc_y * (i_entry_elevation + 1)
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
                 while d_wse_lower_bound < d_wse_upper_bound:
                     # Calculate the geometry       
-                    A, P, V_cand, Q_cand, T = x_section.calculate_all(d_wse, sqrt_slope)   
+                    A, P, V_cand, Q_cand, T = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope)   
 
                     # accept only if it improves AND respects the cap
                     if (A > prev_a) and (P > prev_p) and (Q_cand > prev_q) and (Q_cand <= d_q_sum):
@@ -1376,11 +1199,11 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, x_section: Cro
             # also add a top‑level guard before saving the initial (non‑refined) Q
             # right after computing the first Q/V for this increment:
             if (Q <= prev_q) or (Q > d_q_sum) or Q > d_q_sum:
-                hydraulic_data.add_hydraulic_data(i_entry_elevation, prev_wse, prev_t, prev_a, prev_p, prev_q, prev_v, i_entry_cell)
+                add_hydraulic_data(output_data, i_entry_elevation, prev_wse - 100 if b_modified_dem else prev_wse, prev_t, prev_p, prev_q, prev_v, i_entry_cell, b_modified_dem)
                 continue
 
             # Save the values
-            hydraulic_data.add_hydraulic_data(i_entry_elevation, d_wse, T, A, P, Q, V, i_entry_cell)
+            add_hydraulic_data(output_data, i_entry_elevation, d_wse - 100 if b_modified_dem else d_wse, T, P, Q, V, i_entry_cell, b_modified_dem)
 
             # Update previous values
             prev_t = T
@@ -1395,7 +1218,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, x_section: Cro
         else:
             # Invalid geometry case
             i_start_elevation_index = i_entry_elevation
-            hydraulic_data.add_hydraulic_data(i_entry_elevation, 0, 0, 0, 0, 0, 0, i_entry_cell)
+            add_hydraulic_data(output_data, i_entry_elevation, 0, 0, 0, 0, 0, i_entry_cell, b_modified_dem)
 
     return i_start_elevation_index, i_last_elevation_index
 
@@ -1447,6 +1270,7 @@ def dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform,
 
     return dict_stream_slopes
 
+@njit(cache=True)
 def objective_with_wse(trial_wse: float, slope_squared: float,
                        d_q_maximum: float, x_sect_args: tuple) -> float:
     # Define an objective function: the difference between the calculated max flow and d_q_maximum.
@@ -1478,16 +1302,15 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
-def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, i_general_slope_distance):
+def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet):
     global _STREAM_SLOPE_DICT
     s_stream_slope_method = params['s_stream_slope_method']
     if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
-        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance)
+        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, params['i_general_slope_distance'])
         _STREAM_SLOPE_DICT = (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
     elif s_stream_slope_method == 'end_points':
         dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
         _STREAM_SLOPE_DICT = (dict_stream_slopes, None, None)
-
 
 def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_column_cell: int, d_q_baseflow: float, d_q_maximum: float, params: dict):
     dm_stream = get_streams()
@@ -1588,7 +1411,8 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     acceptable = True
 
     # This is the bottom of the channel
-    d_maxflow_wse_initial = x_section.get_thalweg()
+    thalweg = x_section.get_thalweg()
+    d_maxflow_wse_initial = thalweg
 
     # set this as the default in case we don't find a better one
     d_maxflow_wse_final = -999.0
@@ -1622,12 +1446,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
 
 
     # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
-    d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, x_section.get_thalweg())
+    d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, thalweg)
     d_maxflow_wse_med = d_maxflow_wse_initial
     d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, x_sect_args, d_slope_use)
 
     # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
-    d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, x_section.get_thalweg())
+    d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, thalweg)
     d_maxflow_wse_final_test = d_maxflow_wse_med
     d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, x_sect_args, d_slope_use)
 
@@ -1879,12 +1703,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
     if acceptable and d_maxflow_wse_final > 0.0:
         # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
-        d_inc_y = (d_maxflow_wse_final - x_section.get_thalweg()) / i_number_of_increments
+        d_inc_y = (d_maxflow_wse_final - thalweg) / i_number_of_increments
         i_number_of_elevations = i_number_of_increments + 1
+        flood_increments_args = x_section.get_flood_increment_args()
         i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                         d_inc_y, 
-                                                                        x_section, d_slope_use, 
-                                                                        d_q_sum, hydraulic_data, i_entry_cell)
+                                                                        flood_increments_args, thalweg, d_slope_use, 
+                                                                        d_q_sum, get_output_data_array(), i_entry_cell, hydraulic_data.b_modified_dem)
 
         if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell):
             hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, i_entry_cell)
@@ -1914,13 +1739,15 @@ def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarr
     _INDEX_FRACT_ARRAYS = index_fract_arrays
 
 def create_shared_arrays(*arrays: list[np.ndarray]):
-    shms = [shared_memory.SharedMemory(create=True, size=arr.nbytes) for arr in arrays]
+    shms = [shared_memory.SharedMemory(create=True, size=arr.nbytes) if arr is not None else None for arr in arrays]
     _set_shared(*shms)
-    shapes = [arr.shape for arr in arrays]
-    dtypes = [arr.dtype for arr in arrays]
+    shapes = [arr.shape if arr is not None else None for arr in arrays]
+    dtypes = [arr.dtype if arr is not None else None for arr in arrays]
 
     # Create numpy arrays backed by shared memory
     for global_var, shm, arr in zip(ARRAY_NAMES, shms, arrays):
+        if arr is None:
+            continue
         globals()[global_var] = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
         # Copy data into shared memory
         globals()[global_var][:] = arr[:]
@@ -1930,15 +1757,19 @@ def create_shared_arrays(*arrays: list[np.ndarray]):
 def close_shared_arrays():
     global _SHARED_MEMORYS
     for shm in _SHARED_MEMORYS:
+        if shm is None:
+            continue
         shm.close()
         shm.unlink()
 
 def init_parallel(names: list[str], shapes: list[tuple], dtypes: list[np.dtype], stream_slope_dict):
     global _STREAM_SLOPE_DICT
-    shms = [shared_memory.SharedMemory(name=name) for name in names]
+    shms = [shared_memory.SharedMemory(name=name) if name else None for name in names]
     _set_shared(*shms)
 
     for global_var, shm, shape, dtype in zip(ARRAY_NAMES, shms, shapes, dtypes):
+        if shm is None:
+            continue
         globals()[global_var] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
 
     _STREAM_SLOPE_DICT = stream_slope_dict
@@ -1946,8 +1777,7 @@ def init_parallel(names: list[str], shapes: list[tuple], dtypes: list[np.dtype],
 def calculate_hydraulic_data_for_cell_wrapper(args):
     return calculate_hydraulic_data_for_cell(*args)
 
-def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, params, arrays: tuple, quiet: bool, processes: int):
-    dm_stream = arrays[1]
+def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, comids, params: dict, arrays: tuple, quiet: bool, processes: int):
     loop_args = []
     for i_entry_cell in range(len(ia_valued_row_indices)): 
         # Get the metadata for the loop
@@ -1955,7 +1785,7 @@ def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices,
         i_column_cell = ia_valued_column_indices[i_entry_cell]
 
         # Get the Flow Rates Associated with the Stream Cell
-        i_cell_comid = dm_stream[i_row_cell,i_column_cell]
+        i_cell_comid = comids[i_entry_cell]
         if i_cell_comid not in id_flow_dict:
             continue
         d_q_baseflow = id_flow_dict[i_cell_comid][params['s_flow_file_baseflow']]
@@ -1965,7 +1795,7 @@ def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices,
     index_arrays = CrossSection.create_cross_section_ordinates(params)
 
     cross_section_data = []
-    output_data = HydraulicData.generate_output_data_array(params, ia_valued_row_indices)
+    output_data = HydraulicData.generate_output_data_array(params, len(ia_valued_row_indices))
     if processes != 1:
         shms, shapes, dtypes = create_shared_arrays(*arrays, output_data, *index_arrays)
         try:
@@ -2099,6 +1929,7 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
     
     # Get the list of stream locations
     ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, list(id_flow_dict.keys())))
+    comids = dm_stream[ia_valued_row_indices, ia_valued_column_indices]
     
     # Make all Land Cover that is a stream look like water
     i_lc_water_value = params['i_lc_water_value']
@@ -2127,14 +1958,14 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
     params["b_modified_dem"] = b_modified_dem
 
     # create a reach average slope before we go stream cell by stream cell
-    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, params['i_general_slope_distance'])
+    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet)
 
     # Extract some parameters
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
     ### Begin the stream cell solution loop ###
-    hydraulic_data = run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, params, (dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, dm_land_use), quiet=quiet, processes=processes)
+    hydraulic_data = run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, comids, params, (dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, dm_land_use), quiet=quiet, processes=processes)
 
     # Create the output VDT Database file - datatypes are figured out automatically
     if not hydraulic_data.has_vdt_data():
@@ -2146,7 +1977,7 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
 
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
-        # Re-get the rasterm since the shared array will have been modified by the parallel processing
+        # Re-get the raster since the shared array will have been modified by the parallel processing
         dm_output_bathymetry = get_bathymetry()
         #Make sure all the bathymetry points are above the DEM elevation
         if not b_bathy_use_banks:
