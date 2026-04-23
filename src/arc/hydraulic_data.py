@@ -199,7 +199,7 @@ class HydraulicData:
         # Remove rows where any of the selected columns have a negative value
         vdt_df = vdt_df.loc[~(vdt_df[cols_to_check] < 0).any(axis=1)]
         if self.vdt_file.endswith('.parquet'):
-            vdt_df.to_parquet(self.vdt_file, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with VDT data
+            vdt_df.to_parquet(self.vdt_file, compression='brotli', index=False) # Brotli does very well with VDT data
         else:
             vdt_df.to_csv(self.vdt_file, index=False)    
         LOG.info('Finished writing ' + str(self.vdt_file))
@@ -237,7 +237,7 @@ class HydraulicData:
         # Remove rows where any of the selected columns have a negative value
         o_ap_file_df = o_ap_file_df.loc[~(o_ap_file_df[cols_to_check] < 0).any(axis=1)]
         if self.ap_file.endswith('.parquet'):
-            o_ap_file_df.to_parquet(self.ap_file, compression='brotli', index=False, engine='fastparquet') # Brotli does very well with AP data
+            o_ap_file_df.to_parquet(self.ap_file, compression='brotli', index=False) # Brotli does very well with AP data
         else:
             o_ap_file_df.to_csv(self.ap_file, index=False)
         LOG.info('Finished writing ' + str(self.ap_file))
@@ -349,7 +349,7 @@ class HydraulicData:
 
         # Write the output file
         if self.curve_file.endswith('.parquet'):
-            reach_average_curvefile_df.to_parquet(self.curve_file, compression='brotli', index=False, engine='fastparquet')
+            reach_average_curvefile_df.to_parquet(self.curve_file, compression='brotli', index=False)
         else:
             reach_average_curvefile_df.to_csv(self.curve_file, index=False)        
         LOG.info('Finished writing ' + str(self.curve_file))
@@ -429,7 +429,7 @@ class HydraulicData:
         # Remove rows where any column has negative a coefficient value
         o_curve_file_df = o_curve_file_df.loc[(o_curve_file_df['depth_a'] > 0) & (o_curve_file_df['tw_a'] > 0) & (o_curve_file_df['vel_a'] > 0)]
         if self.curve_file.endswith('.parquet'):
-            o_curve_file_df.to_parquet(self.curve_file, compression='brotli', index=False, engine='fastparquet')
+            o_curve_file_df.to_parquet(self.curve_file, compression='brotli', index=False)
         else:
             o_curve_file_df.to_csv(self.curve_file, index=False)            
         LOG.info('Finished writing ' + str(self.curve_file))

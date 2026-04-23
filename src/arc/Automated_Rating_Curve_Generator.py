@@ -8,6 +8,7 @@ import sys
 import os
 import math
 import warnings
+from typing import Literal
 
 import tqdm
 import numpy as np
@@ -795,7 +796,7 @@ def round_sig(x, sig=3):
     return math.floor(x * factor + 0.5) / factor
 
 @njit(cache=True)
-def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray, im_streams: np.ndarray, d_dx: float, d_dy: float, i_general_slope_distance: int):
+def get_reach_median_stream_slope_information(dm_dem: np.ndarray, im_streams: np.ndarray, stream_id: int, d_dx: float, d_dy: float, i_general_slope_distance: int):
     """
     Calculates the stream slope for each stream cell using the following process:
 
@@ -807,14 +808,12 @@ def get_reach_median_stream_slope_information(stream_id: int, dm_dem: np.ndarray
 
     Parameters
     ----------
-    i_row: int
-        Target cell row index
-    i_column: int
-        Target cell column index
     dm_dem: ndarray
         Elevation raster
     im_streams: ndarray
         Stream raster
+    stream_id: int
+        ID of the stream for which to calculate slope
     d_dx: float
         Cell resolution in the x direction
     d_dy: float
@@ -1235,7 +1234,10 @@ def add_100_if_elevation_less_than_0(arr):
 
     return arr, b_modified_dem
 
-def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance):
+def get_reach_median_stream_slope_information_wrapper(args):
+    return get_reach_median_stream_slope_information(get_dem(), get_streams(), *args)
+
+def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance, processes):
     # create a list of unique stream IDs to loop through
     unique_stream_ids = np.unique(dm_stream)
     unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
@@ -1243,11 +1245,21 @@ def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_g
     dict_stream_slopes = {}
     dict_stream_slopes_25th = {}
     dict_stream_slopes_75th = {}
-    for stream_id in pbar_slopes:
-        reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(stream_id, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
-        dict_stream_slopes[stream_id] = reach_slope
-        dict_stream_slopes_25th[stream_id] = reach_slope_25th
-        dict_stream_slopes_75th[stream_id] = reach_slope_75th
+    if processes == 1:
+        for stream_id in pbar_slopes:
+            reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(dm_elevation, dm_stream, stream_id, dx, dy, i_general_slope_distance)
+            dict_stream_slopes[stream_id] = reach_slope
+            dict_stream_slopes_25th[stream_id] = reach_slope_25th
+            dict_stream_slopes_75th[stream_id] = reach_slope_75th
+    else:
+        names, shapes, dtypes = create_shared_arrays(dm_elevation, dm_stream, global_array_names=["_DEM", "_STREAMS"])
+
+        with Pool(processes, initializer=init_parallel, initargs=(names, shapes, dtypes, None, ["_DEM", "_STREAMS"])) as pool:
+            chunksize = min(10, len(unique_stream_ids) // (processes * 4) + 1)  # Adjust chunksize based on the number of processes and total tasks. I found 10 to be the most we should go
+            for stream_id, (reach_slope, reach_slope_25th, reach_slope_75th) in zip(pbar_slopes, pool.imap(get_reach_median_stream_slope_information_wrapper, [(stream_id, dx, dy, i_general_slope_distance) for stream_id in unique_stream_ids], chunksize=chunksize)):
+                dict_stream_slopes[stream_id] = reach_slope
+                dict_stream_slopes_25th[stream_id] = reach_slope_25th
+                dict_stream_slopes_75th[stream_id] = reach_slope_75th
 
     return dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th
 
@@ -1302,11 +1314,11 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
-def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet):
+def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, processes):
     global _STREAM_SLOPE_DICT
     s_stream_slope_method = params['s_stream_slope_method']
     if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
-        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, params['i_general_slope_distance'])
+        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, params['i_general_slope_distance'], processes)
         _STREAM_SLOPE_DICT = (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
     elif s_stream_slope_method == 'end_points':
         dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
@@ -1738,21 +1750,22 @@ def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarr
     _Z_DISTANCE_ARRAY = z_distance_array
     _INDEX_FRACT_ARRAYS = index_fract_arrays
 
-def create_shared_arrays(*arrays: list[np.ndarray]):
+def create_shared_arrays(*arrays: list[np.ndarray], global_array_names: list[str] = ARRAY_NAMES):
     shms = [shared_memory.SharedMemory(create=True, size=arr.nbytes) if arr is not None else None for arr in arrays]
     _set_shared(*shms)
+    names = [shm.name if shm is not None else None for shm in shms]
     shapes = [arr.shape if arr is not None else None for arr in arrays]
     dtypes = [arr.dtype if arr is not None else None for arr in arrays]
 
     # Create numpy arrays backed by shared memory
-    for global_var, shm, arr in zip(ARRAY_NAMES, shms, arrays):
+    for global_var, shm, arr in zip(global_array_names, shms, arrays):
         if arr is None:
             continue
         globals()[global_var] = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
         # Copy data into shared memory
         globals()[global_var][:] = arr[:]
 
-    return shms, shapes, dtypes
+    return names, shapes, dtypes
 
 def close_shared_arrays():
     global _SHARED_MEMORYS
@@ -1762,12 +1775,12 @@ def close_shared_arrays():
         shm.close()
         shm.unlink()
 
-def init_parallel(names: list[str], shapes: list[tuple], dtypes: list[np.dtype], stream_slope_dict):
+def init_parallel(names: list[str], shapes: list[tuple], dtypes: list[np.dtype], stream_slope_dict, global_array_names: list[str] = ARRAY_NAMES):
     global _STREAM_SLOPE_DICT
     shms = [shared_memory.SharedMemory(name=name) if name else None for name in names]
     _set_shared(*shms)
 
-    for global_var, shm, shape, dtype in zip(ARRAY_NAMES, shms, shapes, dtypes):
+    for global_var, shm, shape, dtype in zip(global_array_names, shms, shapes, dtypes):
         if shm is None:
             continue
         globals()[global_var] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
@@ -1791,49 +1804,66 @@ def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices,
         d_q_baseflow = id_flow_dict[i_cell_comid][params['s_flow_file_baseflow']]
         d_q_maximum = id_flow_dict[i_cell_comid][params['s_flow_file_qmax']]
         loop_args.append((i_entry_cell, i_row_cell, i_column_cell, d_q_baseflow, d_q_maximum, params))
-        
+
     index_arrays = CrossSection.create_cross_section_ordinates(params)
 
     cross_section_data = []
     output_data = HydraulicData.generate_output_data_array(params, len(ia_valued_row_indices))
-    if processes != 1:
-        shms, shapes, dtypes = create_shared_arrays(*arrays, output_data, *index_arrays)
-        try:
-            names = [shm.name for shm in shms]
-
-            if processes < 1:
-                processes = max(os.cpu_count() - 1, 1)
-
-            with Pool(processes=processes, initializer=init_parallel, initargs=(names, shapes, dtypes, get_stream_slope_dicts())) as pool:
-                for item in tqdm.tqdm(pool.imap(calculate_hydraulic_data_for_cell_wrapper, loop_args, chunksize=1), total=len(loop_args), disable=quiet):
-                    cross_section_data.append(item)
-                
-            hydraulic_data = get_hydraulic_data(params)
-            hydraulic_data.add_cross_section_data(cross_section_data)
-            return hydraulic_data
-        except Exception as e:
-            LOG.error(f"An error occurred during parallel processing: {e}")
-            import traceback
-            traceback.print_exc()
-
-            close_shared_arrays()
-            raise
-
-    init_serial(*arrays, output_data, *index_arrays)
-
-    # Write the percentiles into the files
     i_number_of_stream_cells = len(ia_valued_row_indices)
     LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
 
-    for arg in tqdm.tqdm(loop_args, total=len(loop_args), disable=quiet): 
-        cross_section_data.append(calculate_hydraulic_data_for_cell(*arg))
+    if processes == 1:
+        init_serial(*arrays, output_data, *index_arrays)
+
+        for arg in tqdm.tqdm(loop_args, total=len(loop_args), disable=quiet): 
+            cross_section_data.append(calculate_hydraulic_data_for_cell(*arg))
+        
+        hydraulic_data = get_hydraulic_data(params)
+        hydraulic_data.add_cross_section_data(cross_section_data)
+
+        return hydraulic_data
     
-    hydraulic_data = get_hydraulic_data(params)
-    hydraulic_data.add_cross_section_data(cross_section_data)
+    names, shapes, dtypes = create_shared_arrays(*arrays, output_data, *index_arrays)
+    try:
+        if processes < 1:
+            processes = max(os.cpu_count() - 1, 1)
+        with Pool(processes=processes, initializer=init_parallel, initargs=(names, shapes, dtypes, get_stream_slope_dicts())) as pool:
+            chunksize = min(1_000, len(loop_args) // (processes * 4) + 1)  # Adjust chunksize based on the number of processes and total tasks. I found that 1000 is the biggest we should go
+            for item in tqdm.tqdm(pool.imap(calculate_hydraulic_data_for_cell_wrapper, loop_args, chunksize=chunksize), total=len(loop_args), disable=quiet):
+                cross_section_data.append(item)
+            
+        hydraulic_data = get_hydraulic_data(params)
+        hydraulic_data.add_cross_section_data(cross_section_data)
+        return hydraulic_data
+    except Exception as e:
+        LOG.error(f"An error occurred during parallel processing: {e}")
+        import traceback
+        traceback.print_exc()
 
-    return hydraulic_data
+        close_shared_arrays()
+        raise
 
-def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
+
+def handle_processes(processes: int | Literal["auto"], num_steam_cells: int) -> int:
+    if isinstance(processes, int):
+        if processes < 1:
+            return max(os.cpu_count() - 1, 1)
+        return processes
+    
+    if isinstance(processes, str):
+        if not processes == "auto":
+            raise ValueError(f"Invalid value for processes: {processes}. Must be an integer or 'auto'.")
+        
+        # Some testing reveals that before 35k stream cells, the overhead of parallel processing outweighs the benefits, so we'll just run serially in those cases
+        if num_steam_cells < 35_000:
+            return 1
+        
+        return max(os.cpu_count() - 1, 1)
+        
+    raise ValueError(f"Invalid type for processes: {type(processes)}. Must be an integer or 'auto'.")
+
+
+def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
     starttime = datetime.now()  
     ### Read Main Input File ###
     params = read_main_input_file(MIF_Name, args)
@@ -1956,16 +1986,19 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int = 1):
     params["nrows"] = nrows
     params["ncols"] = ncols
     params["b_modified_dem"] = b_modified_dem
+    processes = handle_processes(processes, len(ia_valued_row_indices))
+    if processes > 1:
+        LOG.info(f'Using {processes} processes for computation.')
 
     # create a reach average slope before we go stream cell by stream cell
-    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet)
+    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, processes)
 
     # Extract some parameters
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
     ### Begin the stream cell solution loop ###
-    hydraulic_data = run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, comids, params, (dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, dm_land_use), quiet=quiet, processes=processes)
+    hydraulic_data = run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, comids, params, (dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, dm_land_use), quiet, processes)
 
     # Create the output VDT Database file - datatypes are figured out automatically
     if not hydraulic_data.has_vdt_data():

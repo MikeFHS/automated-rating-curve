@@ -1,5 +1,7 @@
+from __future__ import annotations
 import argparse
 import logging
+from typing import Literal
 from datetime import datetime
 
 from arc import LOG
@@ -11,7 +13,7 @@ class Arc():
     _mifn: str = ""
     _args: dict = {}
     
-    def __init__(self, mifn: str = "", args: dict = {}, quiet: bool = False, processes: int = 1) -> None:
+    def __init__(self, mifn: str = "", args: dict = {}, quiet: bool = False, processes: int | Literal["auto"] = 1) -> None:
         self._mifn = mifn
         self._args = args
         self.quiet = quiet
