@@ -302,39 +302,28 @@ class HydraulicData:
 
             # Get the BaseElev values for subtraction
             base_elev_values = matching_reach.set_index(["Row", "Col"])["BaseElev"]
+                        
+            group_indexed = group.set_index(["Row", "Col"])
 
-            # Combine WSE_ values and subtract BaseElev
-            depth_combined_values_list = []
-            for prefix in wse_prefixes:
-                # Match rows using Row and Col from the group
-                wse_values = group.set_index(["Row", "Col"])[prefix]
-                depth_values = wse_values - base_elev_values
-                depth_combined_values_list.extend(depth_values.values)
-            d_combined_values = np.array(depth_combined_values_list)
+            # Align once
+            aligned = group_indexed.join(base_elev_values, how="inner")
 
-            # Combine Q_ values
-            q_combined_values_list = []
-            for prefix in q_prefixes:
-                q_combined_values_list.extend(group[prefix].values)
-            q_combined_values = np.array(q_combined_values_list)
+            # Depths (vectorized), Combine WSE_ values and subtract BaseElev
+            depth_combined_values = np.concatenate([
+                aligned[prefix].values - aligned["BaseElev"].values
+                for prefix in wse_prefixes
+            ])
 
-            # Combine T_ values
-            t_combined_values_list = []
-            for prefix in t_prefixes:
-                t_combined_values_list.extend(group[prefix].values)
-            t_combined_values = np.array(t_combined_values_list)
-
-            # Combine V_ values
-            v_combined_values_list = []
-            for prefix in v_prefixes:
-                v_combined_values_list.extend(group[prefix].values)
-            v_combined_values = np.array(v_combined_values_list)
+            # Q, T, V (vectorized)
+            q_combined_values = np.concatenate([group[p].values for p in q_prefixes])
+            t_combined_values = np.concatenate([group[p].values for p in t_prefixes])
+            v_combined_values = np.concatenate([group[p].values for p in v_prefixes])
 
             # Calculate regression coefficients
             try:
                 (d_t_a, d_t_b, d_t_R2) = self._linear_regression_power_function(q_combined_values, t_combined_values, [12, 0.3])
                 (d_v_a, d_v_b, d_v_R2) = self._linear_regression_power_function(q_combined_values, v_combined_values, [1, 0.3])
-                (d_d_a, d_d_b, d_d_R2) = self._linear_regression_power_function(q_combined_values, d_combined_values, [0.2, 0.5])
+                (d_d_a, d_d_b, d_d_R2) = self._linear_regression_power_function(q_combined_values, depth_combined_values, [0.2, 0.5])
             except Exception as e:
                 # Handle cases where regression fails (e.g., insufficient data)
                 LOG.warning(f"Regression failed for COMID {comid}: {e}")
