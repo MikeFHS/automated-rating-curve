@@ -13,9 +13,9 @@ class Arc():
     _mifn: str = ""
     _args: dict = {}
     
-    def __init__(self, mifn: str = "", args: dict = {}, quiet: bool = False, processes: int | Literal["auto"] = 1) -> None:
+    def __init__(self, mifn: str = "", args: dict | None = None, quiet: bool = False, processes: int | Literal["auto"] = 1) -> None:
         self._mifn = mifn
-        self._args = args
+        self._args = args or {}
         self.quiet = quiet
         self.processes = processes
         if quiet:
@@ -41,37 +41,6 @@ class Arc():
             LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
             
         main(MIF_Name, self._args, self.quiet, self.processes)
-
-    def flood(self):
-        with open(self._mifn, 'r') as file:
-            lines = file.readlines()
-            num_lines = len(lines)
-            dem_file = get_parameter_name(lines, num_lines, 'DEM_File')
-            strm_file = get_parameter_name(lines, num_lines, 'Stream_File')
-            flow_file = get_parameter_name(lines, num_lines, 'COMID_Flow_File') or get_parameter_name(lines, num_lines, 'Comid_Flow_File') or get_parameter_name(lines, num_lines, 'Flow_File')
-            vdt_database = get_parameter_name(lines, num_lines, 'Print_VDT_Database')
-            curve_file = get_parameter_name(lines, num_lines, 'Print_Curve_File')
-
-            q_fraction = float(get_parameter_name(lines, num_lines, 'Q_Limit') or 1.0)
-            tw_factor = float(get_parameter_name(lines, num_lines, 'TopWidthDistanceFactor') or 1.5)
-            flood_local = bool(get_parameter_name(lines, num_lines, 'Flood_Local')) or bool(get_parameter_name(lines, num_lines, 'LocalFloodOption'))
-            ar_bathy_file = get_parameter_name(lines, num_lines, 'BATHY_Out_File')
-            fs_bathy_file = get_parameter_name(lines, num_lines, 'FSOutBATHY')
-            flood_impact_file = ''
-            flood_map = get_parameter_name(lines, num_lines, 'OutFLD')
-
-        if not dem_file:
-            LOG.error('DEM file not found')
-            return
-        if not strm_file:
-            LOG.error('Stream file not found')
-            return
-        if not flow_file:
-            LOG.error('Flow file not found')
-            return
-        if not flood_map:
-            LOG.error('Flood map file not found')
-            return
         
     def set_log_level(self, log_level: str) -> 'Arc':
         handler = LOG.handlers[0]
@@ -102,15 +71,13 @@ def _main():
     parser.add_argument('-l', '--log', type=str, help='Log Level', 
                         default='warn', choices=['debug', 'info', 'warn', 'error'])
     parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output progress bar and other non-error messages')
-    parser.add_argument('-f', '--flood', action='store_true', help='Run flood mapper')
+    parser.add_argument('-p', '--processes', type=str, default='1', help='Number of worker processes, or \"auto\"')
     args = parser.parse_args()
-    arc = Arc(args.mifn, args.quiet)
+    processes: int | Literal["auto"]
+    processes = "auto" if args.processes.strip().lower() == "auto" else int(args.processes)
+    arc = Arc(args.mifn, args=None, quiet=args.quiet, processes=processes)
     arc.set_log_level(args.log)
-    
-    if args.flood:
-        arc.flood()
-    else:
-        arc.run()
+    arc.run()
 
     LOG.info('Finished')
 

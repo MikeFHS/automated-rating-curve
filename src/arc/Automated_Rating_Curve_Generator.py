@@ -15,12 +15,11 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import geopandas as gpd
-from scipy.optimize import curve_fit, OptimizeWarning, brentq
+from scipy.optimize import OptimizeWarning, brentq
 from shapely.geometry import LineString, MultiLineString
 from osgeo import gdal
 from pyproj import CRS, Geod
 from numba import njit, vectorize
-from numba.core.errors import TypingError
 from multiprocessing import Pool, shared_memory
 
 from arc import LOG
@@ -36,13 +35,21 @@ _BATHYMETRY: np.ndarray = None
 _MANNINGS_N: np.ndarray = None
 _LAND_COVER: np.ndarray = None
 _OUTPUT_DATA_ARRAY: np.ndarray = None
-_STREAM_SLOPE_DICT: tuple[dict, dict, dict] = None
-_SHARED_MEMORYS: list[shared_memory.SharedMemory] = []
+_PARAMS: dict | None = None
+_SHARED_MEMORYS: dict[str, shared_memory.SharedMemory] = {}
 _CROSS_SECTION: CrossSection = None
 _HYDRAULIC_DATA: HydraulicData = None
 _INDEX_ARRAYS: np.ndarray = None
 _Z_DISTANCE_ARRAY: np.ndarray = None
 _INDEX_FRACT_ARRAYS: np.ndarray = None
+_CELL_ROWS: np.ndarray = None
+_CELL_COLS: np.ndarray = None
+_CELL_COMIDS: np.ndarray = None
+_CELL_QBASE: np.ndarray = None
+_CELL_QMAX: np.ndarray = None
+_CELL_REACH_SLOPE: np.ndarray = None
+_CELL_SLOPE_25: np.ndarray = None
+_CELL_SLOPE_75: np.ndarray = None
 
 ARRAY_NAMES = [
     '_DEM',
@@ -53,36 +60,16 @@ ARRAY_NAMES = [
     '_OUTPUT_DATA_ARRAY',
     '_INDEX_ARRAYS',
     '_Z_DISTANCE_ARRAY',
-    '_INDEX_FRACT_ARRAYS'
+    '_INDEX_FRACT_ARRAYS',
+    '_CELL_ROWS',
+    '_CELL_COLS',
+    '_CELL_COMIDS',
+    '_CELL_QBASE',
+    '_CELL_QMAX',
+    '_CELL_REACH_SLOPE',
+    '_CELL_SLOPE_25',
+    '_CELL_SLOPE_75',
 ]
-
-def get_dem():
-    global _DEM
-    return _DEM
-
-def get_bathymetry():
-    global _BATHYMETRY
-    return _BATHYMETRY
-
-def get_output_data_array():
-    global _OUTPUT_DATA_ARRAY
-    return _OUTPUT_DATA_ARRAY
-
-def get_streams():
-    global _STREAMS
-    return _STREAMS
-
-def get_mannings_n():
-    global _MANNINGS_N
-    return _MANNINGS_N
-
-def get_land_cover():
-    global _LAND_COVER
-    return _LAND_COVER
-
-def get_stream_slope_dicts():
-    global _STREAM_SLOPE_DICT
-    return _STREAM_SLOPE_DICT
 
 def get_cross_section(*args):
     global _CROSS_SECTION, _INDEX_ARRAYS, _Z_DISTANCE_ARRAY, _INDEX_FRACT_ARRAYS
@@ -96,16 +83,16 @@ def get_hydraulic_data(*args):
     if _HYDRAULIC_DATA is None:
         _HYDRAULIC_DATA = HydraulicData(*args)
         _HYDRAULIC_DATA.associate_with_cross_section(get_cross_section())
-        _HYDRAULIC_DATA.associate_with_output_data(get_output_data_array())
+        _HYDRAULIC_DATA.associate_with_output_data(_OUTPUT_DATA_ARRAY)
     return _HYDRAULIC_DATA
 
-def _set_shared(*args):
+def _set_shared(name: str, shm: shared_memory.SharedMemory):
     """
     We need the shared memory objects to persist somewhere; otherwise, the memory is freed and the numpy arrays point to invalid memory.
     These must last the lifetime of the program! Reason being, bathymetry is the last thing written, and we need the shared memory to persist until then.
     """
     global _SHARED_MEMORYS
-    _SHARED_MEMORYS = args
+    _SHARED_MEMORYS[name] = shm
 
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
     """
@@ -286,114 +273,6 @@ def format_array(da_array: np.ndarray, s_format: str):
     # Return to the calling function
     return s_formatted_output
 
-
-def array_to_string(da_array: np.ndarray, i_decimal_places: int = 6):
-    """
-    Convert a NumPy array to a formatted string with consistent spacing and no new lines.
-
-    Parameters
-    ----------
-    da_array: np.ndarray
-        Array to conver to a string
-    i_decimal_places: int
-        Number oof decimal places to return in the string
-
-    Returns
-    -------
-
-    """
-
-    # Define the format string
-    s_format = f"{{:.{i_decimal_places}f}}"
-
-    # Format the string based on the dimensionality of the array
-    if da_array.ndim == 1:
-        # Array is one-dimensional
-        s_output = format_array(da_array, s_format)
-
-    elif da_array.ndim == 2:
-        # Array is two-dimensional
-        s_output = "[" + ",".join(format_array(row, s_format) for row in da_array) + "]"
-
-    else:
-        # Array is ill formated. Throw an error.
-        raise ValueError("Only 1D and 2D arrays are supported")
-
-    # Return to the calling function
-    return s_output
-
-
-# Power function equation
-@njit(cache=True)
-def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
-    """
-    Define a general power function that can be used for fitting
-
-    Parameters
-    ----------
-    d_value: float
-        Current x value
-    d_coefficient: float
-        Coefficient at the lead of the power function
-    d_power: float
-        Power value
-
-    Returns
-    -------
-    d_power_value: float
-        Calculated value
-
-    """
-
-    # Calculate the power
-    d_power_value = d_coefficient * (d_value ** d_power)
-
-    # Return to the calling function
-    return d_power_value
-
-
-def linear_regression_power_function(da_x_input: np.ndarray, da_y_input: np.ndarray, init_guess: list = [1.0, 1.0]):
-    """
-    Performs a curve fit to a power function
-
-    Parameters
-    ----------
-    da_x_input: np.ndarray
-        X values input to the fit
-    da_y_input: np.ndarray
-        Y values input to the fit
-
-    Returns
-    -------
-    d_coefficient: float
-         Coeffient of the fit
-    d_power: float
-        Power of the fit
-    d_R2: float
-        Goodness of fit
-
-    """
-    # Default values in case of failure
-    d_coefficient, d_power, d_R2 = -9999.9, -9999.9, -9999.9
-
-    # Attempt to calculate the fit
-    try:
-        (d_coefficient, d_power), dm_pcov = curve_fit(power_func, da_x_input, da_y_input, p0=init_guess)
-        # Calculate R², this is never used so don't bother
-        # da_y_pred = power_func(da_x_input, d_coefficient, d_power)
-        # mean_y = np.mean(da_y_input)
-        # ss_tot = np.dot(da_y_input - mean_y, da_y_input - mean_y)
-        # ss_res = np.dot(da_y_input - da_y_pred, da_y_input - da_y_pred)
-        # d_R2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else -9999.9
-    except TypingError as e:
-        LOG.error(e)
-    except RuntimeError as e:
-        pass
-
-    # Return to the calling function
-    return d_coefficient, d_power, d_R2
-
-
 def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_number_of_columns: int, i_number_of_rows: int, l_dem_geotransform: list, s_dem_projection: str,
                         s_file_format: str, s_output_type: str):
     """
@@ -443,7 +322,7 @@ def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_nu
     # Once we're done, close properly the dataset
     o_output_file = None
 
-def read_raster_gdal(s_input_filename: str):
+def read_and_pad_and_maybe_make_shared(s_input_filename: str, processes: int, pad_distance: int, dtype: np.dtype, array_name: str):
     """
     Reads a raster file from disk into memory
 
@@ -484,22 +363,25 @@ def read_raster_gdal(s_input_filename: str):
         LOG.info('Cannot Find Raster ' + s_input_filename)
 
     # Attempt to open the dataset
-    o_dataset = gdal.Open(s_input_filename, gdal.GA_ReadOnly)
+    o_dataset: gdal.Dataset = gdal.Open(s_input_filename, gdal.GA_ReadOnly)
     if o_dataset is None:
         LOG.info('Cannot Open Raster ' + s_input_filename)
         raise FileNotFoundError(f"Cannot open raster {s_input_filename}")
-    
 
     # Retrieve dimensions of cell size and cell count then close DEM dataset
     l_geotransform = o_dataset.GetGeoTransform()
 
-    # Continue importing geospatial information
-    o_band = o_dataset.GetRasterBand(1)
-    dm_raster_array = o_band.ReadAsArray()
-
     # Read the size of the band object
+    o_band: gdal.Band = o_dataset.GetRasterBand(1)
     i_number_of_columns = o_band.XSize
     i_number_of_rows = o_band.YSize
+    shape = (i_number_of_rows + 2 * pad_distance, i_number_of_columns + 2 * pad_distance)
+
+    # Use this function, which handles both the single-process and multi-process cases, to create the array and shared memory if needed
+    dm_raster_array = create_array(array_name, processes, shape, dtype, fill_value=0)
+
+    # Read raster into preallocated array, leaving a border of zeros around the edge based on the pad distance
+    dm_raster_array[pad_distance:-pad_distance, pad_distance:-pad_distance] = o_band.ReadAsArray()
 
     # Close the band object
     o_band = None
@@ -507,15 +389,7 @@ def read_raster_gdal(s_input_filename: str):
     # Normalize south-up rasters (pixel height > 0) to north-up arrays.
     if l_geotransform[5] > 0:
         LOG.warning('Raster appears south-up (positive pixel height); flipping to north-up: ' + str(s_input_filename))
-        dm_raster_array = np.flipud(dm_raster_array)
-        geotransform = (
-            l_geotransform[0],
-            l_geotransform[1],
-            l_geotransform[2],
-            l_geotransform[3] + l_geotransform[5] * i_number_of_rows,
-            l_geotransform[4],
-            -l_geotransform[5],
-        )
+        dm_raster_array[:] = np.flipud(dm_raster_array)
 
     # Extract information from the geotransform
     d_cell_size = l_geotransform[1]
@@ -1079,7 +953,7 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
 
     return d_stream_direction, d_xs_direction
 
-def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
+def read_manning_table(s_manning_path: str, land_cover_array: np.ndarray, processes: int):
     """
     Reads the Manning's n information from the input file
 
@@ -1087,8 +961,8 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     ----------
     s_manning_path: str
         Path to the Manning's n input table
-    da_input_mannings: ndarray
-        Array holding the mannings estimates
+    land_cover_array: ndarray
+        Array holding the land cover information
 
     Returns
     -------
@@ -1105,7 +979,15 @@ def read_manning_table(s_manning_path: str, da_input_mannings: np.ndarray):
     idx = df.iloc[:, 0].astype(int).values
     lookup_array = np.zeros(idx.max() + 1)
     lookup_array[idx] = df.iloc[:, 2].values
-    return lookup_array[da_input_mannings.astype(int)]
+
+    # Create the output array and fill it with the Manning's n values based on the land cover array
+    output_raster = create_array("_MANNINGS_N", processes, land_cover_array.shape, np.float32, fill_value=0.0)
+    output_raster[:] = lookup_array[land_cover_array.astype(int)]
+    
+    # Correct the mannings values here
+    output_raster[output_raster > 10] = 0.035
+    output_raster[output_raster <= 0.0] = 0.005
+    
 
 @njit(cache=True)
 def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_use):
@@ -1232,12 +1114,12 @@ def add_100_if_elevation_less_than_0(arr):
         arr += 100
         b_modified_dem = True
 
-    return arr, b_modified_dem
+    return b_modified_dem
 
 def get_reach_median_stream_slope_information_wrapper(args):
-    return get_reach_median_stream_slope_information(get_dem(), get_streams(), *args)
+    return get_reach_median_stream_slope_information(_DEM, _STREAMS, *args)
 
-def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_general_slope_distance, processes):
+def create_reach_average_slope_dicts(dm_stream, dx, dy, quiet, i_general_slope_distance, processes):
     # create a list of unique stream IDs to loop through
     unique_stream_ids = np.unique(dm_stream)
     unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
@@ -1247,23 +1129,23 @@ def create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, i_g
     dict_stream_slopes_75th = {}
     if processes == 1:
         for stream_id in pbar_slopes:
-            reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(dm_elevation, dm_stream, stream_id, dx, dy, i_general_slope_distance)
+            reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(_DEM, dm_stream, stream_id, dx, dy, i_general_slope_distance)
             dict_stream_slopes[stream_id] = reach_slope
             dict_stream_slopes_25th[stream_id] = reach_slope_25th
             dict_stream_slopes_75th[stream_id] = reach_slope_75th
     else:
-        names, shapes, dtypes = create_shared_arrays(dm_elevation, dm_stream, global_array_names=["_DEM", "_STREAMS"])
-
-        with Pool(processes, initializer=init_parallel, initargs=(names, shapes, dtypes, None, ["_DEM", "_STREAMS"])) as pool:
+        args = get_init_parallel_args(["_DEM", "_STREAMS"])
+        with Pool(processes, initializer=init_parallel, initargs=args) as pool:
             chunksize = min(10, len(unique_stream_ids) // (processes * 4) + 1)  # Adjust chunksize based on the number of processes and total tasks. I found 10 to be the most we should go
             for stream_id, (reach_slope, reach_slope_25th, reach_slope_75th) in zip(pbar_slopes, pool.imap(get_reach_median_stream_slope_information_wrapper, [(stream_id, dx, dy, i_general_slope_distance) for stream_id in unique_stream_ids], chunksize=chunksize)):
                 dict_stream_slopes[stream_id] = reach_slope
                 dict_stream_slopes_25th[stream_id] = reach_slope_25th
                 dict_stream_slopes_75th[stream_id] = reach_slope_75th
 
+
     return dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th
 
-def dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, s_strmshp_path, s_flow_file_id, quiet):
+def dict_stream_slopes_from_endpoints(dm_stream, dem_geotransform, dem_projection, s_strmshp_path, s_flow_file_id, quiet):
     # create a list of unique stream IDs to loop through
     unique_stream_ids = np.unique(dm_stream)
     unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
@@ -1277,7 +1159,7 @@ def dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform,
         gdf_utm = gdf_StrmSHP_filtered.to_crs(utm_crs)
         StrmSHP_geom = gdf_StrmSHP_filtered.to_crs(dem_projection).geometry
         length_m = float(gdf_utm.length.iloc[0])
-        slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(StrmSHP_geom.iloc[0], dm_elevation, dem_geotransform, length_m)
+        slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(StrmSHP_geom.iloc[0], _DEM, dem_geotransform, length_m)
         dict_stream_slopes[stream_id] = round(slope_pct/100, 8)
 
     return dict_stream_slopes
@@ -1314,28 +1196,26 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
-def initialize_stream_slope_dictionaries(params: dict, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, processes):
-    global _STREAM_SLOPE_DICT
+def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform, dem_projection, quiet, processes):
     s_stream_slope_method = params['s_stream_slope_method']
     if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
-        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(dm_stream, dm_elevation, dx, dy, quiet, params['i_general_slope_distance'], processes)
-        _STREAM_SLOPE_DICT = (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
+        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(_STREAMS, dx, dy, quiet, params['i_general_slope_distance'], processes)
+        return (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
     elif s_stream_slope_method == 'end_points':
-        dict_stream_slopes = dict_stream_slopes_from_endpoints(dm_stream, dm_elevation, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
-        _STREAM_SLOPE_DICT = (dict_stream_slopes, None, None)
+        dict_stream_slopes = dict_stream_slopes_from_endpoints(_STREAMS, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
+        return (dict_stream_slopes, None, None)
+    
+    return (None, None, None)
 
-def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_column_cell: int, d_q_baseflow: float, d_q_maximum: float, params: dict):
-    dm_stream = get_streams()
-    dm_elevation = get_dem()
-    i_cell_comid = dm_stream[i_row_cell, i_column_cell]
-    if i_cell_comid not in get_stream_slope_dicts()[0]:
-        print("BAD COMID:", i_cell_comid)
-        print("Row, Col:", i_row_cell, i_column_cell)
-        print("Local window:", dm_stream[i_row_cell-1:i_row_cell+2, i_column_cell-1:i_column_cell+2])
-        raise ValueError("Invalid COMID")
-    i_number_of_increments = params['i_number_of_increments']
-    i_general_direction_distance = params['i_general_direction_distance']
-    i_general_slope_distance = params['i_general_slope_distance']
+def calculate_hydraulic_data_for_cell(i_entry_cell: int):
+    i_row_cell = _CELL_ROWS[i_entry_cell]
+    i_column_cell = _CELL_COLS[i_entry_cell]
+    i_cell_comid = _CELL_COMIDS[i_entry_cell]
+    d_q_baseflow = _CELL_QBASE[i_entry_cell]
+    d_q_maximum = _CELL_QMAX[i_entry_cell]
+    i_number_of_increments = _PARAMS['i_number_of_increments']
+    i_general_direction_distance = _PARAMS['i_general_direction_distance']
+    i_general_slope_distance = _PARAMS['i_general_slope_distance']
 
     
     d_depth_increment_big = 0.5
@@ -1344,17 +1224,17 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
 
 
     # Get the Slope of each Stream Cell. Slope should be in m/m
-    s_stream_slope_method = params['s_stream_slope_method']
-    dx = params['dx']
-    dy = params['dy']
+    s_stream_slope_method = _PARAMS['s_stream_slope_method']
+    dx = _PARAMS['dx']
+    dy = _PARAMS['dy']
     if s_stream_slope_method == 'local_average':
-        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
+        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
     elif s_stream_slope_method =='reach_average' or s_stream_slope_method == 'end_points':
-        d_slope_use = get_stream_slope_dicts()[0][i_cell_comid]
+        d_slope_use = _CELL_REACH_SLOPE[i_entry_cell]
     elif s_stream_slope_method == 'local_average_corrected':
-        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, dm_stream, dx, dy, i_general_slope_distance)
-        d_slope_25th = get_stream_slope_dicts()[1][i_cell_comid]
-        d_slope_75th = get_stream_slope_dicts()[2][i_cell_comid]
+        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
+        d_slope_25th = _CELL_SLOPE_25[i_entry_cell]
+        d_slope_75th = _CELL_SLOPE_75[i_entry_cell]
         # if the corrected slope is less than the streams 25th percentile slope, use the 25th percentile slope
         if d_slope_use < d_slope_25th:
             d_slope_use = d_slope_25th
@@ -1363,13 +1243,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
             d_slope_use = d_slope_75th  
     else: 
         #Default to using the 'local_average' method
-        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, dm_elevation, _STREAMS, dx, dy, i_general_slope_distance)
+        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
 
     # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
-    d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, dm_stream, i_general_direction_distance)
+    d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, _STREAMS, i_general_direction_distance)
 
     # Now Pull the Cross-Section again with the new angle
-    x_section = get_cross_section(dx, dy, dm_elevation, get_land_cover(), params)
+    x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _PARAMS)
     if d_xs_direction > np.pi:
         i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / x_section.d_precompute_angles))
     else:
@@ -1378,7 +1258,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
     
     # Adjust to the lowest-point in the Cross-Section
-    i_low_spot_range = params['i_low_spot_range']
+    i_low_spot_range = _PARAMS['i_low_spot_range']
     if i_low_spot_range > 0:
         x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
         # The r and c for the stream cell is adjusted because it may have moved
@@ -1394,27 +1274,27 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     # "Be the banks for your river" - Needtobreathe
             
     # If you don't have a cross-section, skip it and fill in empty values for the reach average processing
-    hydraulic_data = get_hydraulic_data(params)
+    hydraulic_data = get_hydraulic_data(_PARAMS)
     if not x_section.is_valid():
         hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_slope_use, i_entry_cell)
         return
 
     #BATHYMETRY CALCULATION
     #This method calculates bathymetry based on the water surface elevation or LandCover ("FindBanksBasedOnLandCover" and "LC_Water_Value").
-    b_bathy_use_banks = params['b_bathy_use_banks']
-    s_output_bathymetry_path = params['s_output_bathymetry_path']
+    b_bathy_use_banks = _PARAMS['b_bathy_use_banks']
+    s_output_bathymetry_path = _PARAMS['s_output_bathymetry_path']
     if not b_bathy_use_banks and s_output_bathymetry_path != '':
-        x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(d_q_baseflow, d_slope_use, get_bathymetry())
+        x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(d_q_baseflow, d_slope_use, _BATHYMETRY)
     #This method calculates the banks based on the Riverbank
     elif b_bathy_use_banks and s_output_bathymetry_path != '':
-        x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, get_bathymetry())
+        x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, _BATHYMETRY)
 
     # Calculate the volumes
     # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
     # This is preferred for VDTDatabase method.
     
     # Here are the n values for each side of the cross-section
-    x_section.set_mannings_n_values(get_mannings_n())
+    x_section.set_mannings_n_values(_MANNINGS_N)
 
     # space between ordinates in the cross-section
     d_ordinate_dist = x_section.d_ordinate_dist
@@ -1721,7 +1601,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
         i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                         d_inc_y, 
                                                                         flood_increments_args, thalweg, d_slope_use, 
-                                                                        d_q_sum, get_output_data_array(), i_entry_cell, hydraulic_data.b_modified_dem)
+                                                                        d_q_sum, _OUTPUT_DATA_ARRAY, i_entry_cell, hydraulic_data.b_modified_dem)
 
         if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell):
             hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, i_entry_cell)
@@ -1737,114 +1617,99 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int, i_row_cell: int, i_colu
     
     if hydraulic_data.s_xs_output_file:
         return hydraulic_data.get_cross_section_data(i_cell_comid, i_row_cell, i_column_cell)
-
-def init_serial(dem: np.ndarray, stream_raster: np.ndarray, bathymetry: np.ndarray, mannings_n: np.ndarray, land_cover: np.ndarray, output_data: np.ndarray, index_arrays, z_distance_array, index_fract_arrays):
-    global _DEM, _STREAMS, _MANNINGS_N, _LAND_COVER, _BATHYMETRY, _OUTPUT_DATA_ARRAY, _INDEX_ARRAYS, _Z_DISTANCE_ARRAY, _INDEX_FRACT_ARRAYS
-    _DEM = dem
-    _STREAMS = stream_raster
-    _BATHYMETRY = bathymetry
-    _MANNINGS_N = mannings_n
-    _LAND_COVER = land_cover
-    _OUTPUT_DATA_ARRAY = output_data
-    _INDEX_ARRAYS = index_arrays
-    _Z_DISTANCE_ARRAY = z_distance_array
-    _INDEX_FRACT_ARRAYS = index_fract_arrays
-
-def create_shared_arrays(*arrays: list[np.ndarray], global_array_names: list[str] = ARRAY_NAMES):
-    shms = [shared_memory.SharedMemory(create=True, size=arr.nbytes) if arr is not None else None for arr in arrays]
-    _set_shared(*shms)
-    names = [shm.name if shm is not None else None for shm in shms]
-    shapes = [arr.shape if arr is not None else None for arr in arrays]
-    dtypes = [arr.dtype if arr is not None else None for arr in arrays]
-
-    # Create numpy arrays backed by shared memory
-    for global_var, shm, arr in zip(global_array_names, shms, arrays):
-        if arr is None:
-            continue
-        globals()[global_var] = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
-        # Copy data into shared memory
-        globals()[global_var][:] = arr[:]
-
-    return names, shapes, dtypes
-
+    
 def close_shared_arrays():
     global _SHARED_MEMORYS
-    for shm in _SHARED_MEMORYS:
+    for shm in _SHARED_MEMORYS.values():
         if shm is None:
             continue
         shm.close()
         shm.unlink()
+    _SHARED_MEMORYS = {}
 
-def init_parallel(names: list[str], shapes: list[tuple], dtypes: list[np.dtype], stream_slope_dict, global_array_names: list[str] = ARRAY_NAMES):
-    global _STREAM_SLOPE_DICT
-    shms = [shared_memory.SharedMemory(name=name) if name else None for name in names]
-    _set_shared(*shms)
-
-    for global_var, shm, shape, dtype in zip(global_array_names, shms, shapes, dtypes):
-        if shm is None:
+def get_init_parallel_args(global_array_names: list[str]):
+    names = []
+    shapes = []
+    dtypes = []
+    for name in global_array_names:
+        arr = globals()[name]
+        if arr is None:
             continue
-        globals()[global_var] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
 
-    _STREAM_SLOPE_DICT = stream_slope_dict
+        names.append(name)
+        shapes.append(arr.shape)
+        dtypes.append(arr.dtype)
 
-def calculate_hydraulic_data_for_cell_wrapper(args):
-    return calculate_hydraulic_data_for_cell(*args)
+    return names, shapes, dtypes
 
-def run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, comids, params: dict, arrays: tuple, quiet: bool, processes: int):
-    loop_args = []
-    for i_entry_cell in range(len(ia_valued_row_indices)): 
-        # Get the metadata for the loop
-        i_row_cell = ia_valued_row_indices[i_entry_cell]
-        i_column_cell = ia_valued_column_indices[i_entry_cell]
+def init_parallel(
+    names: list[str],
+    shapes: list[tuple],
+    dtypes: list[np.dtype],
+    params: dict | None = None,
+):
+    shms = [shared_memory.SharedMemory(name=name) for name in names]
 
-        # Get the Flow Rates Associated with the Stream Cell
-        i_cell_comid = comids[i_entry_cell]
-        if i_cell_comid not in id_flow_dict:
-            continue
-        d_q_baseflow = id_flow_dict[i_cell_comid][params['s_flow_file_baseflow']]
-        d_q_maximum = id_flow_dict[i_cell_comid][params['s_flow_file_qmax']]
-        loop_args.append((i_entry_cell, i_row_cell, i_column_cell, d_q_baseflow, d_q_maximum, params))
+    for shm, name, shape, dtype in zip(shms, names, shapes, dtypes):
+        _set_shared(name, shm)
+        globals()[name] = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
 
-    index_arrays = CrossSection.create_cross_section_ordinates(params)
+    global _PARAMS
+    if params is not None:
+        _PARAMS = params
 
-    cross_section_data = []
-    output_data = HydraulicData.generate_output_data_array(params, len(ia_valued_row_indices))
-    i_number_of_stream_cells = len(ia_valued_row_indices)
-    LOG.info('Looking at ' + str(i_number_of_stream_cells) + ' stream cells')
+def _build_flow_arrays(id_flow_dict: dict,  baseflow_key: str, qmax_key: str, processes: int) -> tuple[np.ndarray, np.ndarray]:
+    create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][baseflow_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+    create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][qmax_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+
+def _build_reach_slope_arrays(stream_slope_dicts: tuple[dict], params: dict, processes: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    method = params['s_stream_slope_method']
+    if method in {'reach_average', 'end_points'}:
+        slope_dict = stream_slope_dicts[0]
+        create_array("_CELL_REACH_SLOPE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope_dict[cid] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+    if method == 'local_average_corrected':
+        slope25_dict = stream_slope_dicts[1]
+        slope75_dict = stream_slope_dicts[2]
+        create_array("_CELL_SLOPE_25", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope25_dict[cid] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+        create_array("_CELL_SLOPE_75", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope75_dict[cid] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+
+def run_main_loop(
+    num_cells: int,
+    params: dict,
+    quiet: bool,
+    processes: int,
+) -> HydraulicData:
+    want_xs = bool(params.get('s_xs_output_file'))
+    cross_section_data: list | None = [] if want_xs else None
+
+    LOG.info('Looking at ' + str(num_cells) + ' stream cells')
 
     if processes == 1:
-        init_serial(*arrays, output_data, *index_arrays)
+        for i_entry_cell in tqdm.tqdm(range(num_cells), total=num_cells, disable=quiet):
+            item = calculate_hydraulic_data_for_cell(i_entry_cell)
+            if cross_section_data is not None and item is not None:
+                cross_section_data.append(item)
 
-        for arg in tqdm.tqdm(loop_args, total=len(loop_args), disable=quiet): 
-            cross_section_data.append(calculate_hydraulic_data_for_cell(*arg))
-        
         hydraulic_data = get_hydraulic_data(params)
-        hydraulic_data.add_cross_section_data(cross_section_data)
-
+        if cross_section_data is not None:
+            hydraulic_data.add_cross_section_data(cross_section_data)
         return hydraulic_data
     
-    names, shapes, dtypes = create_shared_arrays(*arrays, output_data, *index_arrays)
-    try:
-        if processes < 1:
-            processes = max(os.cpu_count() - 1, 1)
-        with Pool(processes=processes, initializer=init_parallel, initargs=(names, shapes, dtypes, get_stream_slope_dicts())) as pool:
-            chunksize = min(1_000, len(loop_args) // (processes * 4) + 1)  # Adjust chunksize based on the number of processes and total tasks. I found that 1000 is the biggest we should go
-            for item in tqdm.tqdm(pool.imap(calculate_hydraulic_data_for_cell_wrapper, loop_args, chunksize=chunksize), total=len(loop_args), disable=quiet):
+    args = get_init_parallel_args(ARRAY_NAMES)
+
+    with Pool(processes=processes, initializer=init_parallel, initargs=(*args, params)) as pool:
+        chunksize = min(1_000, num_cells // (processes * 4) + 1)
+        for item in tqdm.tqdm(pool.imap(calculate_hydraulic_data_for_cell, range(num_cells), chunksize=chunksize), total=num_cells, disable=quiet):
+            if cross_section_data is not None and item is not None:
                 cross_section_data.append(item)
-            
-        hydraulic_data = get_hydraulic_data(params)
+
+    hydraulic_data = get_hydraulic_data(params)
+    if cross_section_data is not None:
         hydraulic_data.add_cross_section_data(cross_section_data)
-        return hydraulic_data
-    except Exception as e:
-        LOG.error(f"An error occurred during parallel processing: {e}")
-        import traceback
-        traceback.print_exc()
-
-        close_shared_arrays()
-        raise
+    return hydraulic_data
 
 
-def handle_processes(processes: int | Literal["auto"], num_steam_cells: int) -> int:
+def handle_processes(processes: int | Literal["auto"], s_input_stream_path: str) -> int:
     if isinstance(processes, int):
         if processes < 1:
             return max(os.cpu_count() - 1, 1)
@@ -1855,26 +1720,52 @@ def handle_processes(processes: int | Literal["auto"], num_steam_cells: int) -> 
             raise ValueError(f"Invalid value for processes: {processes}. Must be an integer or 'auto'.")
         
         # Some testing reveals that before 35k stream cells, the overhead of parallel processing outweighs the benefits, so we'll just run serially in those cases
-        if num_steam_cells < 35_000:
+        # To avoid reading it, I note the rough relationship between number of stream cells and the raster size is that number of stream cells is about (RasterXSize * RasterYSize) / 600, so we'll use that to determine whether to run in parallel or not
+        ds: gdal.Dataset = gdal.Open(s_input_stream_path)
+        if (ds.RasterXSize * ds.RasterYSize) / 600 < 35_000:
             return 1
         
         return max(os.cpu_count() - 1, 1)
         
     raise ValueError(f"Invalid type for processes: {type(processes)}. Must be an integer or 'auto'.")
 
+def create_array(name: str, processes: int, shape: tuple, dtype: np.dtype, fill_value = 0) -> np.ndarray:
+    dtype = np.dtype(dtype)
+    if processes == 1:
+        arr = np.full(
+            shape, 
+            fill_value, 
+            dtype=dtype
+        )
+        globals()[name] = arr
+        return arr
+    
+    size = int(dtype.itemsize * np.prod(shape))
+    shm = shared_memory.SharedMemory(name=name, create=True, size=size)
+    arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+    arr.fill(fill_value)
+    _set_shared(name, shm)
+    globals()[name] = arr
+    return arr
 
-def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
+def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
     starttime = datetime.now()  
-    ### Read Main Input File ###
     params = read_main_input_file(MIF_Name, args)
+    processes = handle_processes(processes, params['s_input_stream_path'])
+    if processes > 1:
+        LOG.info(f'Using {processes} processes for computation.')
+
+    ### Read Main Input File ###
     
     ### Read the Flow Information ###
     id_flow_dict = read_flow_file(params['s_input_flow_file_path'], params['s_flow_file_id'], params['s_flow_file_baseflow'], params['s_flow_file_qmax'])
 
     ### Read Raster Data ###
-    dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection, dem_maxx, dem_miny, dem_dy = read_raster_gdal(params['s_input_dem_path'])
-    dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection, maxx, miny, dy = read_raster_gdal(params['s_input_stream_path'])
-    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_raster_gdal(params['s_input_land_use_path'])
+    ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
+    i_boundary_number = max(1, params['i_general_direction_distance'], params['i_general_slope_distance'])
+    dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection, dem_maxx, dem_miny, dem_dy = read_and_pad_and_maybe_make_shared(params['s_input_dem_path'], processes, i_boundary_number, np.float32, "_DEM")
+    dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection, maxx, miny, dy = read_and_pad_and_maybe_make_shared(params['s_input_stream_path'], processes, i_boundary_number, np.int64, "_STREAMS")
+    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_and_pad_and_maybe_make_shared(params['s_input_land_use_path'], processes, i_boundary_number, np.float32, "_LAND_COVER")
 
     ### Determine if the rasters are in a projected coordinate system (units in meters) or geographic coordinate system (units in degrees)
     if 'PROJCS' in dem_projection:
@@ -1887,7 +1778,7 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Litera
         b_projected = False
 
     ### if the DEM contains negative values, add 100 m to the height to get rid of the negatives, we'll subtract it back out later
-    dm_elevation, b_modified_dem = add_100_if_elevation_less_than_0(dm_elevation)
+    b_modified_dem = add_100_if_elevation_less_than_0(dm_elevation)
 
     ### make sure the rasters are all the same size and aligned and if not, end with log an error message and stop processing
     if dnrows != snrows or dnrows != lnrows:
@@ -1934,97 +1825,81 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Litera
             LOG.error(f'{raster_name} raster CRS units are not meters or degrees: {", ".join(invalid_units)}')
             return
 
-    ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
-    i_boundary_number = max(1, params['i_general_direction_distance'], params['i_general_slope_distance'])
-
-    dm_stream = np.pad(dm_stream, i_boundary_number, mode='constant', constant_values=0).astype(np.int64)
-
-    dm_elevation = np.pad(dm_elevation, i_boundary_number, mode='constant', constant_values=0)
-
-    dm_land_use = np.pad(dm_land_use, i_boundary_number, mode='constant', constant_values=0).astype(float)
-    
-
     ##### Begin Calculations #####
-    # Create working matrices
     # Create output rasters
-    if params['s_output_bathymetry_path']:
-        # Create an array with NaN values instead of zeros
-        dm_output_bathymetry = np.full(
-            (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), 
-            np.nan, 
-            dtype=np.float32
-        )
-    else:
-        dm_output_bathymetry = None
-    
-    # Get the list of stream locations
-    ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, list(id_flow_dict.keys())))
-    comids = dm_stream[ia_valued_row_indices, ia_valued_column_indices]
-    
-    # Make all Land Cover that is a stream look like water
-    i_lc_water_value = params['i_lc_water_value']
-    dm_land_use[ia_valued_row_indices,ia_valued_column_indices] = i_lc_water_value
-    
-    
-    #Assing Manning n Values
-    ### Read in the Manning Table ###
-    dm_manning_n_raster = read_manning_table(params['s_input_mannings_path'], dm_land_use)
+    _BATHYMETRY = create_array("_BATHYMETRY", processes, (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), np.float32, fill_value=np.nan)
 
-    # Correct the mannings values here
-    dm_manning_n_raster[dm_manning_n_raster > 10] = 0.035
-    dm_manning_n_raster[dm_manning_n_raster <= 0.0] = 0.005
-    
+
+    # Get the list of stream locations
+    flow_ids = np.fromiter(id_flow_dict.keys(), count=len(id_flow_dict), dtype=np.int64)
+    ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, flow_ids, kind='table'))
+    for arr, name in zip([ia_valued_row_indices, ia_valued_column_indices], ["_CELL_ROWS", "_CELL_COLS"]):
+        create_array(name, processes, arr.shape, arr.dtype)[:] = arr[:]
+
+    # This array will hold all the data for each stream cell. The first 8 columns are 'COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev', and then we have 5 columns repeated for each increment with 'q', 'v', 't', 'wse', 'p'. 
+    create_array("_OUTPUT_DATA_ARRAY", processes, (len(ia_valued_row_indices), 8 + params['i_number_of_increments']*5), np.float64, fill_value=np.nan)
 
     # Get the cell dx and dy coordinates
     dx, dy, dproject = convert_cell_size(dcellsize, dem_dy, dyll, dyur, dem_projection)
     LOG.info('Cellsize X = ' + str(dx))
     LOG.info('Cellsize Y = ' + str(dy))
 
+    # create a reach average slope before we go stream cell by stream cell
+    stream_slope_dicts = initialize_stream_slope_dictionaries(params, dx, dy, dem_geotransform, dem_projection, quiet, processes)
+
+    create_array("_CELL_COMIDS", processes, (ia_valued_row_indices.size,), np.int64)[:] = dm_stream[ia_valued_row_indices, ia_valued_column_indices]
+    _build_flow_arrays(id_flow_dict, params['s_flow_file_baseflow'], params['s_flow_file_qmax'], processes)
+    _build_reach_slope_arrays(stream_slope_dicts, params, processes)
+    
+    # Make all Land Cover that is a stream look like water
+    i_lc_water_value = params['i_lc_water_value']
+    dm_land_use[ia_valued_row_indices,ia_valued_column_indices] = i_lc_water_value
+    
+    ### Read in the Manning Table ###
+    read_manning_table(params['s_input_mannings_path'], dm_land_use, processes)
+
+    # Add params to global variable for use in parallel processing
     params["dx"] = dx
     params["dy"] = dy
     params["i_boundary_number"] = i_boundary_number
     params["nrows"] = nrows
     params["ncols"] = ncols
     params["b_modified_dem"] = b_modified_dem
-    processes = handle_processes(processes, len(ia_valued_row_indices))
-    if processes > 1:
-        LOG.info(f'Using {processes} processes for computation.')
+    global _PARAMS
+    _PARAMS = params
 
-    # create a reach average slope before we go stream cell by stream cell
-    initialize_stream_slope_dictionaries(params, dm_stream, dm_elevation, dx, dy, dem_geotransform, dem_projection, quiet, processes)
+    # Create index arrays
+    for arr, name in zip(CrossSection.create_cross_section_ordinates(params), ["_INDEX_ARRAYS", "_Z_DISTANCE_ARRAY", "_INDEX_FRACT_ARRAYS"]):
+        global_arr = create_array(name, processes, arr.shape, arr.dtype)
+        global_arr[:] = arr[:]
 
     # Extract some parameters
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
     ### Begin the stream cell solution loop ###
-    hydraulic_data = run_main_loop(id_flow_dict, ia_valued_row_indices, ia_valued_column_indices, comids, params, (dm_elevation, dm_stream, dm_output_bathymetry, dm_manning_n_raster, dm_land_use), quiet, processes)
+    hydraulic_data = run_main_loop(len(ia_valued_row_indices), params, quiet, processes)
 
     # Create the output VDT Database file - datatypes are figured out automatically
     if not hydraulic_data.has_vdt_data():
-        LOG.warning('No VDT data was generated, so no output VDT database file will be created.')
-        close_shared_arrays()
+        LOG.warning('No VDT data was generated, so no hydraulic output files will be created.')
         return
     
     hydraulic_data.save_files(id_flow_dict)
 
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
-        # Re-get the raster since the shared array will have been modified by the parallel processing
-        dm_output_bathymetry = get_bathymetry()
         #Make sure all the bathymetry points are above the DEM elevation
         if not b_bathy_use_banks:
-            dm_output_bathymetry = np.where(dm_output_bathymetry>dm_elevation, np.nan, dm_output_bathymetry)
+            _BATHYMETRY = np.where(_BATHYMETRY>dm_elevation, np.nan, _BATHYMETRY)
         # remove the increase in elevation, if negative elevations were present
         if b_modified_dem:
             # Subtract 100 only for cells that are not NaN
-            dm_output_bathymetry[~np.isnan(dm_output_bathymetry)] -= 100
+            _BATHYMETRY[~np.isnan(_BATHYMETRY)] -= 100
         # # Joseph was testing a simple smoothing algorithm here to attempt to reduce variation in the bank based bathmetry (functions but doesn't provide better results)
         # if b_bathy_use_banks:
         #     dm_output_bathymetry = smooth_bathymetry_gaussian_numba(dm_output_bathymetry)
-        write_output_raster(s_output_bathymetry_path, dm_output_bathymetry[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
-
-    close_shared_arrays()
+        write_output_raster(s_output_bathymetry_path, _BATHYMETRY[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     # Log the compute time
     d_sim_time = datetime.now() - starttime
@@ -2035,6 +1910,16 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Litera
     else:
         LOG.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
         
+def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
+    try:
+        return _main(MIF_Name, args, quiet, processes)
+    except Exception as e:
+        LOG.error(f"An error occurred during processing: {e}")
+        import traceback
+        traceback.print_exc()
+        close_shared_arrays()
+        raise
+
 if __name__ == "__main__":
     LOG.info('Inputs to the Program is a Main Input File')
     LOG.info('\nFor Example:')
@@ -2049,4 +1934,4 @@ if __name__ == "__main__":
         MIF_Name = '/Users/ricky/Documents/data_dir/mifns/USGS_1_n40w111_20240130_buff__mifn.txt'
         LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
         
-    main(MIF_Name, False)
+    main(MIF_Name, {}, quiet=False, processes=1)

@@ -28,6 +28,8 @@ class HydraulicData:
         self.output_data = output_data
     
     def add_empty_x_section_for_curve_file(self,i_cell_comid: int, d_slope_use: float, i_entry_cell: int):
+        if self.output_data is None:
+            return
         if not self.b_reach_average_curve_file:
             return
         
@@ -45,14 +47,20 @@ class HydraulicData:
         ]
 
     def set_q_at_index(self, n: int, q: float, i_entry_cell: int):
+        if self.output_data is None:
+            return
         self.output_data[i_entry_cell, 8 + ((n-1) * 5)] = q
 
     def is_start_q_greater_than_baseflow(self, i_start_elevation_index: int, d_q_baseflow: float, i_entry_cell: int):
+        if self.output_data is None:
+            return False
         idx = i_start_elevation_index + 1
         # return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
         return self.output_data[i_entry_cell, 8 + ((idx-1) * 5)] >= d_q_baseflow
 
     def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_entry_cell: int, i_number_of_elevations: int):
+        if self.output_data is None:
+            return
         da_total_q_half_sum = np.sum(self.output_data[i_entry_cell, range(8, (i_number_of_elevations // 2) * 5, 5)])
         i_row_cell, i_column_cell = self.x_section.get_row_col()
         if da_total_q_half_sum <= 1e-16 or self.x_section.dm_elevation[i_row_cell, i_column_cell] <= 1e-16:
@@ -70,13 +78,17 @@ class HydraulicData:
         ]
         
     def set_non_vdt_data(self, print_curve_file: bool, i_start_elevation_index: int, i_last_elevation_index: int,
-                         i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int):
+                          i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int):
+        if self.output_data is None:
+            return
         if self.b_reach_average_curve_file:
             self._set_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_slope_use, d_dem_low_point_elev, i_entry_cell)
         elif print_curve_file and self.curve_file and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
             self._set_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_slope_use, d_dem_low_point_elev, i_entry_cell)
 
     def _set_curve_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int):
+        if self.output_data is None:
+            return
         self.output_data[i_entry_cell, 0:4] = [
             i_cell_comid, 
             i_row_cell - self.x_section.i_boundary_number, 
@@ -110,6 +122,8 @@ class HydraulicData:
 
     def has_vdt_data(self):
         # Check if there are any non nan values in the last column of the output data, which would indicate that at least some VDT data was generated
+        if getattr(self, "output_data", None) is None:
+            return False
         return np.any(~np.isnan(self.output_data[:, -1]))
 
     def _linear_regression_power_function(self, da_x_input: np.ndarray, da_y_input: np.ndarray, init_guess: list = [1.0, 1.0]):
