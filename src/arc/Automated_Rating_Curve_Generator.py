@@ -1618,14 +1618,18 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     if hydraulic_data.s_xs_output_file:
         return hydraulic_data.get_cross_section_data(i_cell_comid, i_row_cell, i_column_cell)
     
-def close_shared_arrays():
+def close_shared_arrays(names: list[str] = None):
     global _SHARED_MEMORYS
-    for shm in _SHARED_MEMORYS.values():
+    if names is None:
+        names = list(_SHARED_MEMORYS.keys())
+
+    for name in names:
+        shm = _SHARED_MEMORYS.get(name)
         if shm is None:
             continue
         shm.close()
         shm.unlink()
-    _SHARED_MEMORYS = {}
+        del _SHARED_MEMORYS[name]
 
 def get_init_parallel_args(global_array_names: list[str]):
     names = []
@@ -1884,6 +1888,9 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     if not hydraulic_data.has_vdt_data():
         LOG.warning('No VDT data was generated, so no hydraulic output files will be created.')
         return
+    
+    # At this point, release all memory except for bathymetry, output array, and elevation
+    close_shared_arrays([name for name in ARRAY_NAMES if name not in {"_BATHYMETRY", "_OUTPUT_DATA_ARRAY", "_DEM"}])
     
     hydraulic_data.save_files(id_flow_dict)
 
