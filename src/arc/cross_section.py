@@ -21,8 +21,8 @@ class CrossSection:
 
         self.da_xs_profile1 = np.zeros(self.i_center_point + 1, dtype=np.float64)
         self.da_xs_profile2 = np.zeros(self.i_center_point + 1, dtype=np.float64)
-        self.ia_lc_xs1 = np.zeros(self.i_center_point + 1, dtype=np.int64)
-        self.ia_lc_xs2 = np.zeros(self.i_center_point + 1, dtype=np.int64)
+        self.ia_lc_xs1 = np.zeros(self.i_center_point + 1, dtype=np.uint8)
+        self.ia_lc_xs2 = np.zeros(self.i_center_point + 1, dtype=np.uint8)
         self.mannings_n1 = np.zeros(self.i_center_point + 1, dtype=np.float64)
         self.mannings_n2 = np.zeros(self.i_center_point + 1, dtype=np.float64)
 
@@ -848,11 +848,6 @@ def _sample_side(
 
         profile[i_xs_length_indice] = 99999.9
 
-        # profile[:i_xs_length_indice] = (
-        #     self.dm_elevation[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]] * self.da_xc_main_fract[self.i_precompute_angle_closest, :i_xs_length_indice] +
-        #     self.dm_elevation[ia_xc_row_index_second[:i_xs_length_indice], ia_xc_column_index_second[:i_xs_length_indice]] * self.da_xc_second_fract[self.i_precompute_angle_closest, :i_xs_length_indice]
-        # )
-
         for i in range(i_xs_length_indice):
             row_main = ia_xc_row_index_main[i]
             col_main = ia_xc_column_index_main[i]
@@ -864,11 +859,10 @@ def _sample_side(
                 dm_elevation[row_second, col_second] * da_xc_second_fract[i]
             )
 
-        # lc_profile[:i_xs_length_indice] = self.dm_land_use[ia_xc_row_index_main[:i_xs_length_indice], ia_xc_column_index_main[:i_xs_length_indice]]
         for i in range(i_xs_length_indice):
             row_main = ia_xc_row_index_main[i]
             col_main = ia_xc_column_index_main[i]
-            lc_profile[i] = int(dm_land_use[row_main, col_main])
+            lc_profile[i] = dm_land_use[row_main, col_main]
 
         return i_xs_length_indice
 

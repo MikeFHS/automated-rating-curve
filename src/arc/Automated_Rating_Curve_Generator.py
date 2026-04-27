@@ -976,13 +976,13 @@ def read_manning_table(s_manning_path: str, land_cover_array: np.ndarray, proces
 
     # Create a lookup array for the Manning's n values
     # This is the fastest way to reclassify the values in the input array
-    idx = df.iloc[:, 0].astype(int).values
-    lookup_array = np.zeros(idx.max() + 1)
+    idx = df.iloc[:, 0].astype(np.uint8).values
+    lookup_array = np.zeros(256, dtype=np.float32)
     lookup_array[idx] = df.iloc[:, 2].values
 
     # Create the output array and fill it with the Manning's n values based on the land cover array
     output_raster = create_array("_MANNINGS_N", processes, land_cover_array.shape, np.float32, fill_value=0.0)
-    output_raster[:] = lookup_array[land_cover_array.astype(int)]
+    output_raster[:] = lookup_array[land_cover_array]
     
     # Correct the mannings values here
     output_raster[output_raster > 10] = 0.035
@@ -1765,7 +1765,7 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     i_boundary_number = max(1, params['i_general_direction_distance'], params['i_general_slope_distance'])
     dm_elevation, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, dem_geotransform, dem_projection, dem_maxx, dem_miny, dem_dy = read_and_pad_and_maybe_make_shared(params['s_input_dem_path'], processes, i_boundary_number, np.float32, "_DEM")
     dm_stream, sncols, snrows, scellsize, syll, syur, sxll, sxur, slat, strm_geotransform, strm_projection, maxx, miny, dy = read_and_pad_and_maybe_make_shared(params['s_input_stream_path'], processes, i_boundary_number, np.int64, "_STREAMS")
-    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_and_pad_and_maybe_make_shared(params['s_input_land_use_path'], processes, i_boundary_number, np.float32, "_LAND_COVER")
+    dm_land_use, lncols, lnrows, lcellsize, lyll, lyur, lxll, lxur, llat, land_geotransform, land_projection, maxx, miny, dy = read_and_pad_and_maybe_make_shared(params['s_input_land_use_path'], processes, i_boundary_number, np.uint8, "_LAND_COVER")
 
     ### Determine if the rasters are in a projected coordinate system (units in meters) or geographic coordinate system (units in degrees)
     if 'PROJCS' in dem_projection:
