@@ -55,7 +55,6 @@ class HydraulicData:
         if self.output_data is None:
             return False
         idx = i_start_elevation_index + 1
-        # return idx < len(self.da_total_q) and self.da_total_q[idx] >= d_q_baseflow
         return self.output_data[i_entry_cell, 8 + ((idx-1) * 5)] >= d_q_baseflow
 
     def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_entry_cell: int, i_number_of_elevations: int):
@@ -179,15 +178,15 @@ class HydraulicData:
             self.save_cross_section_file()
     
     def save_vdt(self):
-        colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle'] + [
+        colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'] + [
             f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse', 'p']
         ]
 
         # Combine the data first (without rounding yet)
-        vdt_df = pd.DataFrame(np.delete(self.output_data, [7], axis=1), columns=colorder)
+        vdt_df = pd.DataFrame(self.output_data, columns=colorder)
 
-        # Remove perimeter columns
-        vdt_df = vdt_df.drop(columns=[col for col in vdt_df.columns if col.startswith('p_')])
+        # Remove perimeter columns and base elevation column
+        vdt_df = vdt_df.drop(columns=[col for col in vdt_df.columns if col.startswith('p_') or col == 'BaseElev'])
         
         # Remove rows with NaN values
         vdt_df = vdt_df.dropna()

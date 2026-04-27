@@ -4,18 +4,11 @@
 # built-in imports
 import gc
 import os
-import sys
 
 # third-party imports
-import dask.array as da
-import dask.dataframe as dd
+from osgeo import gdal
 from dask.diagnostics import ProgressBar
-import geopandas as gpd
-import netCDF4   #conda install netCDF4
-import numpy as np
-from osgeo import gdal, osr
 import pandas as pd
-from scipy.io import netcdf
 from shapely.geometry import box
 import s3fs
 import xarray as xr
@@ -235,6 +228,9 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
     return (combined_df)
 
 def Process_and_Write_Retrospective_Data(StrmShp_gdf, rivid_field, CSV_File_Name):
+    # Do a late lazy import since importing dask dataframe is heavy, which would slow down other code that just uses ARC and doesn't need this streamflow processing code
+    import dask.dataframe as dd
+
     rivids = StrmShp_gdf[rivid_field].astype(int).values
 
     # Set up the S3 connection
