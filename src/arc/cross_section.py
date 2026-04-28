@@ -1,3 +1,20 @@
+"""Cross-section sampling and hydraulic geometry helpers.
+
+This module contains the :class:`~arc.cross_section.CrossSection` class, which
+samples two-sided cross-sections from a DEM/land-cover raster neighborhood
+around a stream cell. It also contains a set of Numba-accelerated helper
+functions for:
+
+- Sampling cross-section ordinates with interpolation
+- Finding banks and estimating bathymetry
+- Computing geometric properties (area/perimeter/top width) at a given WSE
+- Computing discharge from WSE using Manning's equation
+
+Most functions here are called from
+``src/arc/Automated_Rating_Curve_Generator.py`` during the per-cell compute
+loop.
+"""
+
 import math
 
 import numpy as np
@@ -7,6 +24,27 @@ from scipy.signal import savgol_filter
 from arc import LOG
 
 class CrossSection:
+    """Reusable cross-section sampler for stream cells.
+
+    A ``CrossSection`` instance holds preallocated arrays for the sampled
+    profile and land-cover values on both sides of the stream cell. The instance
+    can be reused for many cells by calling :meth:`set_cross_section` to update
+    indices/profile values in-place.
+
+    Parameters
+    ----------
+    dx, dy : float
+        Raster cell size in the x and y direction. These values are used to
+        convert index offsets to physical distances along the cross-section.
+    dm_elevation : numpy.ndarray
+        Elevation raster (typically a padded DEM).
+    dm_land_use : numpy.ndarray
+        Land cover raster (aligned to ``dm_elevation``).
+    params : dict
+        Parsed ARC parameters. The cross-section code expects (at minimum)
+        values such as ``d_x_section_distance``, ``d_degree_manipulation``,
+        ``d_degree_interval``, ``i_boundary_number``, ``nrows``, and ``ncols``.
+    """
     i_precompute_angles = 30
     d_precompute_angles = np.pi / i_precompute_angles
 
@@ -14,6 +52,7 @@ class CrossSection:
                  dx: float, dy: float,
                  dm_elevation: np.ndarray, dm_land_use: np.ndarray,
                  params: dict):
+        """Initialize a reusable sampler and allocate working arrays."""
         self.d_x_section_distance = params["d_x_section_distance"]
         self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
         self.dx = dx
@@ -43,10 +82,37 @@ class CrossSection:
         self.set_boundary_extents(params["i_boundary_number"], params["nrows"], params["ncols"])
 
     def is_valid(self) -> bool:
+        """Return ``True`` if either side of the profile has sampled values."""
         return self.xs1_n > 0 or self.xs2_n > 0
 
     @classmethod
     def create_cross_section_ordinates(cls, params: dict):
+        """Precompute cross-section index offsets for a set of discrete angles.
+
+        This precomputation amortizes the cost of converting an angle into
+        integer index offsets + interpolation fractions. At runtime, a cell's
+        direction is snapped to the closest precomputed angle, and the sampled
+        values can be gathered efficiently.
+
+        Parameters
+        ----------
+        params : dict
+            ARC parameters. Must include ``d_x_section_distance``, ``dx``, and
+            ``dy``.
+
+        Returns
+        -------
+        index_arrays : numpy.ndarray
+            Integer index offsets for both the "main" and "secondary"
+            interpolation indices. Shape is
+            ``(n_angles, n_points, 4)``.
+        z_distance_array : numpy.ndarray
+            Physical spacing between successive ordinates for each precomputed
+            angle.
+        index_fract_arrays : numpy.ndarray
+            Fractional interpolation weights associated with the main/secondary
+            indices. Shape is ``(n_angles, n_points, 2)``.
+        """
         # Only need to go to center point, because the other side of xs we can just use *-1
         i_center_point = int((params["d_x_section_distance"] / (sum([params["dx"], params["dy"]]) * 0.5)) / 2.0) + 1
         index_arrays = np.zeros((cls.i_precompute_angles + 1, i_center_point + 1, 4), dtype=np.int64)  
@@ -67,6 +133,14 @@ class CrossSection:
         return index_arrays, z_distance_array, index_fract_arrays
     
     def associate_with_precomputed_index_arrays(self, index_arrays: np.ndarray, z_distance_array: np.ndarray, index_fract_arrays: np.ndarray):
+        """Attach precomputed index/fraction arrays produced by
+        :meth:`create_cross_section_ordinates`.
+
+        Parameters
+        ----------
+        index_arrays, z_distance_array, index_fract_arrays : numpy.ndarray
+            Arrays returned by :meth:`create_cross_section_ordinates`.
+        """
         self.ia_xc_dr_index_main = index_arrays[:, :, 0]
         self.ia_xc_dc_index_main = index_arrays[:, :, 1]
         self.ia_xc_dr_index_second = index_arrays[:, :, 2]
@@ -76,6 +150,12 @@ class CrossSection:
         self.da_xc_second_fract = index_fract_arrays[:, :, 1]
 
     def set_angles_to_test(self, params: dict):
+        """Build the list of angle perturbations used during angle search.
+
+        ARC can search around an initial cross-section direction by testing a
+        symmetric set of angle offsets (``Degree_Manip`` / ``Degree_Interval``).
+        The offsets are stored in radians in ``self.l_angles_to_test``.
+        """
         self.l_angles_to_test = [0.0]
         self.d_increments = 0
         d_degree_manipulation = params['d_degree_manipulation']
@@ -95,9 +175,17 @@ class CrossSection:
         LOG.info('  Angles (radians) to evaluate= ' + str(self.l_angles_to_test))
 
     def has_angles_to_test(self) -> bool:
+        """Return ``True`` if angle-search will test more than one direction."""
         return len(self.l_angles_to_test) > 0
 
     def test_angles_and_reset_cross_section(self, i_row_cell, i_column_cell):
+        """Search candidate angles and re-sample the cross-section at the best one.
+
+        Parameters
+        ----------
+        i_row_cell, i_column_cell : int
+            Row/column indices of the stream cell (in the padded raster grid).
+        """
         d_precompute_angles = np.pi / self.i_precompute_angles
         d_xs_direction = self.get_best_xsection_angle(d_precompute_angles)
 
@@ -110,8 +198,19 @@ class CrossSection:
         self.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
 
     def set_boundary_extents(self, i_boundary_number: int, nrows: int, ncols: int):
-        """
-        Get the max and min row and col that we can go for later search functions (based on max of slope and direction distance parameters.)
+        """Set index bounds used by subsequent neighborhood searches.
+
+        ARC pads rasters by ``i_boundary_number``. This method records the
+        inclusive bounds for valid sampling indices within the padded arrays so
+        later routines can quickly reject samples that fall outside the usable
+        domain.
+
+        Parameters
+        ----------
+        i_boundary_number : int
+            Number of padded cells around the original raster.
+        nrows, ncols : int
+            Dimensions of the *unpadded* raster.
         """
         self.i_boundary_number = i_boundary_number
         self.i_row_bottom = i_boundary_number
@@ -120,8 +219,22 @@ class CrossSection:
         self.i_column_top = ncols + i_boundary_number - 1
     
     def set_cross_section(self, row: int, col: int, i_precompute_angle_closest: int, d_xs_direction: float):
-        """
+        """Sample a two-sided cross-section centered on ``(row, col)``.
+
+        The sampled profiles and land-cover arrays are written in-place to the
+        preallocated ``da_xs_profile*``/``ia_lc_xs*`` arrays, and the number of
+        valid sampled ordinates for each side is recorded in ``xs1_n`` and
+        ``xs2_n``.
+
         Parameters
+        ----------
+        row, col : int
+            Center cell location in the padded raster arrays.
+        i_precompute_angle_closest : int
+            Index of the nearest precomputed angle (see
+            :meth:`create_cross_section_ordinates`).
+        d_xs_direction : float
+            Cross-section orientation in radians.
         """
         self.row = row
         self.col = col
@@ -182,6 +295,20 @@ class CrossSection:
     
     
     def adjust_cross_section_to_lowest_point(self, i_low_spot_range: int):
+        """Shift the cross-section center to the local thalweg candidate.
+
+        The "low spot" adjustment searches within ``i_low_spot_range`` cells
+        along the sampled profiles for a lower elevation point and recenters the
+        cross-section on that location. This helps avoid sampling cross-sections
+        that are slightly offset from the true channel thalweg due to raster
+        discretization.
+
+        Parameters
+        ----------
+        i_low_spot_range : int
+            Number of ordinates on each side to consider when searching for the
+            local low point.
+        """
         self.row, self.col = _adjust_cross_section_to_lowest_point(
             i_low_spot_range,
             self.da_xs_profile1,
@@ -199,12 +326,30 @@ class CrossSection:
         self.set_cross_section(self.row, self.col, self.i_precompute_angle_closest, self.d_xs_direction)
 
     def get_row_col(self):
+        """Return the (row, col) indices of the cross-section center cell."""
         return self.ia_xc_row1_index_main[0], self.ia_xc_column1_index_main[0]
     
     def get_thalweg(self):
+        """Return the thalweg elevation at the cross-section center cell."""
         return self.da_xs_profile1[0]
 
     def get_best_xsection_angle(self, d_precompute_angles: float):
+        """Choose the candidate angle producing the narrowest test top width.
+
+        The current implementation evaluates candidate angle offsets from
+        ``self.l_angles_to_test`` and selects the angle that minimizes top width
+        at a small test depth above the thalweg.
+
+        Parameters
+        ----------
+        d_precompute_angles : float
+            Angular spacing (radians) of the precomputed angle table.
+
+        Returns
+        -------
+        float
+            Selected cross-section direction in radians.
+        """
         d_test_depth = 0.5
         d_shortest_tw_angle = 0.0
         d_t_test = np.inf
@@ -230,6 +375,7 @@ class CrossSection:
     
     
     def calculate_top_width_of_wse(self, d_wse: float):
+        """Compute total top width at a given water-surface elevation (WSE)."""
         return (
             _calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n, self.d_ordinate_dist) +
             _calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n, self.d_ordinate_dist)
@@ -339,8 +485,42 @@ class CrossSection:
         return _find_bank_inflection_point_helper(da_xs_smooth, i_cross_section_number, self.d_ordinate_dist)
 
     def Calculate_Bathymetry_Based_on_WSE_or_LC(self, d_q_baseflow: float, d_slope_use: float, output_bathymetry: np.ndarray):
-        """
-        Calculate bathymetry based on water surface elevations.
+        """Estimate bathymetry using banks inferred from WSE or land cover.
+
+        This method first attempts to identify bank locations either from the
+        land-cover raster (water/non-water transition) or from a "flat water"
+        signature in the DEM. If banks cannot be identified, it falls back to
+        heuristics such as width-to-depth ratio or an inflection-point method.
+
+        If a valid bank geometry is found and ``d_q_baseflow`` is positive, an
+        iterative depth estimate is computed by matching trapezoid discharge to
+        ``d_q_baseflow`` (via Manning's equation). The sampled cross-section
+        profiles may also be adjusted in-place to include the estimated channel
+        shape, and the bathymetry raster is updated at the cross-section sample
+        locations.
+
+        Parameters
+        ----------
+        d_q_baseflow : float
+            Baseflow/bankfull discharge used to estimate bathymetry depth.
+        d_slope_use : float
+            Local reach/cell slope used in Manning calculations.
+        output_bathymetry : numpy.ndarray
+            Output bathymetry raster (aligned to the padded DEM grid). Updated
+            in-place.
+
+        Returns
+        -------
+        i_bank_1_index : int
+            Bank index on side 1 (profile 1).
+        i_bank_2_index : int
+            Bank index on side 2 (profile 2).
+        i_total_bank_cells : int
+            Total bank cell count used for trapezoid top width.
+        d_y_depth : float
+            Estimated flow depth.
+        d_y_bathy : float
+            Estimated bathymetric elevation (thalweg minus depth).
         """
 
 
@@ -435,10 +615,18 @@ class CrossSection:
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
     
     def set_mannings_n_values(self, dm_manning_n_raster: np.ndarray):
+        """Sample Manning's n along both sides of the current cross-section.
+
+        Parameters
+        ----------
+        dm_manning_n_raster : numpy.ndarray
+            Raster of Manning's n values aligned to the padded DEM grid.
+        """
         self.mannings_n1 = dm_manning_n_raster[self.ia_xc_row1_index_main[:self.xs1_n], self.ia_xc_column1_index_main[:self.xs1_n]]
         self.mannings_n2 = dm_manning_n_raster[self.ia_xc_row2_index_main[:self.xs2_n], self.ia_xc_column2_index_main[:self.xs2_n]]
     
     def get_flood_increment_args(self):
+        """Return the tuple of arrays needed by flood-increment calculations."""
         return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist
 
     def _calc_side_distance(self, profile, bank_index, bankfull_elev):
@@ -456,6 +644,7 @@ class CrossSection:
                 return 0.5 * self.d_ordinate_dist
             
     def get_calculate_discharge_from_wse_args(self):
+        """Return the tuple of arrays needed by :func:`calculate_discharge_from_wse`."""
         return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist
     
     def _compute_depth(self, i_total_bank_cells, i_bank_1_index, i_bank_2_index, d_bankfull_elevation, d_q_baseflow, d_slope_use):
@@ -470,8 +659,27 @@ class CrossSection:
         return d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base, d_y_depth
     
     def Calculate_Bathymetry_Based_on_RiverBank_Elevations(self, d_q_baseflow: float, d_slope_use: float, dm_output_bathymetry: np.ndarray):
-        """
-        Calculate the bathymetry (water depth and thalweg elevation) based on river bank elevations.
+        """Estimate bathymetry using bank elevations (vs. a flat WSE signature).
+
+        This routine attempts to identify bank locations/elevations and then
+        estimate an in-channel trapezoid depth that matches ``d_q_baseflow``.
+        It is designed for workflows where the bank elevations (rather than the
+        DEM's flat-water surface) are the preferred constraints for bathymetry.
+
+        Parameters
+        ----------
+        d_q_baseflow : float
+            Baseflow/bankfull discharge used to estimate bathymetry depth.
+        d_slope_use : float
+            Local slope used in Manning calculations.
+        dm_output_bathymetry : numpy.ndarray
+            Output bathymetry raster updated in-place.
+
+        Returns
+        -------
+        i_bank_1_index, i_bank_2_index : int
+            Bank indices on the two sides of the sampled cross-section. These
+            are returned for diagnostics/metadata.
         """
         # Initialize variables
         function_used = None
@@ -669,20 +877,6 @@ class CrossSection:
                 d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main,
                 self.da_xs_profile2, dm_output_bathymetry, d_side2_dist, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks
             )
-            # adjust_profile_for_bathymetry(
-            #     da_xs_profile1, i_bank_1_index + 1, d_total_bank_dist,
-            #     d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth,
-            #     dm_output_bathymetry, ia_xc_r1_index_main, ia_xc_c1_index_main,
-            #     d_side1_dist, dm_elevation,
-            #     b_bathy_use_banks
-            # )
-            # adjust_profile_for_bathymetry(
-            #     da_xs_profile2, i_bank_2_index + 1, d_total_bank_dist,
-            #     d_trap_base, d_distance_z, d_h_dist, d_y_bathy, d_y_depth,
-            #     dm_output_bathymetry, ia_xc_r2_index_main, ia_xc_c2_index_main,
-            #     d_side2_dist, dm_elevation,
-            #     b_bathy_use_banks
-            # )
 
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
     
@@ -1051,7 +1245,30 @@ def _calculate_stream_geometry_and_topwidth(da_xs_profile: np.ndarray,
 @njit(cache=True)
 def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.ndarray, xs1_n: float, mannings_n1: float,
                                 profile2: np.ndarray, xs2_n: float, mannings_n2: float, d_ordinate_dist: float):
-        # Calculate the geometry
+    """Compute discharge (Q) at a given WSE using Manning's equation.
+
+    Parameters
+    ----------
+    wse : float
+        Water surface elevation.
+    sqrt_slope : float
+        Square root of slope (i.e., ``sqrt(slope)``). Passing this avoids
+        recomputing ``sqrt`` inside tight loops.
+    profile1, profile2 : numpy.ndarray
+        Cross-section elevation profiles for each side of the channel.
+    xs1_n, xs2_n : int
+        Number of valid ordinates in each profile.
+    mannings_n1, mannings_n2 : numpy.ndarray
+        Manning's n values sampled along each profile.
+    d_ordinate_dist : float
+        Distance between successive ordinates along the cross-section.
+
+    Returns
+    -------
+    float
+        Discharge corresponding to the given WSE.
+    """
+    # Calculate the geometry
     A1, P1, np1 = _calculate_stream_geometry(profile1, wse, xs1_n, d_ordinate_dist, mannings_n1)
     A2, P2, np2 = _calculate_stream_geometry(profile2, wse, xs2_n, d_ordinate_dist, mannings_n2)
 
@@ -1174,35 +1391,35 @@ def _adjust_one_side_for_bathymetry(i_bank_index: int, d_total_bank_dist: float,
 def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_index_main: np.ndarray, ia_xc_dr_index_second: np.ndarray, ia_xc_dc_index_second: np.ndarray, da_xc_main_fract: np.ndarray,
                         da_xc_second_fract: np.ndarray, d_xs_direction: np.ndarray, i_centerpoint: int, d_dx: float, d_dy: float):
     """
-    Calculates the distance of the stream cross section
+    Precompute index offsets and interpolation fractions for one angle.
 
     Parameters
     ----------
     ia_xc_dr_index_main: ndarray
-        Indices of the first cross section index
+        Output array of row offsets for the main interpolation sample.
     ia_xc_dc_index_main: ndarray
-        Index offsets of the first cross section index
+        Output array of column offsets for the main interpolation sample.
     ia_xc_dr_index_second: ndarray
-        Indices of the second cross section index
+        Output array of row offsets for the secondary interpolation sample.
     ia_xc_dc_index_second: ndarray
-        Index offsets of the second cross section index
-    da_xc_main_fract: ndarray: ndarray
-        # todo: add
+        Output array of column offsets for the secondary interpolation sample.
+    da_xc_main_fract: ndarray
+        Output array of weights for the main interpolation sample (0-1).
     da_xc_second_fract: ndarray
-        # todo: add
+        Output array of weights for the secondary interpolation sample (0-1).
     d_xs_direction: float
-        Orientation of the cross section
+        Orientation of the cross section (radians).
     i_centerpoint: int
-        Distance from the cell to search
+        Number of ordinates to compute (centerpoint distance in cells).
     d_dx: float
-        Cell resolution in the x direction
+        Cell resolution in the x direction.
     d_dy: float
-        Cell resolution in the y direction
+        Cell resolution in the y direction.
 
     Returns
     -------
     d_distance_z: float
-        Distance along the cross section direction
+        Distance between successive ordinates along the cross-section direction.
 
     """
     
@@ -1384,10 +1601,21 @@ def is_valid_number(elev):
 
 def calc_bankfull_elevation(base_elev, bank_elev_1, bank_elev_2): 
     """
-    Determine the bankfull elevation based on the two bank elevation values.
-    It collects all valid bank elevations that are at least base_elev.
-    If both are valid, it picks the minimum one.
-    If neither is valid, it defaults to base_elev.
+    Determine bankfull elevation from candidate bank elevations.
+
+    Parameters
+    ----------
+    base_elev : float
+        Reference elevation (typically the thalweg or WSE at the stream cell).
+    bank_elev_1, bank_elev_2 : float
+        Candidate bank elevations for each side of the cross-section.
+
+    Returns
+    -------
+    float
+        The minimum valid bank elevation that is greater than or equal to
+        ``base_elev``. If neither bank elevation is valid, returns
+        ``base_elev``.
     """
     valid_banks = [elev for elev in (bank_elev_1, bank_elev_2) if is_valid_number(elev) and elev >= base_elev]
     return min(valid_banks, default=base_elev)

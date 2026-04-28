@@ -1,0 +1,75 @@
+site_name: Automated Rating Curve (ARC)
+site_description: Documentation for the Automated Rating Curve (ARC) generator.
+repo_url: https://github.com/MikeFHS/automated-rating-curve
+repo_name: MikeFHS/automated-rating-curve
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - content.tabs.link
+    - navigation.sections
+    - navigation.footer
+
+docs_dir: docs
+site_dir: site
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.snippets:
+      base_path: .
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://unpkg.com/katex@0/dist/katex.min.js
+  - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
+
+extra_css:
+  - https://unpkg.com/katex@0/dist/katex.min.css
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Overview:
+    - Getting Started: getting_started.md
+    - Model Input File: model_input_file.md
+    - Outputs: outputs.md
+    - API: api.md
+  - Technical Details:
+    - Bathymetry: bathymetry.md
+    - Stream Slope Methods: stream_slope_methods.md
+    - Miscellaneous: miscellaneous.md
+  - Examples: 
+    - Produce Streamflow Inputs: produce_streamflow_inputs.md
+    - Produce Geospatial Inputs: produce_geospatial_inputs.md
+    - Neuse River Flooding: neuse_river_flooding.md
+    - Making Inputs for FIST: making_inputs_for_fist.md
+  - License: license.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            filters:
+              - "!^_[^_]"
+            show_signature: true
+            show_signature_annotations: true
+            docstring_style: numpy
+            docstring_section_style: table
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            merge_init_into_class: true
+            annotations_path: brief
+            show_if_no_docstring: true
+          setup_commands:
+            - import sys
+            - sys.path.append(".")

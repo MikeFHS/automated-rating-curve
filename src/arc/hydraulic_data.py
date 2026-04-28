@@ -1,3 +1,10 @@
+"""Hydraulic output schema and writers.
+
+ARC stores per-cell hydraulic results in a single 2D NumPy array and then
+derives requested output products (VDT database, AP database, curve file, and
+optional cross-section export) from that array.
+"""
+
 import numpy as np
 import pandas as pd
 from numba import njit
@@ -8,7 +15,16 @@ from arc.cross_section import CrossSection
 from arc import LOG
 
 class HydraulicData:
+    """Helper for assembling ARC outputs and writing output files.
+
+    Parameters
+    ----------
+    params : dict
+        ARC parameter dictionary (parsed from the MIF / overrides). This class
+        reads output-path and increment settings from ``params``.
+    """
     def __init__(self,  params: dict):
+        """Initialize output configuration from ``params``."""
         self.ap_file: str = params['s_output_ap_database']
         self.vdt_file: str = params["s_output_vdt_database"]
         self.curve_file: str = params["s_output_curve_file"]
@@ -19,15 +35,23 @@ class HydraulicData:
 
     @classmethod
     def generate_output_data_array(cls, params: dict, nrows: int):
+        """Allocate the main results array.
+
+        Returns a NaN-filled array with ``nrows`` rows and the expected number
+        of columns for the configured number of increments.
+        """
         return np.full((nrows, 8 + params['i_number_of_increments']*5), np.nan, dtype=np.float64)
 
     def associate_with_cross_section(self, x_section: CrossSection):
+        """Attach the current :class:`~arc.cross_section.CrossSection` instance."""
         self.x_section = x_section
 
     def associate_with_output_data(self, output_data: np.ndarray):
+        """Attach the shared output array to populate in-place."""
         self.output_data = output_data
     
     def add_empty_x_section_for_curve_file(self,i_cell_comid: int, d_slope_use: float, i_entry_cell: int):
+        """Initialize the metadata row used by reach-average curve workflows."""
         if self.output_data is None:
             return
         if not self.b_reach_average_curve_file:
@@ -47,17 +71,20 @@ class HydraulicData:
         ]
 
     def set_q_at_index(self, n: int, q: float, i_entry_cell: int):
+        """Set discharge ``q`` for increment ``n`` in the output array."""
         if self.output_data is None:
             return
         self.output_data[i_entry_cell, 8 + ((n-1) * 5)] = q
 
     def is_start_q_greater_than_baseflow(self, i_start_elevation_index: int, d_q_baseflow: float, i_entry_cell: int):
+        """Return ``True`` if the stored starting Q is greater than baseflow."""
         if self.output_data is None:
             return False
         idx = i_start_elevation_index + 1
         return self.output_data[i_entry_cell, 8 + ((idx-1) * 5)] >= d_q_baseflow
 
     def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_entry_cell: int, i_number_of_elevations: int):
+        """Populate the VDT metadata columns for a stream cell."""
         if self.output_data is None:
             return
         da_total_q_half_sum = np.sum(self.output_data[i_entry_cell, range(8, (i_number_of_elevations // 2) * 5, 5)])
@@ -78,6 +105,7 @@ class HydraulicData:
         
     def set_non_vdt_data(self, print_curve_file: bool, i_start_elevation_index: int, i_last_elevation_index: int,
                           i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int):
+        """Populate curve-file metadata for non-VDT configurations."""
         if self.output_data is None:
             return
         if self.b_reach_average_curve_file:
@@ -101,6 +129,20 @@ class HydraulicData:
         ]
 
     def get_cross_section_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int,):
+        """Collect the current cross-section sample for optional export.
+
+        Parameters
+        ----------
+        i_cell_comid : int
+            Reach/cell identifier for the stream cell.
+        i_row_cell, i_column_cell : int
+            Stream cell row/column indices (in the padded raster arrays).
+
+        Returns
+        -------
+        tuple
+            Row tuple for the cross-section export file.
+        """
         return (
             i_cell_comid,
             i_row_cell - self.x_section.i_boundary_number,
@@ -117,9 +159,11 @@ class HydraulicData:
         )
     
     def add_cross_section_data(self, data):
+        """Attach the list/array used to store cross-section export rows."""
         self.xs_data = data
 
     def has_vdt_data(self):
+        """Return ``True`` if the output array contains any populated increments."""
         # Check if there are any non nan values in the last column of the output data, which would indicate that at least some VDT data was generated
         if getattr(self, "output_data", None) is None:
             return False
@@ -165,6 +209,14 @@ class HydraulicData:
         return d_coefficient, d_power, d_R2
     
     def save_files(self, id_flow_dict):
+        """Write all configured output products.
+
+        Parameters
+        ----------
+        id_flow_dict : dict
+            Mapping from reach ID to (baseflow, qmax) or similar flow metadata.
+            Used when building curve-file outputs.
+        """
         vdt_df = None
         if self.vdt_file:
             vdt_df = self.save_vdt()
@@ -178,6 +230,7 @@ class HydraulicData:
             self.save_cross_section_file()
     
     def save_vdt(self):
+        """Save the VDT database to disk (CSV or Parquet)."""
         colorder = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'] + [
             f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse', 'p']
         ]
@@ -219,6 +272,7 @@ class HydraulicData:
         return vdt_df
 
     def save_ap(self):
+        """Save the area/perimeter (AP) database to disk (CSV or Parquet)."""
         o_ap_file_df = pd.DataFrame(self.output_data, columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'] + [
             f"{prefix}_{i}" for i in range(1, self.i_number_of_increments + 1) for prefix in ['q', 'v', 't', 'wse', 'p']
         ])
@@ -256,6 +310,7 @@ class HydraulicData:
         LOG.info('Finished writing ' + str(self.ap_file))
 
     def save_reach_average_curve_file(self, vdt_df: pd.DataFrame, id_flow_dict: dict):
+        """Save a reach-averaged curve file derived from per-cell results."""
         # Creating the DataFrame
         reach_average_curvefile_df = pd.DataFrame(self.output_data[:, 0:8], columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
         reach_average_curvefile_df = reach_average_curvefile_df.dropna(how='all')
@@ -368,6 +423,7 @@ class HydraulicData:
         LOG.info('Finished writing ' + str(self.curve_file))
 
     def save_curve_file(self, id_flow_dict: dict):
+        """Save per-cell power-law curve coefficients for depth/width/velocity."""
         o_curve_file_df = pd.DataFrame(self.output_data[:, 0:8], columns=['COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
 
         # Reorder
@@ -448,6 +504,7 @@ class HydraulicData:
         LOG.info('Finished writing ' + str(self.curve_file))
 
     def save_cross_section_file(self):
+        """Save the cross-section export file (tab-delimited)."""
         cross_section_data = [item for item in self.xs_data if item is not None]
         pd.DataFrame(cross_section_data, columns=[
             'COMID', 'Row', 'Col', 'XS1_Profile', 'Ordinate_Dist', 'Manning_N_Raster1', 'XS2_Profile', 'Manning_N_Raster2', 'r1', 'c1', 'r2', 'c2'
@@ -457,6 +514,7 @@ class HydraulicData:
 
 @njit(cache=True)
 def add_hydraulic_data(output_data: np.ndarray, n: int, wse: float, t: float, p: float, q: float, v: float, i_entry_cell: int, b_modified_dem: bool):
+    """Write one increment (q, v, t, wse, p) into the output array."""
     output_data[i_entry_cell, 8 + ((n-1) * 5):8 + ((n-1) * 5) + 5] = [q, v, t, wse - 100 if b_modified_dem else wse, p]
 
 # Power function equation

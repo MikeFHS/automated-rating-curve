@@ -1,7 +1,22 @@
 """
-Written initially by Mike Follum with Follum Hydrologic Solutions, LLC.
-Program simply creates depth, velocity, and top-width information for each stream cell in a domain.
+Automated Rating Curve (ARC) generator.
 
+This module implements the core ARC workflow:
+
+1. Read geospatial rasters (DEM, stream IDs, land cover) and a flow table.
+2. For each stream raster cell, sample and adjust a cross-section.
+3. Estimate bathymetry (optional).
+4. Compute hydraulic relationships (WSE, depth, velocity, top width) for a set
+   of discharge increments and write requested outputs.
+
+ARC can be run from Python via :class:`arc.arc.Arc` or from the command line via
+the ``arc`` console script.
+
+Notes
+-----
+ARC's configuration is controlled by a "model input file" (MIF) and/or an
+override ``args`` dictionary. Input parameter strings are documented on the ARC
+wiki (see the repository's GitHub Wiki).
 """
 
 import sys
@@ -11,6 +26,7 @@ import warnings
 from typing import Literal
 
 import tqdm
+import yaml
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -249,30 +265,6 @@ def safe_signs_differ(fa, fb, tol=1e-10):
 
     return safe_signs
 
-def format_array(da_array: np.ndarray, s_format: str):
-    """
-    Formats a string. Helper function to allow multidimensional formats
-
-    Parameters
-    ----------
-    da_array: np.array
-        Array to be formatted
-    s_format: str
-        Specifies the format of the output
-
-    Returns
-    -------
-    s_formatted_output: str
-        Formatted output as a string
-
-    """
-
-    # Format the output
-    s_formatted_output = "[" + ",".join(s_format.format(x) for x in da_array) + "]"
-
-    # Return to the calling function
-    return s_formatted_output
-
 def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_number_of_columns: int, i_number_of_rows: int, l_dem_geotransform: list, s_dem_projection: str,
                         s_file_format: str, s_output_type: str):
     """
@@ -324,37 +316,33 @@ def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_nu
 
 def read_and_pad_and_maybe_make_shared(s_input_filename: str, processes: int, pad_distance: int, dtype: np.dtype, array_name: str):
     """
-    Reads a raster file from disk into memory
+    Read a raster into memory, pad it, and optionally place it in shared memory.
 
     Parameters
     ----------
-    s_input_filename: str
-        Input filename
+    s_input_filename : str
+        Path to the input raster (GDAL-readable).
+    processes : int
+        Number of worker processes. If ``processes > 1``, ARC places the padded
+        raster in :mod:`multiprocessing.shared_memory` so workers can access it
+        without per-process copies.
+    pad_distance : int
+        Number of cells to pad on each edge (used to avoid boundary issues for
+        neighborhood operations like slope/direction/cross-section sampling).
+    dtype : numpy.dtype
+        Dtype to cast the raster values to after reading.
+    array_name : str
+        Name of the global array variable to assign when shared memory is used
+        (e.g., ``"_DEM"``).
 
     Returns
     -------
-    dm_raster_array: ndarray
-        Contains the data matrix from the input file
-    i_number_of_columns: int
-        Number of columns in the dataset
-    i_number_of_rows: int
-        Number of rows in the dataset
-    d_cell_size: float
-        Size of each cell
-    d_y_lower_left: float
-        y coordinate of the lower left corner of the dataset
-    d_y_upper_right: float
-        y coordinate of the upper right corner of the dataset
-    d_x_lower_left: float
-        x coordinate of the lower left corner of the dataset
-    d_x_upper_right: float
-        x coordinate of the upper right corner of the dataset
-    d_latitude: float
-        Latitude of the dataset
-    l_geotransform: list
-        Geotransform information from the dataset
-    s_raster_projection: str
-        Projection information from the dataset
+    dm_raster_array : numpy.ndarray
+        Padded raster array (possibly shared-memory backed).
+    l_geotransform : tuple
+        GDAL geotransform.
+    s_raster_projection : str
+        Raster projection (WKT).
 
     """
 
@@ -478,25 +466,36 @@ def to_bool(val):
 
 def read_main_input_file(s_mif_name: str, args: dict):
     """
+    Parse an ARC model input file (MIF) and apply overrides.
 
     Parameters
     ----------
-    s_mif_name: str
-        Path to the input file
-    args: dict
-        Dictionary of arguments passed to the function.
+    s_mif_name : str
+        Path to the MIF text file. The file is tab-delimited with one parameter
+        per line (``<ParameterString>\\t<Value>``), or it is a YAML file. If empty, ARC builds an
+        in-memory "file" from ``args``.
+    args : dict
+        Parameter overrides. Keys correspond to the input-file parameter
+        strings (e.g., ``"DEM_File"``, ``"Stream_File"``, ``"Print_VDT_Database"``).
+        Values in this dict override values in the MIF.
 
     Returns
     -------
-    dict        Dictionary of parameters to be used in the model
+    dict
+        Normalized parameter dictionary used by the simulation.
 
     """
 
     ### Open and read the input file ###
     # Open the file
     if s_mif_name:
-        with open(s_mif_name, 'r') as o_input_file:
-            sl_lines = o_input_file.readlines()
+        if s_mif_name.lower().endswith(('.yaml', '.yml')):
+            # If it's a YAML file, parse it with PyYAML and convert to the expected list of lines format
+            data = yaml.safe_load(open(s_mif_name))
+            sl_lines = [f"{key}\t{value}\n" for key, value in data.items()]
+        else:
+             with open(s_mif_name, 'r') as o_input_file:
+                sl_lines = o_input_file.readlines()
     else:
         # Convert arg dict to a list of lines
         sl_lines = []
@@ -644,16 +643,25 @@ def convert_cell_size(
 
 def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, s_flow_qmax: str):
     """
+    Read streamflow information for ARC.
 
     Parameters
     ----------
-    s_flow_file_name
-    s_flow_id
-    s_flow_baseflow
-    s_flow_qmax
+    s_flow_file_name : str
+        Path to a CSV containing per-reach flow information.
+    s_flow_id : str
+        Column name containing the stream/reach identifier (typically COMID).
+    s_flow_baseflow : str
+        Column name containing the baseflow discharge (used for bathymetry and
+        metadata).
+    s_flow_qmax : str
+        Column name containing the maximum discharge used to build rating-curve
+        increments.
 
     Returns
     -------
+    dict
+        Mapping ``reach_id -> {baseflow_column: value, qmax_column: value}``.
 
     """
     df = pd.read_csv(s_flow_file_name)
@@ -955,19 +963,23 @@ def get_stream_direction_information(i_row: int, i_column: int, im_streams: np.n
 
 def read_manning_table(s_manning_path: str, land_cover_array: np.ndarray, processes: int):
     """
-    Reads the Manning's n information from the input file
+    Reclassify a land-cover raster into Manning's *n* values.
 
     Parameters
     ----------
-    s_manning_path: str
-        Path to the Manning's n input table
-    land_cover_array: ndarray
-        Array holding the land cover information
+    s_manning_path : str
+        Path to a tab-delimited table mapping land-cover codes to Manning's
+        roughness values.
+    land_cover_array : numpy.ndarray
+        Land-cover raster (integer codes).
+    processes : int
+        Number of worker processes. If ``processes > 1``, the returned array may
+        be allocated in shared memory for worker access.
 
     Returns
     -------
-    da_input_mannings: ndarray
-        Array holding the mannings estimates
+    numpy.ndarray
+        Manning's *n* raster aligned to ``land_cover_array``.
 
     """
 
@@ -1208,6 +1220,26 @@ def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform,
     return (None, None, None)
 
 def calculate_hydraulic_data_for_cell(i_entry_cell: int):
+    """
+    Compute bathymetry and hydraulic increments for a single stream cell.
+
+    This function is the core per-cell kernel. It reads per-cell metadata
+    (row/col, COMID, baseflow, qmax) from shared/global arrays, samples a
+    cross-section, optionally estimates bathymetry, then fills the shared output
+    array with hydraulic results.
+
+    Parameters
+    ----------
+    i_entry_cell : int
+        Index into the per-cell arrays (rows/cols/COMIDs/flows). This is *not*
+        a raster index; it is the index of the extracted stream-cell list.
+
+    Returns
+    -------
+    tuple or None
+        If cross-section output is enabled, returns a tuple containing the
+        per-cell cross-section export fields. Otherwise returns ``None``.
+    """
     i_row_cell = _CELL_ROWS[i_entry_cell]
     i_column_cell = _CELL_COLS[i_entry_cell]
     i_cell_comid = _CELL_COMIDS[i_entry_cell]
@@ -1619,6 +1651,20 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         return hydraulic_data.get_cross_section_data(i_cell_comid, i_row_cell, i_column_cell)
     
 def close_shared_arrays(names: list[str] = None):
+    """
+    Close and unlink shared-memory arrays created by ARC.
+
+    Parameters
+    ----------
+    names : list of str, optional
+        Names of shared memory blocks to close. If omitted, all shared blocks
+        tracked in the internal registry are closed and unlinked.
+
+    Notes
+    -----
+    This should be called once ARC is done with shared arrays. Unlinking makes
+    the shared memory segment eligible for deletion once all handles are closed.
+    """
     global _SHARED_MEMORYS
     if names is None:
         names = list(_SHARED_MEMORYS.keys())
@@ -1632,6 +1678,23 @@ def close_shared_arrays(names: list[str] = None):
         del _SHARED_MEMORYS[name]
 
 def get_init_parallel_args(global_array_names: list[str]):
+    """
+    Build metadata needed to attach shared arrays in worker processes.
+
+    Parameters
+    ----------
+    global_array_names : list of str
+        Names of globals (and shared memory segments) to attach.
+
+    Returns
+    -------
+    list[str]
+        Shared memory names (same as global names).
+    list[tuple]
+        Array shapes.
+    list[numpy.dtype]
+        Array dtypes.
+    """
     names = []
     shapes = []
     dtypes = []
@@ -1652,6 +1715,20 @@ def init_parallel(
     dtypes: list[np.dtype],
     params: dict | None = None,
 ):
+    """
+    Worker initializer for multiprocessing.
+
+    Attaches shared memory segments into NumPy arrays and stores them into
+    module-level globals so the per-cell worker function can run without
+    pickling large arrays.
+
+    Parameters
+    ----------
+    names, shapes, dtypes
+        Metadata produced by :func:`get_init_parallel_args`.
+    params : dict, optional
+        Simulation parameters to store in a module-level global.
+    """
     shms = [shared_memory.SharedMemory(name=name) for name in names]
 
     for shm, name, shape, dtype in zip(shms, names, shapes, dtypes):
@@ -1683,6 +1760,26 @@ def run_main_loop(
     quiet: bool,
     processes: int,
 ) -> HydraulicData:
+    """
+    Run the per-cell simulation loop (serial or parallel).
+
+    Parameters
+    ----------
+    num_cells : int
+        Number of stream cells to process (length of the extracted cell lists).
+    params : dict
+        Simulation parameters produced by :func:`read_main_input_file`.
+    quiet : bool
+        If True, suppress progress bars.
+    processes : int
+        Number of worker processes. ``1`` runs serially.
+
+    Returns
+    -------
+    HydraulicData
+        An instance bound to the shared output array and containing any
+        requested cross-section export data.
+    """
     want_xs = bool(params.get('s_xs_output_file'))
     cross_section_data: list | None = [] if want_xs else None
 
@@ -1714,6 +1811,23 @@ def run_main_loop(
 
 
 def handle_processes(processes: int | Literal["auto"], s_input_stream_path: str) -> int:
+    """
+    Resolve the desired number of worker processes.
+
+    Parameters
+    ----------
+    processes : int or {"auto"}
+        If an integer, values ``< 1`` map to ``os.cpu_count() - 1``. If
+        ``"auto"``, ARC chooses serial vs. parallel based on a heuristic using
+        the stream raster size.
+    s_input_stream_path : str
+        Path to the stream raster (used for the heuristic when ``processes="auto"``).
+
+    Returns
+    -------
+    int
+        Number of worker processes to use.
+    """
     if isinstance(processes, int):
         if processes < 1:
             return max(os.cpu_count() - 1, 1)
@@ -1734,6 +1848,29 @@ def handle_processes(processes: int | Literal["auto"], s_input_stream_path: str)
     raise ValueError(f"Invalid type for processes: {type(processes)}. Must be an integer or 'auto'.")
 
 def create_array(name: str, processes: int, shape: tuple, dtype: np.dtype, fill_value = 0) -> np.ndarray:
+    """
+    Allocate an array either in-process or in shared memory.
+
+    Parameters
+    ----------
+    name : str
+        Global name to assign, and (when parallel) the shared-memory segment name.
+    processes : int
+        Number of worker processes. If ``processes == 1``, allocates a normal
+        NumPy array. Otherwise allocates a :mod:`multiprocessing.shared_memory`
+        backed array.
+    shape : tuple
+        Array shape.
+    dtype : numpy.dtype
+        Array dtype.
+    fill_value : scalar, optional
+        Initial fill value for the array.
+
+    Returns
+    -------
+    numpy.ndarray
+        The allocated array.
+    """
     dtype = np.dtype(dtype)
     if processes == 1:
         arr = np.full(
@@ -1753,6 +1890,30 @@ def create_array(name: str, processes: int, shape: tuple, dtype: np.dtype, fill_
     return arr
 
 def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
+    """
+    Internal driver for ARC.
+
+    This function performs the end-to-end workflow: parse inputs, resolve the
+    process count, read and pad rasters, allocate shared arrays (if requested),
+    precompute cross-section ordinate indices, run the per-cell computation
+    loop, and write output files.
+
+    Parameters
+    ----------
+    MIF_Name : str
+        Path to the ARC model input file (MIF).
+    args : dict
+        Parameter overrides (keys match the MIF parameter strings).
+    quiet : bool, optional
+        If True, suppress progress bars and most log output.
+    processes : int or {"auto"}, optional
+        Number of worker processes.
+
+    Returns
+    -------
+    None
+        Outputs are written to disk based on configured paths.
+    """
     starttime = datetime.now()  
     params = read_main_input_file(MIF_Name, args)
     processes = handle_processes(processes, params['s_input_stream_path'])
@@ -1918,6 +2079,23 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         LOG.info('Simulation Took ' + str(int(i_sim_time_s / 60)) + ' minutes and ' + str(i_sim_time_s - (int(i_sim_time_s / 60) * 60)) + ' seconds')
         
 def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
+    """
+    Public entry point for ARC simulations.
+
+    This wrapper calls :func:`_main` and ensures that shared-memory resources are
+    cleaned up if an exception occurs.
+
+    Parameters
+    ----------
+    MIF_Name : str
+        Path to the ARC model input file (MIF).
+    args : dict
+        Parameter overrides (keys match the MIF parameter strings).
+    quiet : bool, optional
+        If True, suppress progress bars and most log output.
+    processes : int or {"auto"}, optional
+        Number of worker processes.
+    """
     try:
         return _main(MIF_Name, args, quiet, processes)
     except Exception as e:

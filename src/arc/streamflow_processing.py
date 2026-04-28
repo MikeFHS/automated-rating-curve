@@ -1,5 +1,16 @@
-#Code written by Mike Follum to try and evaluate the mean flow from GEOGLOWS datasets.
-#GEOGLOWS data can be downloaded from http://geoglows-v2.s3-website-us-west-2.amazonaws.com/
+"""Streamflow preprocessing helpers.
+
+This module contains optional utilities for producing ARC-compatible flow tables
+from GEOGLOWS ECMWF Streamflow Service NetCDF inputs (historical retrospectives
+and recurrence interval products).
+
+The ARC core model only requires a reach ID column, a baseflow/bankfull column,
+and a maximum-flow column; richer flow tables can still be used as long as the
+MIF points ARC to the correct column names.
+"""
+
+# Code written by Mike Follum to try and evaluate the mean flow from GEOGLOWS datasets.
+# GEOGLOWS data can be downloaded from http://geoglows-v2.s3-website-us-west-2.amazonaws.com/
 
 # built-in imports
 import gc
@@ -228,6 +239,13 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
     return (combined_df)
 
 def Process_and_Write_Retrospective_Data(StrmShp_gdf, rivid_field, CSV_File_Name):
+    """Query retrospective GEOGLOWS data from S3 and write summary statistics.
+
+    Notes
+    -----
+    This function performs network I/O and requires optional dependencies used
+    for Dask/S3 access (``dask``, ``s3fs``, ``xarray``).
+    """
     # Do a late lazy import since importing dask dataframe is heavy, which would slow down other code that just uses ARC and doesn't need this streamflow processing code
     import dask.dataframe as dd
 
@@ -330,6 +348,11 @@ def Process_and_Write_Retrospective_Data(StrmShp_gdf, rivid_field, CSV_File_Name
     return
 
 def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name):
+    """Compute retrospective summary flows for a single DEM tile.
+
+    This helper filters the stream network to features within the DEM tile
+    bounds and then writes a flow summary table for that subset.
+    """
 
     # Load the raster tile and get its bounds using gdal
     raster_dataset = gdal.Open(DEM_Tile)
