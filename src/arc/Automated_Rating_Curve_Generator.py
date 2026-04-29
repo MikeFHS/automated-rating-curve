@@ -51,6 +51,7 @@ _BATHYMETRY: np.ndarray = None
 _MANNINGS_N: np.ndarray = None
 _LAND_COVER: np.ndarray = None
 _OUTPUT_DATA_ARRAY: np.ndarray = None
+_OUT_FLOOD: np.ndarray = None
 _PARAMS: dict | None = None
 _SHARED_MEMORYS: dict[str, shared_memory.SharedMemory] = {}
 _CROSS_SECTION: CrossSection = None
@@ -74,6 +75,7 @@ ARRAY_NAMES = [
     '_MANNINGS_N',
     '_LAND_COVER',
     '_OUTPUT_DATA_ARRAY',
+    '_OUT_FLOOD',
     '_INDEX_ARRAYS',
     '_Z_DISTANCE_ARRAY',
     '_INDEX_FRACT_ARRAYS',
@@ -551,7 +553,9 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'i_lc_water_value': int(get_parameter_name(sl_lines,  'LC_Water_Value', 80)), # Find the value in the land cover dataset that corresponds to water. This is used to find the banks of the river if b_FindBanksBasedOnLandCover is set to True
         'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
         'b_FindBanksBasedOnLandCover': b_FindBanksBasedOnLandCover, # Find the true/false variable to find the banks of the river based on the land cover dataset instead of the DEM
-        'b_reach_average_curve_file': b_reach_average_curve_file # Find the true/false variable to use a reach-average curve file
+        'b_reach_average_curve_file': b_reach_average_curve_file, # Find the true/false variable to use a reach-average curve file
+        's_output_flood': get_parameter_name(sl_lines,  'AROutFLOOD'), # Find the path to the output flood file
+
     }
 
     return params
@@ -1324,6 +1328,8 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     # Calculate the volumes
     # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
     # This is preferred for VDTDatabase method.
+    if _PARAMS['s_output_flood']:
+        _OUT_FLOOD[i_row_cell, i_column_cell] = 3
     
     # Here are the n values for each side of the cross-section
     x_section.set_mannings_n_values(_MANNINGS_N)
@@ -1993,7 +1999,8 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     ##### Begin Calculations #####
     # Create output rasters
     _BATHYMETRY = create_array("_BATHYMETRY", processes, (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), np.float32, fill_value=np.nan)
-
+    if params['s_output_flood']:
+        create_array("_OUT_FLOOD", processes, (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), np.uint8)
 
     # Get the list of stream locations
     flow_ids = np.fromiter(id_flow_dict.keys(), count=len(id_flow_dict), dtype=np.int64)
@@ -2069,6 +2076,9 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         #     dm_output_bathymetry = smooth_bathymetry_gaussian_numba(dm_output_bathymetry)
         write_output_raster(s_output_bathymetry_path, _BATHYMETRY[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
+    if len(_PARAMS['s_output_flood']) > 1:
+        write_output_raster(_PARAMS['s_output_flood'], _OUT_FLOOD[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Byte)
+        
     # Log the compute time
     d_sim_time = datetime.now() - starttime
     i_sim_time_s = int(d_sim_time.seconds)

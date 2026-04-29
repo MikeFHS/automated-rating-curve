@@ -1052,10 +1052,6 @@ def _sample_side(
                 dm_elevation[row_main, col_main] * da_xc_main_fract[i] +
                 dm_elevation[row_second, col_second] * da_xc_second_fract[i]
             )
-
-        for i in range(i_xs_length_indice):
-            row_main = ia_xc_row_index_main[i]
-            col_main = ia_xc_column_index_main[i]
             lc_profile[i] = dm_land_use[row_main, col_main]
 
         return i_xs_length_indice
