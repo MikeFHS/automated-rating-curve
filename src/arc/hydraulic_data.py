@@ -33,15 +33,6 @@ class HydraulicData:
         self.s_xs_output_file: str = params['s_xs_output_file']
         self.b_modified_dem: bool = params['b_modified_dem']
 
-    @classmethod
-    def generate_output_data_array(cls, params: dict, nrows: int):
-        """Allocate the main results array.
-
-        Returns a NaN-filled array with ``nrows`` rows and the expected number
-        of columns for the configured number of increments.
-        """
-        return np.full((nrows, 8 + params['i_number_of_increments']*5), np.nan, dtype=np.float64)
-
     def associate_with_cross_section(self, x_section: CrossSection):
         """Attach the current :class:`~arc.cross_section.CrossSection` instance."""
         self.x_section = x_section
