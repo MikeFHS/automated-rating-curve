@@ -57,6 +57,7 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
+          paths: [src]
           options:
             filters:
               - "!^_[^_]"
@@ -70,6 +71,3 @@ plugins:
             merge_init_into_class: true
             annotations_path: brief
             show_if_no_docstring: true
-          setup_commands:
-            - import sys
-            - sys.path.append(".")
