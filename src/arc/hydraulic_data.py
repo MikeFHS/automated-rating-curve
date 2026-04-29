@@ -497,9 +497,18 @@ class HydraulicData:
     def save_cross_section_file(self):
         """Save the cross-section export file (tab-delimited)."""
         cross_section_data = [item for item in self.xs_data if item is not None]
-        pd.DataFrame(cross_section_data, columns=[
+        df = pd.DataFrame(cross_section_data, columns=[
             'COMID', 'Row', 'Col', 'XS1_Profile', 'Ordinate_Dist', 'Manning_N_Raster1', 'XS2_Profile', 'Manning_N_Raster2', 'r1', 'c1', 'r2', 'c2'
-        ]).to_csv(self.s_xs_output_file, index=False, sep='\t', float_format='%.6f')
+        ])
+
+        # Prepare numpy columns for printing
+        for col in df.columns:
+            df[col] = df[col].apply(
+                lambda x: np.array2string(x, precision=6, max_line_width=np.inf, threshold=np.inf, floatmode='fixed')
+                if isinstance(x, np.ndarray) else x
+            )
+
+        df.to_csv(self.s_xs_output_file, index=False, sep='\t')
 
         LOG.info('Finished writing ' + str(self.s_xs_output_file))
 
