@@ -62,12 +62,12 @@ class Arc():
             LOG.info(f'Main Input File Given: {self._mifn}')
         else:
             #Read Main Input File
-            MIF_Name = 'ARC_InputFiles/ARC_Input_File.txt'
-            MIF_Name = r"C:\Projects\2024_FHS_FloodForecasting\ARC_Shields_Nencarta\nencarta_test_wsebathy_clean\yellowstone_wsebathy_clean\ARC_InputFiles\ARC_Input_Shields_Bathy.txt"
-            LOG.warning('Moving forward with Default MIF Name: ' + MIF_Name)
-            
-        main(MIF_Name, self._args, self._quiet, self._processes)
-        
+            self._mifn = 'ARC_InputFiles/ARC_Input_File.txt'
+            self._mifn = r"C:\Projects\2024_FHS_FloodForecasting\ARC_Shields_Nencarta\nencarta_test_wsebathy_clean\yellowstone_wsebathy_clean\ARC_InputFiles\ARC_Input_Shields_Bathy.txt"
+            LOG.warning('Moving forward with Default MIF Name: ' + self._mifn)
+
+        main(self._mifn, self._args, self._quiet, self._processes)
+
     def set_log_level(self, log_level: str) -> 'Arc':
         """
         Set ARC's logging verbosity.
