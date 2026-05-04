@@ -2,7 +2,6 @@ from __future__ import annotations
 import argparse
 import logging
 from typing import Literal
-from datetime import datetime
 
 from arc import LOG
 from arc.Automated_Rating_Curve_Generator import main

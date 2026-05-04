@@ -112,6 +112,10 @@ def _set_shared(name: str, shm: shared_memory.SharedMemory):
     global _SHARED_MEMORYS
     _SHARED_MEMORYS[name] = shm
 
+def reset_globals():
+    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA']:
+        globals()[name] = None
+
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
     """
     Walk along a line until a valid DEM value is found.
@@ -2110,10 +2114,10 @@ def main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Litera
         return _main(MIF_Name, args, quiet, processes)
     except Exception as e:
         LOG.error(f"An error occurred during processing: {e}")
-        import traceback
-        traceback.print_exc()
-        close_shared_arrays()
         raise
+    finally:
+        close_shared_arrays()
+        reset_globals()
 
 if __name__ == "__main__":
     LOG.info('Inputs to the Program is a Main Input File')
