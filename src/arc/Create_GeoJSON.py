@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+"""GeoJSON export utilities for ARC outputs.
+
+This module contains helper functions that convert ARC outputs (VDT databases
+and curve files) into GeoJSON/feature layers for visualization and QA.
+
+The functions in this file are not required to run the core ARC computation,
+but are useful for downstream workflows and diagnostics.
+"""
+
 # built-in imports
 import argparse
 import os, sys
@@ -8,14 +18,11 @@ import time
 
 # third-party imports
 import numpy as np
-from scipy.sparse import csr_matrix
 from osgeo import gdal
 import geopandas as gpd
 from shapely.geometry import Point
-from scipy.spatial import cKDTree
 from scipy.interpolate import interp1d
-import geojson
-from geojson import Point, Feature, FeatureCollection
+from geojson import Point
 import pandas as pd
 import networkx as nx
 from shapely.geometry import Point, LineString, MultiLineString
@@ -27,6 +34,18 @@ from pyproj import CRS
 
 
 def Get_Raster_Details(DEM_File):
+    """Read basic spatial metadata from a raster.
+
+    Parameters
+    ----------
+    DEM_File : str
+        Path to a raster readable by GDAL.
+
+    Returns
+    -------
+    tuple
+        ``(minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, projection)``.
+    """
     print(DEM_File)
     gdal.Open(DEM_File, gdal.GA_ReadOnly)
     data = gdal.Open(DEM_File)
@@ -44,6 +63,18 @@ def Get_Raster_Details(DEM_File):
     return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
 
 def Read_Raster_GDAL(InRAST_Name):
+    """Read a raster band into a NumPy array and return basic metadata.
+
+    Parameters
+    ----------
+    InRAST_Name : str
+        Input raster path.
+
+    Returns
+    -------
+    tuple
+        ``(array, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, projection)``.
+    """
     try:
         dataset = gdal.Open(InRAST_Name, gdal.GA_ReadOnly)     
     except RuntimeError:

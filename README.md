@@ -4,6 +4,8 @@ ARC is an Python-based code that encompasses much of the functionality of the hy
 
 The resulting rating curves can be paired with a flood inundation mapping software to produce flood inundation maps.
 
+See [documentation](https://automated-rating-curve.readthedocs.io/en/latest/) for more details.
+
 ## Project status
 This project is under active development.
 

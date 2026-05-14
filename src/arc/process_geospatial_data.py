@@ -1,3 +1,19 @@
+# -*- coding: utf-8 -*-
+"""Geospatial preprocessing utilities for ARC.
+
+The functions in this module help convert common ARC geospatial inputs
+(DEM, land cover raster, and stream flowline vectors) into the aligned rasters
+expected by the ARC core model:
+
+- DEM-aligned land cover raster
+- DEM-aligned stream ID raster
+- Starter Model Input File (MIF) and related folders
+
+The upstream wiki documents a recommended workflow using
+``Process_ARC_Geospatial_Data``:
+https://github.com/MikeFHS/automated-rating-curve/wiki/Processing-ARC-Geospatial-Inputs
+"""
+
 # built-in imports
 import sys
 import os
@@ -735,24 +751,27 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
 
 def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path, bathy_use_banks, use_land_cover_to_find_banks):
     """
-    The main function that orchestrates the creation of ARC inputs
+    Create DEM-aligned ARC geospatial inputs and a starter MIF.
 
     Parameters
     ----------
     Main_Directory: str
-        The path to the directory where ARC inputs are stored and where outputs will also be stored
+        Path to the directory where ARC inputs are stored and outputs will be written.
     id_field: str
-        The name of the field containing the unique identifier for your stream shapefile
+        Name of the unique identifier field in the stream shapefile (e.g., COMID).
     max_flow_field: str
-        The name of the field containing the maximum streamflow input into ARC that is in the flow_file_path file
+        Name of the maximum-flow field/column (must exist in the flow file).
     baseflow_field: str
-        The name of the field containing the baseflow streamflow input into ARC that is in the flow_file_path file
+        Name of the baseflow/bankfull field/column (must exist in the flow file).
     flow_file_path: str
-        The path and file name of the csv file containing the maximum flow and baseflow that will be used to create ARC outputs
+        Path to the flow file (CSV) used to populate the ARC run.
     bathy_use_banks: bool
-        True/False argument on whether to run ARC bathymetry estimation using the bank elevations (True) or water surface elevation (False)
+        Whether bathymetry estimation should use bank elevations (``True``) vs.
+        a WSE-derived approach (``False``).
     use_land_cover_to_find_banks: bool
-        True/False argument on whether to use land cover to find banks (True) or to use the flat water surface in the DEM (False)
+        Whether bank finding should use land cover (``True``) vs. "flat water"
+        in the DEM (``False``).
+
     Returns
     -------
     None
