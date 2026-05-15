@@ -530,6 +530,14 @@ def read_main_input_file(s_mif_name: str, args: dict):
         get_parameter_name(sl_lines, 'Reach_Average_Curve_File', False)
     ) and curve_file
 
+    # check for baseflow parameters for bathymetry estimation. If not provided, disable bathymetry estimation.
+    s_flow_file_baseflow = get_parameter_name(sl_lines,  'Flow_File_BF')
+    s_flow_file_qmax = get_parameter_name(sl_lines,  'Flow_File_QMax')
+    s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File'))
+    if s_flow_file_baseflow == '' and len(s_output_bathymetry_path) > 1:
+        LOG.warning('Flow_File_BF was not provided; disabling bathymetry estimation.')
+        s_output_bathymetry_path = ''
+
     params = {
         's_input_dem_path': get_parameter_name(sl_lines,  'DEM_File'), # Find the path to the DEM file
         's_stream_slope_method': s_stream_slope_method,
@@ -539,8 +547,8 @@ def read_main_input_file(s_mif_name: str, args: dict):
         's_input_mannings_path': get_parameter_name(sl_lines,  'LU_Manning_n'), # Find the path to the mannings n file
         's_input_flow_file_path': get_parameter_name(sl_lines,  'Flow_File'), # Find the path to the flow file
         's_flow_file_id': get_parameter_name(sl_lines,  'Flow_File_ID'), # Find the column name 
-        's_flow_file_baseflow': get_parameter_name(sl_lines,  'Flow_File_BF'), # Find the baseflow column name
-        's_flow_file_qmax': get_parameter_name(sl_lines,  'Flow_File_QMax'), # Find the column name for the maximum flow
+        's_flow_file_baseflow': s_flow_file_baseflow, # Find the baseflow column name
+        's_flow_file_qmax': s_flow_file_qmax, # Find the column name for the maximum flow
         'd_x_section_distance': float(get_parameter_name(sl_lines,  'X_Section_Dist', 5000.0)), # Find the x section distance
         's_output_vdt_database': get_parameter_name(sl_lines,  'Print_VDT_Database'), # Find the path to the output velocity, depth, and top width file
         's_output_ap_database': get_parameter_name(sl_lines,  'Print_AP_Database'), # Find the path to the output area and wetted perimeter file
@@ -552,7 +560,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'i_general_slope_distance': int(get_parameter_name(sl_lines,  'Gen_Slope_Dist', 0)), # Find the general slope distance parameter
         'd_bathymetry_trapzoid_height': float(get_parameter_name(sl_lines,  'Bathy_Trap_H', 0.2)), # Find the bathymetry trapezoid height parameter,
         'b_bathy_use_banks': b_bathy_use_banks, # Find the true/false variable to use the bank elevations to calculate the depth of the bathymetry estimate
-        's_output_bathymetry_path': get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File')), # Find the path to the output bathymetry file
+        's_output_bathymetry_path': s_output_bathymetry_path, # Find the path to the output bathymetry file
         's_xs_output_file': get_parameter_name(sl_lines,  'XS_Out_File'), # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
         'i_lc_water_value': int(get_parameter_name(sl_lines,  'LC_Water_Value', 80)), # Find the value in the land cover dataset that corresponds to water. This is used to find the banks of the river if b_FindBanksBasedOnLandCover is set to True
         'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
@@ -669,11 +677,13 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     Returns
     -------
     dict
-        Mapping ``reach_id -> {baseflow_column: value, qmax_column: value}``.
+        Mapping ``reach_id -> {flow_column: value, ...}``. If ``s_flow_baseflow``
+        is blank, only the qmax column is loaded.
 
     """
     df = pd.read_csv(s_flow_file_name)
-    return df.set_index(s_flow_id)[[s_flow_baseflow, s_flow_qmax]].to_dict(orient='index')
+    flow_columns = [s_flow_qmax] if s_flow_baseflow == '' else [s_flow_baseflow, s_flow_qmax]
+    return df.set_index(s_flow_id)[flow_columns].to_dict(orient='index')
 
 @vectorize(target='cpu', cache=True)
 def round_sig(x, sig=3):
@@ -1750,7 +1760,10 @@ def init_parallel(
         _PARAMS = params
 
 def _build_flow_arrays(id_flow_dict: dict,  baseflow_key: str, qmax_key: str, processes: int) -> tuple[np.ndarray, np.ndarray]:
-    create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][baseflow_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+    if baseflow_key == '':
+        create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64, fill_value=0.0)
+    else:
+        create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][baseflow_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
     create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][qmax_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
 
 def _build_reach_slope_arrays(stream_slope_dicts: tuple[dict], params: dict, processes: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
@@ -2064,7 +2077,7 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     # At this point, release all memory except for bathymetry, output array, and elevation
     close_shared_arrays([name for name in ARRAY_NAMES if name not in {"_BATHYMETRY", "_OUTPUT_DATA_ARRAY", "_DEM"}])
     
-    hydraulic_data.save_files(id_flow_dict)
+    hydraulic_data.save_files(id_flow_dict, params['s_flow_file_qmax'])
 
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:

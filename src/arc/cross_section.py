@@ -523,10 +523,18 @@ class CrossSection:
             Estimated bathymetric elevation (thalweg minus depth).
         """
 
+        # if the baseflow you are using is equal to 0, don't bother trying to estimate bathymetry
+        if d_q_baseflow <= 0.0:
+            i_bank_1_index = 0
+            i_bank_2_index = 0
+            i_total_bank_cells = 1
+            d_y_depth = 0.0
+            d_y_bathy = self.get_thalweg() - d_y_depth
+            return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
         # set the function used to none before we start running things
         function_used = None
-        
+
         # First find the bank information
         if self.b_FindBanksBasedOnLandCover:   
             (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = self._find_wse_and_banks_by_lc()
@@ -681,6 +689,15 @@ class CrossSection:
             Bank indices on the two sides of the sampled cross-section. These
             are returned for diagnostics/metadata.
         """
+        # if the baseflow you are using is equal to 0, don't bother trying to estimate bathymetry
+        if d_q_baseflow <= 0.0:
+            i_bank_1_index = 0
+            i_bank_2_index = 0
+            i_total_bank_cells = 1
+            d_y_depth = 0.0
+            d_y_bathy = self.get_thalweg() - d_y_depth
+            return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
+        
         # Initialize variables
         function_used = None
         i_landcover_for_bathy = self.ia_lc_xs1[0]

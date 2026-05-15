@@ -199,7 +199,7 @@ class HydraulicData:
         # Return to the calling function
         return d_coefficient, d_power, d_R2
     
-    def save_files(self, id_flow_dict):
+    def save_files(self, id_flow_dict, qmax_key: str):
         """Write all configured output products.
 
         Parameters
@@ -207,6 +207,8 @@ class HydraulicData:
         id_flow_dict : dict
             Mapping from reach ID to (baseflow, qmax) or similar flow metadata.
             Used when building curve-file outputs.
+        qmax_key : str
+            Name of the qmax field within ``id_flow_dict``.
         """
         vdt_df = None
         if self.vdt_file:
@@ -214,9 +216,9 @@ class HydraulicData:
         if self.ap_file:
             self.save_ap()
         if self.b_reach_average_curve_file:
-            self.save_reach_average_curve_file(vdt_df, id_flow_dict)
+            self.save_reach_average_curve_file(vdt_df, id_flow_dict, qmax_key)
         elif self.curve_file:
-            self.save_curve_file(id_flow_dict)
+            self.save_curve_file(id_flow_dict, qmax_key)
         if self.s_xs_output_file:
             self.save_cross_section_file()
     
@@ -300,7 +302,7 @@ class HydraulicData:
             o_ap_file_df.to_csv(self.ap_file, index=False)
         LOG.info('Finished writing ' + str(self.ap_file))
 
-    def save_reach_average_curve_file(self, vdt_df: pd.DataFrame, id_flow_dict: dict):
+    def save_reach_average_curve_file(self, vdt_df: pd.DataFrame, id_flow_dict: dict, qmax_key: str):
         """Save a reach-averaged curve file derived from per-cell results."""
         # Creating the DataFrame
         reach_average_curvefile_df = pd.DataFrame(self.output_data[:, 0:8], columns=['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
@@ -313,7 +315,8 @@ class HydraulicData:
 
         # rename baseflow as qmax and set values
         reach_average_curvefile_df = reach_average_curvefile_df.rename(columns={'QBaseflow': 'QMax', 'Elev': 'DEM_Elev'})
-        reach_average_curvefile_df['QMax'] = reach_average_curvefile_df['COMID'].map(pd.DataFrame.from_dict(id_flow_dict, orient='index').iloc[:, 1])
+        flow_df = pd.DataFrame.from_dict(id_flow_dict, orient='index')
+        reach_average_curvefile_df['QMax'] = reach_average_curvefile_df['COMID'].map(flow_df[qmax_key])
 
         # All columns but slope rounded to 3
         for col in reach_average_curvefile_df.columns:
@@ -413,7 +416,7 @@ class HydraulicData:
             reach_average_curvefile_df.to_csv(self.curve_file, index=False)        
         LOG.info('Finished writing ' + str(self.curve_file))
 
-    def save_curve_file(self, id_flow_dict: dict):
+    def save_curve_file(self, id_flow_dict: dict, qmax_key: str):
         """Save per-cell power-law curve coefficients for depth/width/velocity."""
         o_curve_file_df = pd.DataFrame(self.output_data[:, 0:8], columns=['COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev'])
 
@@ -429,7 +432,8 @@ class HydraulicData:
 
         # rename baseflow as qmax and set values
         o_curve_file_df = o_curve_file_df.rename(columns={'QBaseflow': 'QMax'})
-        o_curve_file_df['QMax'] = o_curve_file_df['COMID'].map(pd.DataFrame.from_dict(id_flow_dict, orient='index').iloc[:, 1])
+        flow_df = pd.DataFrame.from_dict(id_flow_dict, orient='index')
+        o_curve_file_df['QMax'] = o_curve_file_df['COMID'].map(flow_df[qmax_key])
         
         # Round all numeric columns to 3, except 'Slope'
         for col in o_curve_file_df.columns:
