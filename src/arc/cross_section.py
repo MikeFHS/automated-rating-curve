@@ -377,8 +377,8 @@ class CrossSection:
     def calculate_top_width_of_wse(self, d_wse: float):
         """Compute total top width at a given water-surface elevation (WSE)."""
         return (
-            _calculate_side_top_width(d_wse, self.da_xs_profile1, self.xs1_n, self.d_ordinate_dist) +
-            _calculate_side_top_width(d_wse, self.da_xs_profile2, self.xs2_n, self.d_ordinate_dist)
+            _calculate_side_top_width(d_wse, self.da_xs_profile1[:self.xs1_n], self.d_ordinate_dist) +
+            _calculate_side_top_width(d_wse, self.da_xs_profile2[:self.xs2_n], self.d_ordinate_dist)
         )
 
     def _find_wse_and_banks_by_lc(self):
@@ -900,8 +900,8 @@ class CrossSection:
 @njit(cache=True)
 def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarray, da_xs_profile2: np.ndarray, xs2_n: int, mannings_n2: np.ndarray, d_ordinate_dist: float, wse: float, sqrt_slope: float):
     wse = np.round(wse, 3)
-    A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(da_xs_profile1, wse, xs1_n, d_ordinate_dist, mannings_n1)
-    A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(da_xs_profile2, wse, xs2_n, d_ordinate_dist, mannings_n2)
+    A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(da_xs_profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1)
+    A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(da_xs_profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2)
 
     T = T1 + T2
     A = A1 + A2
@@ -1098,8 +1098,8 @@ def _calculate_top_width_from_all(da_y_depth: np.ndarray, d_ordinate_dist: float
     return d_ordinate_dist * (da_y_depth.shape[0] - 1)
 
 @njit(cache=True)
-def _get_stream_depths(d_wse: float, profile: np.ndarray, n: int):
-    da_y_depth = d_wse - profile[:n]
+def _get_stream_depths(d_wse: float, profile: np.ndarray):
+    da_y_depth = d_wse - profile
 
     if da_y_depth.shape[0] <= 0 or da_y_depth[0] <= 1e-16:
         return None
@@ -1107,8 +1107,8 @@ def _get_stream_depths(d_wse: float, profile: np.ndarray, n: int):
     return da_y_depth
 
 @njit(cache=True)
-def _calculate_side_top_width(d_wse: float, profile: np.ndarray, n: int, d_ordinate_dist: float):
-    da_y_depth = _get_stream_depths(d_wse, profile, n)
+def _calculate_side_top_width(d_wse: float, profile: np.ndarray, d_ordinate_dist: float):
+    da_y_depth = _get_stream_depths(d_wse, profile)
 
     if da_y_depth is None:
         return 0
@@ -1126,14 +1126,13 @@ def _calculate_side_top_width(d_wse: float, profile: np.ndarray, n: int, d_ordin
 @njit(cache=True)
 def _calculate_stream_geometry(da_xs_profile: np.ndarray,
                                 d_wse: float,
-                                n: int,
                                 d_ordinate_dist: float,
                                 da_n_profile: np.ndarray = None,) -> tuple[float, ...]:
     # Initial output
     d_area, d_perimeter, d_composite_n = 0.0, 0.0, 0.0
 
     # Estimate the depth of the stream
-    da_y_depth = _get_stream_depths(d_wse, da_xs_profile, n)
+    da_y_depth = _get_stream_depths(d_wse, da_xs_profile)
 
     # Return if the depth is not valid.
     if da_y_depth is None:
@@ -1178,7 +1177,6 @@ def _calculate_stream_geometry(da_xs_profile: np.ndarray,
 @njit(cache=True)
 def _calculate_stream_geometry_and_topwidth(da_xs_profile: np.ndarray, 
                             d_wse: float, 
-                            n: int, 
                             d_ordinate_dist: float,
                             da_n_profile: np.ndarray,) -> tuple[float, ...]:
     """
@@ -1207,7 +1205,7 @@ def _calculate_stream_geometry_and_topwidth(da_xs_profile: np.ndarray,
     d_area, d_perimeter, d_composite_n, d_top_width = 0.0, 0.0, 0.0, 0.0
 
     # Estimate the depth of the stream
-    da_y_depth = _get_stream_depths(d_wse, da_xs_profile, n)
+    da_y_depth = _get_stream_depths(d_wse, da_xs_profile)
 
     # Return if the depth is not valid.
     if da_y_depth is None:
@@ -1282,8 +1280,8 @@ def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.nda
         Discharge corresponding to the given WSE.
     """
     # Calculate the geometry
-    A1, P1, np1 = _calculate_stream_geometry(profile1, wse, xs1_n, d_ordinate_dist, mannings_n1)
-    A2, P2, np2 = _calculate_stream_geometry(profile2, wse, xs2_n, d_ordinate_dist, mannings_n2)
+    A1, P1, np1 = _calculate_stream_geometry(profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1)
+    A2, P2, np2 = _calculate_stream_geometry(profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2)
 
     # Aggregate the geometric properties
     d_a_sum = A1 + A2
@@ -1690,8 +1688,8 @@ def _find_bank_using_width_to_depth_ratio(d_bottom_elevation: float, da_xs_profi
         # T2 = calculate_top_width(da_xs_profile2_sliced, d_wse, d_distance_z)
         
         # TW = T1 + T2
-        T1 = _calculate_side_top_width(d_wse, da_xs_profile1, xs1_n, d_ordinate_dist)
-        T2 = _calculate_side_top_width(d_wse, da_xs_profile2, xs2_n, d_ordinate_dist)
+        T1 = _calculate_side_top_width(d_wse, da_xs_profile1[:xs1_n], d_ordinate_dist)
+        T2 = _calculate_side_top_width(d_wse, da_xs_profile2[:xs2_n], d_ordinate_dist)
         TW = T1 + T2
         d_new_width_to_depth_ratio = TW / d_depth
 

@@ -221,13 +221,15 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
         z_start, dist_start = sample_line_for_valid_z(
             line_geom,
             dm_elevation,
-            xy_to_rowcol
+            xy_to_rowcol,
+            length_m,
         )
 
         z_end, dist_from_end = sample_line_for_valid_z(
             LineString(list(line_geom.coords)[::-1]),
             dm_elevation,
-            xy_to_rowcol
+            xy_to_rowcol,
+            length_m,
         )
 
         if np.isnan(z_start) or np.isnan(z_end):
@@ -681,7 +683,11 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
         is blank, only the qmax column is loaded.
 
     """
-    df = pd.read_csv(s_flow_file_name)
+    if s_flow_file_name.endswith('.parquet'):
+        df = pd.read_parquet(s_flow_file_name)
+    else:
+        df = pd.read_csv(s_flow_file_name)
+
     flow_columns = [s_flow_qmax] if s_flow_baseflow == '' else [s_flow_baseflow, s_flow_qmax]
     return df.set_index(s_flow_id)[flow_columns].to_dict(orient='index')
 
@@ -1002,7 +1008,10 @@ def read_manning_table(s_manning_path: str, land_cover_array: np.ndarray, proces
     """
 
     # Open and read the input file
-    df = pd.read_csv(s_manning_path, sep='\t')
+    if s_manning_path.endswith('.parquet'):
+        df = pd.read_parquet(s_manning_path)
+    else:
+        df = pd.read_csv(s_manning_path, sep='\t')
 
     # Create a lookup array for the Manning's n values
     # This is the fastest way to reclassify the values in the input array
@@ -1110,11 +1119,11 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
             # also add a top‑level guard before saving the initial (non‑refined) Q
             # right after computing the first Q/V for this increment:
             if (Q <= prev_q) or (Q > d_q_sum) or Q > d_q_sum:
-                add_hydraulic_data(output_data, i_entry_elevation, prev_wse - 100 if b_modified_dem else prev_wse, prev_t, prev_p, prev_q, prev_v, i_entry_cell, b_modified_dem)
+                add_hydraulic_data(output_data, i_entry_elevation, prev_wse, prev_t, prev_p, prev_q, prev_v, i_entry_cell, b_modified_dem)
                 continue
 
             # Save the values
-            add_hydraulic_data(output_data, i_entry_elevation, d_wse - 100 if b_modified_dem else d_wse, T, P, Q, V, i_entry_cell, b_modified_dem)
+            add_hydraulic_data(output_data, i_entry_elevation, d_wse, T, P, Q, V, i_entry_cell, b_modified_dem)
 
             # Update previous values
             prev_t = T
@@ -1654,12 +1663,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
                                                                         d_inc_y, 
                                                                         flood_increments_args, thalweg, d_slope_use, 
                                                                         d_q_sum, _OUTPUT_DATA_ARRAY, i_entry_cell, hydraulic_data.b_modified_dem)
-
-        if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell):
-            hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, i_entry_cell)
-            
-        # Process each of the elevations to the output file if feasbile values were produced
-        hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_entry_cell, i_number_of_elevations)
+        
+        if i_last_elevation_index > i_start_elevation_index:
+            if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell):
+                hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, i_entry_cell)
+                
+            # Process each of the elevations to the output file if feasbile values were produced
+            hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_entry_cell, i_number_of_elevations)
 
         add_curve_file_data = i_number_of_elevations > 0
 
