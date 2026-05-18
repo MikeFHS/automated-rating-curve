@@ -89,6 +89,12 @@ ARRAY_NAMES = [
     '_CELL_SLOPE_75',
 ]
 
+MIN_SLOPE = 1e-8
+MIN_SLOPE_DECIMAL_PLACES = -int(math.log10(MIN_SLOPE))
+DEPTH_INCREMENT_BIG = 0.5
+DEPTH_INCREMENT_MEDIUM = 0.05
+DEPTH_INCREMENT_SMALL = 0.01
+
 def get_cross_section(*args):
     global _CROSS_SECTION, _INDEX_ARRAYS, _Z_DISTANCE_ARRAY, _INDEX_FRACT_ARRAYS
     if _CROSS_SECTION is None and args:
@@ -1276,12 +1282,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     i_general_direction_distance = _PARAMS['i_general_direction_distance']
     i_general_slope_distance = _PARAMS['i_general_slope_distance']
 
-    
-    d_depth_increment_big = 0.5
-    d_depth_increment_med = 0.05
-    d_depth_increment_small = 0.01
-
-
     # Get the Slope of each Stream Cell. Slope should be in m/m
     s_stream_slope_method = _PARAMS['s_stream_slope_method']
     dx = _PARAMS['dx']
@@ -1310,9 +1310,9 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     # Now Pull the Cross-Section again with the new angle
     x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _PARAMS)
     if d_xs_direction > np.pi:
-        i_precompute_angle_closest = int(round((d_xs_direction-np.pi) / x_section.d_precompute_angles))
+        i_precompute_angle_closest = round((d_xs_direction-np.pi) / x_section.d_precompute_angles)
     else:
-        i_precompute_angle_closest = int(round(d_xs_direction / x_section.d_precompute_angles))
+        i_precompute_angle_closest = round(d_xs_direction / x_section.d_precompute_angles)
 
     x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
     
@@ -1395,18 +1395,18 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
     # Let's see if the volume-fill approach gave us a better answer and use that if it did
     # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
-    d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, d_depth_increment_big, d_q_maximum, x_sect_args, d_slope_use)
+    d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, DEPTH_INCREMENT_BIG, d_q_maximum, x_sect_args, d_slope_use)
 
 
     # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
     d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, thalweg)
     d_maxflow_wse_med = d_maxflow_wse_initial
-    d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, d_depth_increment_med, d_q_maximum, x_sect_args, d_slope_use)
+    d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, DEPTH_INCREMENT_MEDIUM, d_q_maximum, x_sect_args, d_slope_use)
 
     # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
     d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, thalweg)
     d_maxflow_wse_final_test = d_maxflow_wse_med
-    d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, d_depth_increment_small, d_q_maximum, x_sect_args, d_slope_use)
+    d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, DEPTH_INCREMENT_SMALL, d_q_maximum, x_sect_args, d_slope_use)
 
     # let's see if the iterative method gave use a better result and use that if it did
     if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
@@ -1419,14 +1419,14 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     potential_slope_error = 0.6 / d_ordinate_dist
     
     # Set lower and upper bounds for the slope search.
-    slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
+    slope_lower = max(d_slope_use - potential_slope_error, MIN_SLOPE) # Avoids domain error, taking sqrt of negative number, in find wse
     slope_upper = d_slope_use + potential_slope_error
 
     # if slope is greater than the threshold, let's change it to the threshold
     if slope_upper > 0.03:
         slope_upper = 0.03
 
-    slope_obj_args = (d_maxflow_wse_initial, d_depth_increment_small, d_q_maximum, x_sect_args)
+    slope_obj_args = (d_maxflow_wse_initial, DEPTH_INCREMENT_SMALL, d_q_maximum, x_sect_args)
     # Check if the objective function changes sign between the bounds.
     f_lower = objective_with_slope(slope_lower, *slope_obj_args)
     f_upper = objective_with_slope(slope_upper, *slope_obj_args)
@@ -1434,12 +1434,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         # The signs differ, so we have a valid bracket.
         # Needs xtol of 0.0001 to get to 3 decimal places
         trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
-        trial_slope_use = np.round(trial_slope_use, 3)
+        trial_slope_use = np.round(trial_slope_use, MIN_SLOPE_DECIMAL_PLACES)
         # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
         d_maxflow_wse_final_test, d_q_sum_test = find_wse(
             2501, 
             d_maxflow_wse_initial, 
-            d_depth_increment_small, 
+            DEPTH_INCREMENT_SMALL, 
             d_q_maximum, 
             x_sect_args,
             trial_slope_use
@@ -1452,12 +1452,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
             d_q_sum = d_q_sum_test
     # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
     elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
-        trial_slope_use = np.round(slope_lower, 3) if np.round(f_lower, 5) == 0 else np.round(slope_upper, 3)
+        trial_slope_use = np.round(slope_lower if np.round(f_lower, 5) == 0 else slope_upper, MIN_SLOPE_DECIMAL_PLACES)
         # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
         d_maxflow_wse_final_test, d_q_sum_test = find_wse(
             2501, 
             d_maxflow_wse_initial, 
-            d_depth_increment_small, 
+            DEPTH_INCREMENT_SMALL, 
             d_q_maximum, 
             x_sect_args,
             trial_slope_use
@@ -1482,7 +1482,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         potential_slope_error = 0.6 / d_ordinate_dist
 
         # Set lower and upper bounds for the slope search.
-        slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
+        slope_lower = max(d_slope_use - potential_slope_error, MIN_SLOPE) # Avoids domain error, taking sqrt of negative number, in find wse
         slope_upper = d_slope_use + potential_slope_error
 
         # if slope is greater than the threshold, let's change it to the threshold
@@ -1496,13 +1496,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
         if safe_signs_differ(f_lower, f_upper):
             # The signs differ, so we have a valid bracket.
-            new_slope = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
-            trial_slope_use = new_slope
+            trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            trial_slope_use = np.round(trial_slope_use, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
             d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
-                d_depth_increment_small, 
+                DEPTH_INCREMENT_SMALL, 
                 d_q_maximum, 
                 x_sect_args,
                 trial_slope_use
@@ -1517,12 +1517,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
         # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_lower, 5) == 0:          
-            trial_slope_use = np.round(slope_lower, 3)
+            trial_slope_use = np.round(slope_lower, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
             d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
-                d_depth_increment_small, 
+                DEPTH_INCREMENT_SMALL, 
                 d_q_maximum, 
                 x_sect_args,
                 trial_slope_use
@@ -1536,12 +1536,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
         # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_upper, 5) == 0:          
-            trial_slope_use = np.round(slope_upper, 3)
+            trial_slope_use = np.round(slope_upper, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
             d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
-                d_depth_increment_small, 
+                DEPTH_INCREMENT_SMALL, 
                 d_q_maximum, 
                 x_sect_args,
                 trial_slope_use
@@ -1566,7 +1566,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         potential_slope_error = 0.6 / d_ordinate_dist
 
         # Set lower and upper bounds for the slope search.
-        slope_lower = max(d_slope_use - potential_slope_error, 1e-8) # Avoids domain error, taking sqrt of negative number, in find wse
+        slope_lower = max(d_slope_use - potential_slope_error, MIN_SLOPE) # Avoids domain error, taking sqrt of negative number, in find wse
         slope_upper = d_slope_use + potential_slope_error
 
         # if slope is greater than the threshold, let's change it to the threshold
@@ -1582,12 +1582,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
             
             # The signs differ, so we have a valid bracket.
             trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            trial_slope_use = np.round(trial_slope_use, MIN_SLOPE_DECIMAL_PLACES)
         
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
             d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
-                d_depth_increment_small, 
+                DEPTH_INCREMENT_SMALL, 
                 d_q_maximum, 
                 x_sect_args,
                 trial_slope_use
@@ -1602,12 +1603,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
                 
         # if the f_lower is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_lower, 5) == 0:          
-            trial_slope_use = np.round(slope_lower, 3)
+            trial_slope_use = np.round(slope_lower, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
             d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
-                d_depth_increment_small, 
+                DEPTH_INCREMENT_SMALL, 
                 d_q_maximum, 
                 x_sect_args,
                 trial_slope_use
@@ -1621,12 +1622,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
         # if the f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         elif np.round(f_upper, 5) == 0:          
-            trial_slope_use = np.round(slope_upper, 3)
+            trial_slope_use = np.round(slope_upper, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
             d_maxflow_wse_final_test, d_q_sum_test = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
-                d_depth_increment_small, 
+                DEPTH_INCREMENT_SMALL, 
                 d_q_maximum, 
                 x_sect_args,
                 trial_slope_use
