@@ -28,7 +28,6 @@ import numpy as np
 import netCDF4
 import geopandas as gpd
 
-import fiona
 from shapely.geometry import shape
 from shapely.geometry import Point, LineString, MultiLineString, MultiPoint
 from shapely.ops import transform
@@ -1132,18 +1131,13 @@ def Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, 
         """
         return transform(transformer.transform, geometry)
 
-    # Open the shapefile using Fiona
-    with fiona.open(streams_shapefile, "r") as src:
-        for feature in src:
-            geometry = shape(feature["geometry"])  # Convert GeoJSON to Shapely geometry
-            if geometry:  # Ensure geometry is valid
-                # Reproject geometry into EPSG:26912
-                #reprojected_geometry = reproject_geometry(geometry, transformer)
-                #vertices, nodes = extract_vertices_and_nodes(reprojected_geometry)
-                vertices, nodes = extract_vertices_and_nodes(geometry)
-                all_vertices.extend(vertices)
-                all_nodes.extend(nodes)
+    gdf = gpd.read_file(streams_shapefile)
 
+    for geometry in gdf.geometry.dropna():
+        vertices, nodes = extract_vertices_and_nodes(geometry)
+        all_vertices.extend(vertices)
+        all_nodes.extend(nodes)
+        
     # Remove duplicate nodes for uniqueness
     unique_nodes = list(set(all_nodes))
 
