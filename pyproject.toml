@@ -24,7 +24,6 @@ dependencies = [
   "scipy",
   "tqdm",
   "pyproj",
-  "fiona",
   "shapely",
   "s3fs"
 ]
