@@ -74,14 +74,12 @@ class HydraulicData:
         idx = i_start_elevation_index + 1
         return self.output_data[i_entry_cell, 8 + ((idx-1) * 5)] >= d_q_baseflow
 
-    def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_entry_cell: int, i_number_of_elevations: int):
+    def set_vdt_data(self,i_cell_comid: int,  d_q_baseflow: float, d_slope_use: float, i_entry_cell: int):
         """Populate the VDT metadata columns for a stream cell."""
         if self.output_data is None:
             return
-        da_total_q_half_sum = np.sum(self.output_data[i_entry_cell, range(8, (i_number_of_elevations // 2) * 5, 5)])
+        
         i_row_cell, i_column_cell = self.x_section.get_row_col()
-        if da_total_q_half_sum <= 1e-16 or self.x_section.dm_elevation[i_row_cell, i_column_cell] <= 1e-16:
-            return
 
         self.output_data[i_entry_cell, 0:8] = [
             i_cell_comid, 
@@ -94,14 +92,14 @@ class HydraulicData:
             self.x_section.get_thalweg()-100 if self.b_modified_dem else self.x_section.get_thalweg() # Base elevation
         ]
         
-    def set_non_vdt_data(self, print_curve_file: bool, i_start_elevation_index: int, i_last_elevation_index: int,
+    def set_non_vdt_data(self, i_start_elevation_index: int, i_last_elevation_index: int,
                           i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int):
         """Populate curve-file metadata for non-VDT configurations."""
         if self.output_data is None:
             return
         if self.b_reach_average_curve_file:
             self._set_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_slope_use, d_dem_low_point_elev, i_entry_cell)
-        elif print_curve_file and self.curve_file and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
+        elif self.curve_file and i_start_elevation_index>=0 and i_last_elevation_index>(i_start_elevation_index+1):
             self._set_curve_data(i_cell_comid, i_row_cell, i_column_cell, d_slope_use, d_dem_low_point_elev, i_entry_cell)
 
     def _set_curve_data(self, i_cell_comid: int, i_row_cell: int, i_column_cell: int, d_slope_use: float, d_dem_low_point_elev: float, i_entry_cell: int):

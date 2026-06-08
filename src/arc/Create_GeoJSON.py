@@ -119,6 +119,10 @@ def Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection):
     except Exception as exc:
         raise ValueError(f"Unable to parse the coordinate system from '{STRM_Raster_File}'.") from exc
 
+def Extract_Scalar_Value(value):
+    """Return a plain scalar when ARC interpolation stores a 0-d array."""
+    return value.item() if isinstance(value, np.ndarray) else value
+
 def Get_Distance_CRS(stream_raster_crs):
     """
     Use the raster CRS directly when it is already projected. For geographic
@@ -685,10 +689,10 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
         return pd.Series({'WSE': wse})
 
     # Apply the calculation function to each row
-    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1))
+    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1)).copy()
 
     # had some issues with values being stored as arrays, so convert them to floats here
-    vdt_df['WaterSurfaceElev_m'] = vdt_df['WSE'].apply(lambda x: x.item() if isinstance(x, np.ndarray) else x)
+    vdt_df = vdt_df.assign(WaterSurfaceElev_m=vdt_df['WSE'].map(Extract_Scalar_Value))
 
     # Remove outliers by COMID
     def remove_outliers(group):
@@ -702,11 +706,13 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
         vdt_df[col] = vdt_df.groupby('COMID')[col].transform(remove_outliers)
 
     # Drop rows with NaN values introduced during outlier removal
-    vdt_df = vdt_df.dropna(subset=['WaterSurfaceElev_m'])
+    vdt_df = vdt_df.dropna(subset=['WaterSurfaceElev_m']).copy()
     
     # Calculate Latitude and Longitude
-    vdt_df['CP_LAT'] = lat_base - vdt_df['Row'] * cellsize_y
-    vdt_df['CP_LON'] = lon_base + vdt_df['Col'] * cellsize_x
+    vdt_df = vdt_df.assign(
+        CP_LAT=lat_base - vdt_df['Row'] * cellsize_y,
+        CP_LON=lon_base + vdt_df['Col'] * cellsize_x,
+    )
 
     # Build the stream-cell points in the raster CRS, then move them into the
     # projected distance CRS only when the raster started in geographic units.
@@ -1316,10 +1322,10 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
         return pd.Series({'WSE': wse})
 
     # Apply the calculation function to each row
-    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1))
+    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1)).copy()
 
     # had some issues with values being stored as arrays, so convert them to floats here
-    vdt_df['WaterSurfaceElev_m'] = vdt_df['WSE'].apply(lambda x: x.item() if isinstance(x, np.ndarray) else x)
+    vdt_df = vdt_df.assign(WaterSurfaceElev_m=vdt_df['WSE'].map(Extract_Scalar_Value))
 
     # Remove outliers by COMID
     def remove_outliers(group):
@@ -1333,11 +1339,13 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
         vdt_df[col] = vdt_df.groupby('COMID')[col].transform(remove_outliers)
 
     # Drop rows with NaN values introduced during outlier removal
-    vdt_df = vdt_df.dropna(subset=['WaterSurfaceElev_m'])
+    vdt_df = vdt_df.dropna(subset=['WaterSurfaceElev_m']).copy()
     
     # Calculate Latitude and Longitude
-    vdt_df['CP_LAT'] = lat_base - vdt_df['Row'] * cellsize_y
-    vdt_df['CP_LON'] = lon_base + vdt_df['Col'] * cellsize_x
+    vdt_df = vdt_df.assign(
+        CP_LAT=lat_base - vdt_df['Row'] * cellsize_y,
+        CP_LON=lon_base + vdt_df['Col'] * cellsize_x,
+    )
 
     # Build the stream-cell points in the raster CRS, then move them into the
     # projected distance CRS only when the raster started in geographic units.

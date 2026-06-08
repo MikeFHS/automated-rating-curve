@@ -1124,7 +1124,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
             # if we reach the upper bound without a valid candidate, or we overshot, revert
             # also add a top‑level guard before saving the initial (non‑refined) Q
             # right after computing the first Q/V for this increment:
-            if (Q <= prev_q) or (Q > d_q_sum) or Q > d_q_sum:
+            if (Q <= prev_q) or (Q > d_q_sum + 0.01):
                 add_hydraulic_data(output_data, i_entry_elevation, prev_wse, prev_t, prev_p, prev_q, prev_v, i_entry_cell, b_modified_dem)
                 continue
 
@@ -1387,11 +1387,11 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         # The signs differ, so we have a valid bracket.
         # For 3 decimal places, xtol only needs to be 0.001
         d_maxflow_wse_final = np.round(brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.001, args=wse_obj_args), 3)
-        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
+        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_sect_args)
     elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
         # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         d_maxflow_wse_final = np.round(wse_lower, 3) if np.round(f_lower, 5) == 0 else np.round(wse_upper, 3)
-        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_section.get_calculate_discharge_from_wse_args())
+        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_sect_args)
 
     # Let's see if the volume-fill approach gave us a better answer and use that if it did
     # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
@@ -1413,62 +1413,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         d_maxflow_wse_final = d_maxflow_wse_final_test
         d_q_sum = d_q_sum_test
 
-    # here we will see if we can get a better answer with a revised slope
-    # from our Missouri study, relative DEM error was around 0.70, so dividing that by our d_ordinate_dist gives us a round about
-    # idea of potential error in slope.  We'll use this to adjust the slope and see if we can get a fit.
-    potential_slope_error = 0.6 / d_ordinate_dist
-    
-    # Set lower and upper bounds for the slope search.
-    slope_lower = max(d_slope_use - potential_slope_error, MIN_SLOPE) # Avoids domain error, taking sqrt of negative number, in find wse
-    slope_upper = d_slope_use + potential_slope_error
-
-    # if slope is greater than the threshold, let's change it to the threshold
-    if slope_upper > 0.03:
-        slope_upper = 0.03
-
     slope_obj_args = (d_maxflow_wse_initial, DEPTH_INCREMENT_SMALL, d_q_maximum, x_sect_args)
-    # Check if the objective function changes sign between the bounds.
-    f_lower = objective_with_slope(slope_lower, *slope_obj_args)
-    f_upper = objective_with_slope(slope_upper, *slope_obj_args)
-    if safe_signs_differ(f_lower, f_upper):
-        # The signs differ, so we have a valid bracket.
-        # Needs xtol of 0.0001 to get to 3 decimal places
-        trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
-        trial_slope_use = np.round(trial_slope_use, MIN_SLOPE_DECIMAL_PLACES)
-        # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-        d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-            2501, 
-            d_maxflow_wse_initial, 
-            DEPTH_INCREMENT_SMALL, 
-            d_q_maximum, 
-            x_sect_args,
-            trial_slope_use
-        )
-        # Check if d_q_sum is within acceptable bounds
-        if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-            # Optionally update d_slope_use to the accepted value:
-            d_slope_use = trial_slope_use
-            d_maxflow_wse_final = d_maxflow_wse_final_test
-            d_q_sum = d_q_sum_test
-    # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
-    elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
-        trial_slope_use = np.round(slope_lower if np.round(f_lower, 5) == 0 else slope_upper, MIN_SLOPE_DECIMAL_PLACES)
-        # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-        d_maxflow_wse_final_test, d_q_sum_test = find_wse(
-            2501, 
-            d_maxflow_wse_initial, 
-            DEPTH_INCREMENT_SMALL, 
-            d_q_maximum, 
-            x_sect_args,
-            trial_slope_use
-        )
-        # Check if d_q_sum is within acceptable bounds
-        if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
-            # Optionally update d_slope_use to the accepted value:
-            d_slope_use = trial_slope_use
-            d_maxflow_wse_final = d_maxflow_wse_final_test
-            d_q_sum = d_q_sum_test
-
     #If the max flow calculated from the cross-section is 50% high or low, let's try changing the slope
     if d_q_sum > d_q_maximum * 1.5 or d_q_sum < d_q_maximum * 0.5:
 
@@ -1658,7 +1603,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     if acceptable and d_maxflow_wse_final > 0.0:
         # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
         d_inc_y = (d_maxflow_wse_final - thalweg) / i_number_of_increments
-        i_number_of_elevations = i_number_of_increments + 1
         flood_increments_args = x_section.get_flood_increment_args()
         i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                         d_inc_y, 
@@ -1670,12 +1614,10 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
                 hydraulic_data.set_q_at_index(i_start_elevation_index + 1, d_q_baseflow - 0.001, i_entry_cell)
                 
             # Process each of the elevations to the output file if feasbile values were produced
-            hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_entry_cell, i_number_of_elevations)
-
-        add_curve_file_data = i_number_of_elevations > 0
+            hydraulic_data.set_vdt_data(i_cell_comid, d_q_baseflow, d_slope_use, i_entry_cell)
 
     # Gather up all the values for the stream cell if we are going to build a reach average curve file
-    hydraulic_data.set_non_vdt_data(add_curve_file_data, i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
+    hydraulic_data.set_non_vdt_data(i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
                                     d_slope_use, d_dem_low_point_elev, i_entry_cell)
     
     if hydraulic_data.s_xs_output_file:
