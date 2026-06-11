@@ -539,22 +539,22 @@ class CrossSection:
         if self.b_FindBanksBasedOnLandCover:   
             (d_wse_from_dem, i_bank_1_index, i_bank_2_index) = self._find_wse_and_banks_by_lc()
             i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-            if i_total_bank_cells > 1:
+            if i_total_bank_cells >= 1:      #MLF changed this from >1 to >=1 in order to try and capture more bathymetry locations.
                 function_used = "find_wse_and_banks_by_lc"
         else:
             i_bank_1_index = self._find_bank(self.da_xs_profile1, self.xs1_n, wse=True)
             i_bank_2_index = self._find_bank(self.da_xs_profile2, self.xs2_n, wse=True)
             i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-            if i_total_bank_cells > 1:
+            if i_total_bank_cells > 1:      #MLF changed this from >1 to >=1 in order to try and capture more bathymetry locations.
                 function_used = "find_wse_and_banks_by_flat_water"
 
-        if i_total_bank_cells <= 1:
+        if i_total_bank_cells < 1:      #MLF changed this from <=1 to <1 to focus more on the "find_wse_and_banks_by_lc" or "find_wse_and_banks_by_flat_water".
             (i_bank_1_index, i_bank_2_index) = _find_bank_using_width_to_depth_ratio(self.get_thalweg(), self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
             i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
             if i_total_bank_cells > 1:
                 function_used = "find_bank_using_width_to_depth_ratio"
 
-        if i_total_bank_cells <= 1:
+        if i_total_bank_cells < 1:      #MLF changed this from <=1 to <1 to focus more on the "find_wse_and_banks_by_lc" or "find_wse_and_banks_by_flat_water".
             i_bank_1_index = self._find_bank_inflection_point(self.da_xs_profile1, self.xs1_n)
             i_bank_2_index = self._find_bank_inflection_point(self.da_xs_profile2, self.xs2_n)
             i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
@@ -585,37 +585,56 @@ class CrossSection:
         d_y_bathy = 0.0  # Initialize d_y_bathy to avoid UnboundLocalError
 
         if d_q_baseflow > 0.0 and function_used != None:
-            d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-            if d_y_depth >= 25:
-                if i_total_bank_cells <= 1:
-                    (i_bank_1_index, i_bank_2_index) = _find_bank_using_width_to_depth_ratio(self.get_thalweg(), self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
-                    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-                    d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
-                    d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
-                    d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-                    d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-                    function_used = "find_bank_using_width_to_depth_ratio"
-
-                if d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
-                    i_bank_1_index = self._find_bank_inflection_point(self.da_xs_profile1, self.xs1_n)
-                    i_bank_2_index = self._find_bank_inflection_point(self.da_xs_profile2, self.xs2_n)
-                    i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
-                    d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
-                    d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
-                    d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-                    d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
-                    function_used = "find_bank_inflection_point"
-
+            if i_total_bank_cells == 1:  #This means this is a triangular channel
+                d_y_depth = 0.0
+                i_bank_1_index = 1
+                i_bank_2_index = 1
+                i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+                d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
+                d_h_dist = 0.0
+                d_trap_base = 0.0
+                d_y_depth = find_depth_of_bathymetry_triangle(d_q_baseflow, self.d_ordinate_dist, self.da_xs_profile1[0], self.da_xs_profile1[1], self.da_xs_profile2[1], d_slope_use, 0.03)
+                function_used = "find_bank_inflection_point"
+            else:
+                d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
                 if d_y_depth >= 25:
-                    d_y_depth = 0.0
-                    d_y_bathy = self.get_thalweg() - d_y_depth
-                    i_bank_1_index = 0
-                    i_bank_2_index = 0
-                    i_total_bank_cells = 1
+                    if i_total_bank_cells <= 1:
+                        (i_bank_1_index, i_bank_2_index) = _find_bank_using_width_to_depth_ratio(self.get_thalweg(), self.da_xs_profile1, self.da_xs_profile2, self.xs1_n, self.xs2_n, self.d_ordinate_dist)
+                        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+                        d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
+                        d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
+                        d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+                        d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+                        function_used = "find_bank_using_width_to_depth_ratio"
+
+                    if d_y_depth >= 25 and function_used == "find_bank_using_width_to_depth_ratio":
+                        i_bank_1_index = self._find_bank_inflection_point(self.da_xs_profile1, self.xs1_n)
+                        i_bank_2_index = self._find_bank_inflection_point(self.da_xs_profile2, self.xs2_n)
+                        i_total_bank_cells = i_bank_1_index + i_bank_2_index - 1
+                        d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
+                        d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
+                        d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+                        d_y_depth = find_depth_of_bathymetry(d_q_baseflow, d_trap_base, d_total_bank_dist, d_slope_use, 0.03)
+                        function_used = "find_bank_inflection_point"
+
+                    if d_y_depth >= 25:
+                        d_y_depth = 0.0
+                        d_y_bathy = self.get_thalweg() - d_y_depth
+                        i_bank_1_index = 0
+                        i_bank_2_index = 0
+                        i_total_bank_cells = 1
             if i_total_bank_cells > 1:
                 d_y_bathy = self.get_thalweg() - d_y_depth
                 _adjust_one_side_for_bathymetry(i_bank_1_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row1_index_main, self.ia_xc_column1_index_main, self.da_xs_profile1, output_bathymetry, 0.0, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks)
                 _adjust_one_side_for_bathymetry(i_bank_2_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main, self.da_xs_profile2, output_bathymetry, 0.0, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks)
+            elif i_total_bank_cells == 1:  #MLF added this for when i_total_bank_cells==1 in order to try and capture more bathymetry locations.
+                d_y_bathy = self.get_thalweg() - d_y_depth
+                #_adjust_one_side_for_bathymetry(i_bank_1_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row1_index_main, self.ia_xc_column1_index_main, self.da_xs_profile1, output_bathymetry, 0.0, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks)
+                #_adjust_one_side_for_bathymetry(i_bank_2_index, d_total_bank_dist, d_trap_base, d_h_dist, self.ia_xc_row2_index_main, self.ia_xc_column2_index_main, self.da_xs_profile2, output_bathymetry, 0.0, d_y_bathy, d_y_depth, self.d_ordinate_dist, self.dm_elevation, self.b_bathy_use_banks)
+                self.da_xs_profile1[0] = d_y_bathy
+                output_bathymetry[self.ia_xc_row1_index_main[0], self.ia_xc_column1_index_main[0]] = self.da_xs_profile1[0]
+                self.da_xs_profile2[0] = d_y_bathy
+                output_bathymetry[self.ia_xc_row2_index_main[0], self.ia_xc_column2_index_main[0]] = self.da_xs_profile2[0]
 
         else:
             d_y_depth = 0.0
@@ -1580,6 +1599,77 @@ def find_depth_of_bathymetry(d_baseflow: float, d_bottom_width: float, d_top_wid
     # print(str(d_top_width) + ' ' + str(d_working_depth) + '  ' + str(d_flow_calculated) + ' vs ' + str(d_baseflow))
 
     return d_working_depth
+
+
+@njit(cache=True)
+def find_depth_of_bathymetry_triangle(d_baseflow: float, d_distance_between_ordinates: float, d_elev_streamcell: float, d_elev_left_bank: float, d_elev_right_bank:float, d_slope: float, d_mannings_n: float):
+    """
+    Estimates the depth iteratively by comparing the calculated flow to the baseflow.  Uses a triangular approximation of the stream cross-section instead of a trapezoidal approximation.  This is used when the stream width is less than or equal to a sincle raster cell.
+
+    Parameters
+    ----------
+    d_baseflow: float
+        Baseflow input for flow convergence calculation
+    d_distance_between_ordinates: float
+        Distance between ordinates in the cross-section
+    d_elev_streamcell: float
+        elevation on the streamcell of the stream.
+    d_elev_left_bank: float
+        elevation on the left side of the stream.  Not necesarrily the bank, but the elevation of the first ordinate on the left side of the stream.
+    d_elev_right_bank: float
+        elevation on the right side of the stream.  Not necesarrily the bank, but the elevation of the first ordinate on the right side of the stream.
+    d_slope: float
+        Slope of the stream
+    d_mannings_n: float
+        Manning's roughness of the stream
+
+    Returns
+    -------
+    d_working_depth: float
+        Estimated depth of the stream
+
+    """
+
+    if d_baseflow<=0.0:
+        return 0.0
+
+    YLU = d_elev_left_bank - d_elev_streamcell
+    YRU = d_elev_right_bank - d_elev_streamcell
+    if YLU<0.0:
+        YLU = 0.0
+    if YRU<0.0:
+        YRU = 0.0
+
+
+    d_working_depth = 0.0
+    d_max_depth = 25.0
+    d_dy = 0.1
+    d_flow_calculated = 0.0
+    while d_flow_calculated <= d_baseflow and d_working_depth < d_max_depth:
+        d_working_depth = d_working_depth + d_dy
+
+        #Work on the left side of the triangle (bathymetry) first.
+        YL = YLU + d_working_depth
+        XLU = d_distance_between_ordinates * (YLU / YL)
+        #AL = 0.5 * d_working_depth * (d_distance_between_ordinates-XLU)
+        #WL = calculate_hypotnuse((d_distance_between_ordinates-XLU), d_working_depth)
+
+        #Work on the right side of the triangle (bathymetry)
+        YR = YRU + d_working_depth
+        XRU = d_distance_between_ordinates * (YRU / YR)
+        #AR = 0.5 * d_working_depth * (d_distance_between_ordinates-XRU)
+        #WR = calculate_hypotnuse((d_distance_between_ordinates-XRU), d_working_depth)
+
+        d_area = 0.5 * d_working_depth * (d_distance_between_ordinates-XLU) + 0.5 * d_working_depth * (d_distance_between_ordinates-XRU)
+        d_perimeter = calculate_hypotnuse((d_distance_between_ordinates-XLU), d_working_depth)
+        d_perimeter = d_perimeter + calculate_hypotnuse((d_distance_between_ordinates-XRU), d_working_depth)
+        d_hydraulic_radius = d_area / d_perimeter
+        d_flow_calculated = (1.0 / d_mannings_n) * d_area * d_hydraulic_radius**(2 / 3) * d_slope**0.5
+    
+    #print(d_working_depth)
+
+    return d_working_depth
+
 
 @njit(cache=True)
 def calculate_hypotnuse(d_side_one: float, d_side_two: float):
