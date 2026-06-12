@@ -476,8 +476,6 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
         if col in ['qout_max','rp100']:
             final_df[f'{col}_premium'] = round(final_df[col]*1.5, 3)
     
-    print(final_df)
-
     # Write the final Dask DataFrame to CSV
     final_df.to_csv(CSV_File_Name, index=False)
     

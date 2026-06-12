@@ -106,22 +106,45 @@ def Read_Raster_GDAL(InRAST_Name):
     print('   xur = ' + str(xur))
     return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
 
-def Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection):
+def Get_Raster_CRS(raster_file, rast_projection):
     """
-    Parse the stream raster CRS so points derived from raster row/column indices
-    always inherit the raster's true coordinate system.
+    Parse a raster CRS so points derived from raster row/column indices always
+    inherit the raster's true coordinate system.
     """
-    if not Rast_Projection:
-        raise ValueError(f"Stream raster '{STRM_Raster_File}' does not define a coordinate system.")
+    if not rast_projection:
+        raise ValueError(f"Raster '{raster_file}' does not define a coordinate system.")
 
     try:
-        return CRS.from_user_input(Rast_Projection)
+        return CRS.from_user_input(rast_projection)
     except Exception as exc:
-        raise ValueError(f"Unable to parse the coordinate system from '{STRM_Raster_File}'.") from exc
+        raise ValueError(f"Unable to parse the coordinate system from '{raster_file}'.") from exc
 
 def Extract_Scalar_Value(value):
     """Return a plain scalar when ARC interpolation stores a 0-d array."""
     return value.item() if isinstance(value, np.ndarray) else value
+
+def Prepare_Interpolation_Pairs(flow_values, target_values):
+    """
+    Prepare interpolation inputs so scipy never receives NaN/Inf pairs or a
+    degenerate x-axis that can trigger divide warnings during slope creation.
+    """
+    # Force both arrays to floating point before filtering so mixed/object CSV
+    # values become numeric and non-numeric entries are handled as invalid.
+    flow_values = np.asarray(flow_values, dtype=float)
+    target_values = np.asarray(target_values, dtype=float)
+
+    # Keep only finite x/y pairs because interp1d will emit invalid divide
+    # warnings when NaN/Inf values survive into the interpolation setup.
+    valid_mask = np.isfinite(flow_values) & np.isfinite(target_values)
+    flow_values = flow_values[valid_mask]
+    target_values = target_values[valid_mask]
+
+    # De-duplicate the flow axis after filtering so each remaining x-value maps
+    # to one y-value before interpolation is attempted.
+    flow_values, unique_idx = np.unique(flow_values, return_index=True)
+    target_values = target_values[unique_idx]
+
+    return flow_values, target_values
 
 def Get_Distance_CRS(stream_raster_crs):
     """
@@ -152,15 +175,411 @@ def Reproject_GDF_If_Needed(gdf, target_crs):
         return gdf
     return gdf.to_crs(target_crs)
 
-def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
+def Read_Vector_GDF(vector_file):
+    """
+    Read vector data with extension-aware handling so GeoParquet inputs can be
+    consumed alongside file-based GDAL formats.
+    """
+    if vector_file.lower().endswith((".parquet", ".geoparquet")):
+        return gpd.read_parquet(vector_file)
+    return gpd.read_file(vector_file)
+
+def Write_Vector_GDF(gdf, vector_file):
+    """
+    Write vector data with extension-aware handling so callers can target
+    GeoParquet without changing the rest of the workflow.
+    """
+    if vector_file.lower().endswith((".parquet", ".geoparquet")):
+        gdf.to_parquet(vector_file, index=False)
+        return
+    gdf.to_file(vector_file)
+
+def Read_Raster_With_Metadata(raster_file):
+    """
+    Read a raster band into memory and return the metadata needed for point
+    sampling.
+    """
+    dataset = gdal.Open(raster_file, gdal.GA_ReadOnly)
+    if dataset is None:
+        raise ValueError(f"Raster '{raster_file}' could not be opened.")
+
+    band = dataset.GetRasterBand(1)
+    raster_array = band.ReadAsArray()
+    nodata_value = band.GetNoDataValue()
+    geo_transform = dataset.GetGeoTransform()
+    rast_projection = dataset.GetProjectionRef()
+    band = None
+    dataset = None
+
+    return raster_array, geo_transform, rast_projection, nodata_value
+
+def Sample_Raster_Value_At_Point(raster_array, geo_transform, point, nodata_value=None, max_search_radius=2):
+    """
+    Sample the raster cell under a point, expanding outward a few cells when
+    the point lands on NoData.
+    """
+    transform_matrix = np.array(
+        [
+            [geo_transform[1], geo_transform[2]],
+            [geo_transform[4], geo_transform[5]],
+        ],
+        dtype=float,
+    )
+    point_offset = np.array(
+        [point.x - geo_transform[0], point.y - geo_transform[3]],
+        dtype=float,
+    )
+
+    try:
+        pixel_x, pixel_y = np.linalg.solve(transform_matrix, point_offset)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("Raster geotransform is not invertible for point sampling.") from exc
+
+    base_col = int(np.floor(pixel_x))
+    base_row = int(np.floor(pixel_y))
+
+    def is_valid_value(value):
+        if value is None:
+            return False
+        if np.isnan(value):
+            return False
+        if nodata_value is not None and value == nodata_value:
+            return False
+        return True
+
+    nrows, ncols = raster_array.shape
+    for radius in range(max_search_radius + 1):
+        candidates = []
+        row_min = max(0, base_row - radius)
+        row_max = min(nrows, base_row + radius + 1)
+        col_min = max(0, base_col - radius)
+        col_max = min(ncols, base_col + radius + 1)
+
+        for row_index in range(row_min, row_max):
+            for col_index in range(col_min, col_max):
+                value = raster_array[row_index, col_index]
+                if not is_valid_value(value):
+                    continue
+                cell_offset = (row_index - base_row) ** 2 + (col_index - base_col) ** 2
+                candidates.append((cell_offset, float(value)))
+
+        if candidates:
+            candidates.sort(key=lambda item: item[0])
+            return candidates[0][1]
+
+    return None
+
+def point_key(point):
+    """
+    Return a stable coordinate tuple so point geometries can be used as graph
+    nodes and dictionary keys.
+    """
+    return tuple(point.coords[0])
+
+def get_line_boundary_points(line):
+    """
+    Extract the exposed terminal points from one line segment using the
+    geometry boundary so no directional assumption is made about the stored
+    coordinate sequence.
+    """
+    boundary = line.boundary
+    if boundary.is_empty:
+        return []
+    if isinstance(boundary, Point):
+        return [boundary]
+    if boundary.geom_type == "MultiPoint":
+        return list(boundary.geoms)
+    raise TypeError("Line boundary must resolve to Point or MultiPoint")
+
+def get_terminal_points(geometry):
+    """
+    Return the candidate terminal points for a reach without assuming the
+    stored coordinate order identifies upstream versus downstream.
+
+    For a single LineString, use the line boundary to get its two terminal
+    endpoints. For a MultiLineString, evaluate each component line separately
+    and collect the terminal boundary points from each segment.
+    """
+    if geometry is None or geometry.is_empty:
+        return []
+
+    if isinstance(geometry, LineString):
+        candidate_points = get_line_boundary_points(geometry)
+    elif isinstance(geometry, MultiLineString):
+        # Collect the terminal boundary points from every component line so the
+        # downstream comparison works from the original multipart geometry
+        # instead of a merged surrogate.
+        candidate_points = []
+        for line in geometry.geoms:
+            if line.is_empty:
+                continue
+            candidate_points.extend(get_line_boundary_points(line))
+    else:
+        raise TypeError("Geometry must be a LineString or MultiLineString")
+
+    # Remove duplicate coordinates so shared junctions inside a multipart reach
+    # are only considered once when scoring candidate endpoints.
+    unique_points = []
+    seen_coords = set()
+    for point in candidate_points:
+        coord_key = point_key(point)
+        if coord_key in seen_coords:
+            continue
+        seen_coords.add(coord_key)
+        unique_points.append(point)
+
+    return unique_points
+
+def prune_downstream_points_within_multiline(geometry, candidate_points, downstream_connection_points):
+    """
+    Remove candidate seed points that are downstream of other candidate seed
+    points inside the same MultiLineString.
+
+    The multipart reach is converted into an undirected endpoint graph using
+    the original component lines. Distances to the downstream connection
+    point(s) are then used to orient that graph in the downstream direction.
+    Any candidate point reachable from another candidate point in that
+    downstream-directed graph is removed because it sits farther downstream
+    within the same multipart reach.
+    """
+    if not isinstance(geometry, MultiLineString):
+        return candidate_points
+    if len(candidate_points) <= 1 or not downstream_connection_points:
+        return candidate_points
+
+    # Build an undirected graph from the component line endpoints so the
+    # multipart reach topology is evaluated without assuming any stored line
+    # direction.
+    multipart_graph = nx.Graph()
+    for line in geometry.geoms:
+        if line.is_empty:
+            continue
+
+        boundary_points = get_line_boundary_points(line)
+        if len(boundary_points) < 2:
+            continue
+
+        start_key = point_key(boundary_points[0])
+        end_key = point_key(boundary_points[1])
+        multipart_graph.add_node(start_key)
+        multipart_graph.add_node(end_key)
+        multipart_graph.add_edge(start_key, end_key, weight=line.length)
+
+    candidate_point_lookup = {point_key(point): point for point in candidate_points}
+    downstream_keys = [
+        point_key(point)
+        for point in downstream_connection_points
+        if point_key(point) in multipart_graph.nodes
+    ]
+
+    if multipart_graph.number_of_nodes() == 0 or not downstream_keys:
+        return candidate_points
+
+    # Measure graph distance from every node to the downstream connection.
+    # Nodes with smaller values are farther downstream.
+    distance_to_downstream = nx.multi_source_dijkstra_path_length(
+        multipart_graph,
+        downstream_keys,
+        weight='weight'
+    )
+
+    # Orient the multipart graph toward the downstream connection using the
+    # graph distances. Edges point from upstream nodes to downstream nodes.
+    downstream_graph = nx.DiGraph()
+    for start_key, end_key in multipart_graph.edges():
+        if start_key not in distance_to_downstream or end_key not in distance_to_downstream:
+            continue
+
+        start_distance = distance_to_downstream[start_key]
+        end_distance = distance_to_downstream[end_key]
+        distance_tolerance = max(1e-9, max(start_distance, end_distance) * 1e-9)
+
+        if start_distance > (end_distance + distance_tolerance):
+            downstream_graph.add_edge(start_key, end_key)
+        elif end_distance > (start_distance + distance_tolerance):
+            downstream_graph.add_edge(end_key, start_key)
+
+    # Keep only candidate points that are not reachable downstream from another
+    # candidate point in the same multipart reach.
+    candidate_keys = [
+        key
+        for key in candidate_point_lookup
+        if key in downstream_graph.nodes or key in multipart_graph.nodes
+    ]
+    downstream_candidate_keys = set()
+    for candidate_key in candidate_keys:
+        for other_candidate_key in candidate_keys:
+            if candidate_key == other_candidate_key:
+                continue
+            if nx.has_path(downstream_graph, other_candidate_key, candidate_key):
+                downstream_candidate_keys.add(candidate_key)
+                break
+
+    retained_keys = [key for key in candidate_keys if key not in downstream_candidate_keys]
+    if not retained_keys:
+        return candidate_points
+
+    return [candidate_point_lookup[key] for key in retained_keys]
+
+def filter_terminal_points_adjacent_to_composite_ordinates(
+    geometry,
+    terminal_points,
+    terminal_points_dem=None,
+):
+    """
+    Remove candidate terminal points that are adjacent to two or more
+    ordinates in the composite geometry.
+
+    This filter is applied immediately before DEM-based outlet inference. It is
+    intended to catch component endpoints that participate in an internal
+    junction inside a composite LineString or MultiLineString. If a candidate
+    terminal touches two or more adjacent ordinates across the composite
+    geometry, it is acting like an internal branching node rather than an
+    exposed terminus and should not be scored as a SEED candidate.
+
+    Parameters
+    ----------
+    geometry: shapely LineString or MultiLineString
+        The composite reach geometry being evaluated.
+    terminal_points: list[Point]
+        Candidate terminal points in the source geometry CRS.
+    terminal_points_dem: list[Point] | None
+        Optional paired candidate terminal points in the DEM CRS. When this
+        list is supplied, the same indices removed from `terminal_points` are
+        removed here as well so DEM sampling remains aligned.
+
+    Returns
+    -------
+    list[Point] | tuple[list[Point], list[Point]]
+        The filtered terminal points, plus the filtered DEM-space terminal
+        points when `terminal_points_dem` is provided.
+    """
+    if geometry is None or geometry.is_empty or not terminal_points:
+        if terminal_points_dem is None:
+            return terminal_points
+        return terminal_points, terminal_points_dem
+
+    if terminal_points_dem is not None and len(terminal_points) != len(terminal_points_dem):
+        return terminal_points, terminal_points_dem
+
+    if isinstance(geometry, LineString):
+        component_lines = [geometry]
+    elif isinstance(geometry, MultiLineString):
+        component_lines = [line for line in geometry.geoms if not line.is_empty]
+    else:
+        raise TypeError("Geometry must be a LineString or MultiLineString")
+
+    retained_indices = []
+    for index, point in enumerate(terminal_points):
+        candidate_key = point_key(point)
+        adjacent_ordinate_keys = set()
+
+        for line in component_lines:
+            line_coords = list(line.coords)
+            if len(line_coords) < 2:
+                continue
+
+            if tuple(line_coords[0]) == candidate_key:
+                adjacent_ordinate_keys.add(tuple(line_coords[1]))
+            elif tuple(line_coords[-1]) == candidate_key:
+                adjacent_ordinate_keys.add(tuple(line_coords[-2]))
+
+            # Once a candidate is adjacent to two or more ordinates anywhere in
+            # the composite geometry, it is functioning as an internal node and
+            # should be removed from the DEM-based SEED inference step.
+            if len(adjacent_ordinate_keys) >= 2:
+                break
+
+        if len(adjacent_ordinate_keys) < 2:
+            retained_indices.append(index)
+
+    filtered_terminal_points = [terminal_points[index] for index in retained_indices]
+    if terminal_points_dem is None:
+        return filtered_terminal_points
+
+    filtered_terminal_points_dem = [terminal_points_dem[index] for index in retained_indices]
+    return filtered_terminal_points, filtered_terminal_points_dem
+
+def infer_upstream_points_from_dem(
+    geometry,
+    terminal_points,
+    terminal_points_dem,
+    dem_array,
+    dem_geo_transform,
+    dem_nodata_value,
+):
+    """
+    Infer the outlet terminal from DEM elevations when the downstream reach
+    geometry is absent from the local vector network.
+    """
+    if len(terminal_points) != len(terminal_points_dem):
+        return terminal_points
+
+    # Sample the DEM at each terminal so we can identify the outlet from
+    # elevation alone when no downstream reach geometry is available.
+    terminal_elevations = [
+        Sample_Raster_Value_At_Point(
+            dem_array,
+            dem_geo_transform,
+            point,
+            nodata_value=dem_nodata_value,
+        )
+        for point in terminal_points_dem
+    ]
+    valid_elevations = [elevation for elevation in terminal_elevations if elevation is not None]
+    if not valid_elevations:
+        return terminal_points
+
+    min_elevation = min(valid_elevations)
+    elevation_tolerance = max(0.01, abs(min_elevation) * 1e-9)
+    # Treat the lowest terminal point(s) as the downstream outlet and keep
+    # only the higher terminal point(s) as candidate SEED locations.
+    downstream_connection_points = [
+        point
+        for point, elevation in zip(terminal_points, terminal_elevations)
+        if elevation is not None and elevation <= (min_elevation + elevation_tolerance)
+    ]
+    upstream_points = [
+        point
+        for point, elevation in zip(terminal_points, terminal_elevations)
+        if elevation is None or elevation > (min_elevation + elevation_tolerance)
+    ]
+
+    if not upstream_points:
+        # If every sampled terminal ties at the minimum elevation, fall back to
+        # the highest sampled terminal so the reach still yields one upstream
+        # seed point instead of none.
+        valid_indices = [
+            index for index, elevation in enumerate(terminal_elevations)
+            if elevation is not None
+        ]
+        highest_index = max(valid_indices, key=lambda index: terminal_elevations[index])
+        upstream_points = [terminal_points[highest_index]]
+
+    # For multipart reaches, remove any retained terminal that still sits
+    # downstream of another retained terminal inside the same geometry.
+    return prune_downstream_points_within_multiline(
+        geometry,
+        upstream_points,
+        downstream_connection_points
+    )
+
+def find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
     """
     Finds the locations of SEED points, or the most upstream locations in our modeling domain, using the topology in the stream shapefile
     Parameters
     ----------
     StrmShp: str
         The file path and file name of the stream flowline vector network shapefile 
+    DEM_Raster_File: str
+        The file path and file name of the DEM raster aligned to the ARC grid.
+        When a source reach points to a downstream identifier that is missing
+        from the local vector network, terminal candidates that are adjacent to
+        two or more ordinates in the composite geometry are removed before the
+        DEM is sampled to infer which terminal is the outlet.
     SEED_Output_File: str
-        The file path and file name of the output shapefile that contains the SEED locations and the unique ID of the stream each represents
+        The file path and file name of the output vector file that contains the
+        SEED locations and the unique ID of the stream each represents
     OutProjection: str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
     Stream_ID_Field: str
@@ -174,167 +593,22 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
         A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
     """
     # Load the hydrographic network data
-    gdf = gpd.read_file(StrmShp)
+    gdf = Read_Vector_GDF(StrmShp)
+    dem_array, dem_geo_transform, dem_projection, dem_nodata_value = Read_Raster_With_Metadata(DEM_Raster_File)
+    dem_raster_crs = Get_Raster_CRS(DEM_Raster_File, dem_projection)
 
     # Keep one geometry per stream identifier so downstream lookups are stable
     # even if the source file contains duplicate rows for the same reach.
     reach_gdf = gdf.drop_duplicates(subset=[Stream_ID_Field]).copy()
+    reach_gdf_dem = Reproject_GDF_If_Needed(reach_gdf, dem_raster_crs)
     reach_geometry_lookup = reach_gdf.set_index(Stream_ID_Field).geometry.to_dict()
+    reach_geometry_lookup_dem = reach_gdf_dem.set_index(Stream_ID_Field).geometry.to_dict()
 
     # Identify the uppermost reaches directly from the stream identifiers. A
     # reach is a SEED candidate only if its stream ID never appears as the
     # downstream target of another reach in the local network.
     downstream_reach_ids = set(reach_gdf[Downstream_ID_Field].dropna())
     source_reach_gdf = reach_gdf[~reach_gdf[Stream_ID_Field].isin(downstream_reach_ids)].copy()
-
-    def get_terminal_points(geometry):
-        """
-        Return the candidate terminal points for a reach without assuming the
-        stored coordinate order identifies upstream versus downstream.
-
-        For a single LineString, use the line boundary to get its two terminal
-        endpoints. For a MultiLineString, evaluate each component line
-        separately and collect the terminal boundary points from each segment.
-        """
-        if geometry is None or geometry.is_empty:
-            return []
-
-        def boundary_points_for_line(line):
-            """
-            Extract the exposed terminal points from one line segment using the
-            geometry boundary so no directional assumption is made about the
-            coordinate sequence.
-            """
-            boundary = line.boundary
-            if boundary.is_empty:
-                return []
-            if isinstance(boundary, Point):
-                return [boundary]
-            if boundary.geom_type == "MultiPoint":
-                return list(boundary.geoms)
-            raise TypeError("Line boundary must resolve to Point or MultiPoint")
-
-        if isinstance(geometry, LineString):
-            candidate_points = boundary_points_for_line(geometry)
-        elif isinstance(geometry, MultiLineString):
-            # Collect the terminal boundary points from every component line so
-            # the downstream comparison works from the original multipart
-            # geometry instead of a merged surrogate.
-            candidate_points = []
-            for line in geometry.geoms:
-                if line.is_empty:
-                    continue
-                candidate_points.extend(boundary_points_for_line(line))
-        else:
-            raise TypeError("Geometry must be a LineString or MultiLineString")
-
-        # Remove duplicate coordinates so shared junctions inside a multipart
-        # reach are only considered once when scoring candidate endpoints.
-        unique_points = []
-        seen_coords = set()
-        for point in candidate_points:
-            coord_key = tuple(point.coords[0])
-            if coord_key in seen_coords:
-                continue
-            seen_coords.add(coord_key)
-            unique_points.append(point)
-
-        return unique_points
-
-    def prune_downstream_points_within_multiline(geometry, candidate_points, downstream_connection_points):
-        """
-        Remove candidate seed points that are downstream of other candidate seed
-        points inside the same MultiLineString.
-
-        The multipart reach is converted into an undirected endpoint graph using
-        the original component lines. Distances to the downstream connection
-        point(s) are then used to orient that graph in the downstream
-        direction. Any candidate point reachable from another candidate point in
-        that downstream-directed graph is removed because it sits farther
-        downstream within the same multipart reach.
-        """
-        if not isinstance(geometry, MultiLineString):
-            return candidate_points
-        if len(candidate_points) <= 1 or not downstream_connection_points:
-            return candidate_points
-
-        def point_key(point):
-            return tuple(point.coords[0])
-
-        # Build an undirected graph from the component line endpoints so the
-        # multipart reach topology is evaluated without assuming any stored line
-        # direction.
-        multipart_graph = nx.Graph()
-        for line in geometry.geoms:
-            if line.is_empty:
-                continue
-
-            line_boundary_points = line.boundary
-            if line_boundary_points.is_empty:
-                continue
-            if isinstance(line_boundary_points, Point):
-                boundary_points = [line_boundary_points]
-            elif line_boundary_points.geom_type == "MultiPoint":
-                boundary_points = list(line_boundary_points.geoms)
-            else:
-                continue
-
-            if len(boundary_points) < 2:
-                continue
-
-            start_key = point_key(boundary_points[0])
-            end_key = point_key(boundary_points[1])
-            multipart_graph.add_node(start_key)
-            multipart_graph.add_node(end_key)
-            multipart_graph.add_edge(start_key, end_key, weight=line.length)
-
-        candidate_point_lookup = {point_key(point): point for point in candidate_points}
-        downstream_keys = [point_key(point) for point in downstream_connection_points if point_key(point) in multipart_graph.nodes]
-
-        if multipart_graph.number_of_nodes() == 0 or not downstream_keys:
-            return candidate_points
-
-        # Measure graph distance from every node to the downstream connection.
-        # Nodes with smaller values are farther downstream.
-        distance_to_downstream = nx.multi_source_dijkstra_path_length(
-            multipart_graph,
-            downstream_keys,
-            weight='weight'
-        )
-
-        # Orient the multipart graph toward the downstream connection using the
-        # graph distances. Edges point from upstream nodes to downstream nodes.
-        downstream_graph = nx.DiGraph()
-        for start_key, end_key in multipart_graph.edges():
-            if start_key not in distance_to_downstream or end_key not in distance_to_downstream:
-                continue
-
-            start_distance = distance_to_downstream[start_key]
-            end_distance = distance_to_downstream[end_key]
-            distance_tolerance = max(1e-9, max(start_distance, end_distance) * 1e-9)
-
-            if start_distance > (end_distance + distance_tolerance):
-                downstream_graph.add_edge(start_key, end_key)
-            elif end_distance > (start_distance + distance_tolerance):
-                downstream_graph.add_edge(end_key, start_key)
-
-        # Keep only candidate points that are not reachable downstream from
-        # another candidate point in the same multipart reach.
-        candidate_keys = [key for key in candidate_point_lookup if key in downstream_graph.nodes or key in multipart_graph.nodes]
-        downstream_candidate_keys = set()
-        for candidate_key in candidate_keys:
-            for other_candidate_key in candidate_keys:
-                if candidate_key == other_candidate_key:
-                    continue
-                if nx.has_path(downstream_graph, other_candidate_key, candidate_key):
-                    downstream_candidate_keys.add(candidate_key)
-                    break
-
-        retained_keys = [key for key in candidate_keys if key not in downstream_candidate_keys]
-        if not retained_keys:
-            return candidate_points
-
-        return [candidate_point_lookup[key] for key in retained_keys]
 
     seed_points = []
     seed_linknos = []
@@ -345,6 +619,8 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
     for _, row in source_reach_gdf.iterrows():
         reach_id = row[Stream_ID_Field]
         terminal_points = get_terminal_points(row.geometry)
+        dem_geometry = reach_geometry_lookup_dem.get(reach_id)
+        terminal_points_dem = get_terminal_points(dem_geometry) if dem_geometry is not None else terminal_points
 
         if not terminal_points:
             continue
@@ -386,11 +662,29 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
                 downstream_connection_points
             )
         else:
-            # If the downstream reach is missing from the local network, keep
-            # every terminal point. This preserves the headwater termini from a
-            # MultiLineString source reach rather than collapsing them to one
-            # arbitrary point.
-            upstream_points = terminal_points
+            # Remove component endpoints that are adjacent to two or more
+            # ordinates in the composite reach. Those points behave like
+            # internal junction nodes in the overall geometry, so they should
+            # not enter DEM-based outlet inference.
+            terminal_points, terminal_points_dem = filter_terminal_points_adjacent_to_composite_ordinates(
+                row.geometry,
+                terminal_points,
+                terminal_points_dem,
+            )
+            if not terminal_points:
+                continue
+
+            # If the downstream reach is missing from the local network, infer
+            # the outlet from the DEM and drop the lowest terminal point from
+            # the SEED set.
+            upstream_points = infer_upstream_points_from_dem(
+                row.geometry,
+                terminal_points,
+                terminal_points_dem,
+                dem_array,
+                dem_geo_transform,
+                dem_nodata_value,
+            )
 
         # Write one SEED point for each upstream terminal that survived the
         # downstream-connection filter.
@@ -401,10 +695,10 @@ def find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_I
     # Create a new GeoDataFrame for the starting locations
     seed_gdf = gpd.GeoDataFrame({'LINKNO': seed_linknos, 'geometry': seed_points}, crs=gdf.crs)
 
-    # Export the starting locations to a point shapefile
-    seed_gdf.to_file(SEED_Output_File)
+    # Export the starting locations to a vector file. GeoParquet is supported
+    # for lighter-weight single-file storage.
+    Write_Vector_GDF(seed_gdf, SEED_Output_File)
 
-    print("SEED locations have been exported as a separate point shapefile.")
     
     return (seed_gdf)
 
@@ -438,10 +732,6 @@ def FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs):
     # Spatial join to find the distance between each CP point and each SEED point
     nearest_cp = gpd.sjoin_nearest(seed_gdf, curve_data_gdf, how='left', distance_col='dist')
 
-    # Filter based on attributes
-    # Make sure the COMID's match betweent the SEED and curves
-    nearest_cp = nearest_cp[nearest_cp['LINKNO'] == nearest_cp['COMID']]
-
     # Find the minimum distance for each unique gdf1 row
     min_distance_idx = nearest_cp.groupby(nearest_cp.index)['dist'].idxmin()
 
@@ -456,7 +746,7 @@ def FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs):
 
     return (curve_data_gdf)
 
-def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output=True, COMID_Q_File=None, comid_q_df=None):
+def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output=True, COMID_Q_File=None, comid_q_df=None):
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
@@ -466,8 +756,11 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
         The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
         The file path and file name of the file that contains the streamflow estimates for the streams in your domain
-    STRM_Raster_File: str
-        The file path and file name of the stream raster that contains the stream cells you used to run ARC 
+    DEM_Raster_File: str
+        The file path and file name of the DEM raster aligned to the ARC grid.
+        The vector workflow uses this raster for row/column georeferencing and
+        to infer outlet terminals when a source reach's downstream geometry is
+        missing from the local vector network.
     OutGeoJSON_File: str
         The file path and file name of the output GeoJSON the program will be creating
     OutProjection: str
@@ -479,7 +772,8 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     Downstream_ID_Field: str
         The field in the StrmShp that is used to identify the stream downstream of the stream
     SEED_Output_File: str
-        The file path and file name of the output shapefile that contains the SEED locations and the unique ID of the stream each represents
+        The file path and file name of the output vector file that contains the
+        SEED locations and the unique ID of the stream each represents
     Thin_Output: bool
         True/False of whether or not to filter the output GeoJSON
     
@@ -505,8 +799,8 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     comid_q_df.rename(columns=column_mapping, inplace=True)    
 
     # Get the Extents and cellsizes of the Raster Data
-    print('\nGetting the Spatial information from ' + STRM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
+    print('\nGetting the Spatial information from ' + DEM_Raster_File)
+    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
     cellsize_x = abs(float(dx))
     cellsize_y = abs(float(dy))
     lat_base = float(maxy) - 0.5*cellsize_y
@@ -519,7 +813,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
-    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+    stream_raster_crs = Get_Raster_CRS(DEM_Raster_File, Rast_Projection)
 
     # When the raster is geographic, switch to a projected CRS for distance
     # calculations. When it is already projected, keep the native raster CRS.
@@ -576,9 +870,9 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
     # find the SEED locations
     if os.path.isfile(SEED_Output_File):
         print("SEED file exists, we're using it...")
-        seed_gdf = gpd.read_file(SEED_Output_File)
+        seed_gdf = Read_Vector_GDF(SEED_Output_File)
     else:
-        seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
+        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
     curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs)
 
     # output the GeoJSON file
@@ -586,7 +880,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, STRM_Raster
 
     return
 
-def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output=True, COMID_Q_File=None, comid_q_df=None):
+def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output=True, COMID_Q_File=None, comid_q_df=None):
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
@@ -596,8 +890,11 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
         The file path and file name of the ARC VDT database file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
         The file path and file name of the file that contains the streamflow estimates for the streams in your domain
-    STRM_Raster_File: str
-        The file path and file name of the stream raster that contains the stream cells you used to run ARC 
+    DEM_Raster_File: str
+        The file path and file name of the DEM raster aligned to the ARC grid.
+        The vector workflow uses this raster for row/column georeferencing and
+        to infer outlet terminals when a source reach's downstream geometry is
+        missing from the local vector network.
     OutGeoJSON_File: str
         The file path and file name of the output GeoJSON the program will be creating
     OutProjection: str
@@ -609,7 +906,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     Downstream_ID_Field: str
         The field in the StrmShp that is used to identify the stream downstream of the stream
     SEED_Output_File: str
-        The file path and file name of the output shapefile that contains the SEED locations and the unique ID of the stream each represents
+        The file path and file name of the output vector file that contains the
+        SEED locations and the unique ID of the stream each represents
     Thin_Output: bool
         True/False of whether or not to filter the output GeoJSON
     
@@ -635,8 +933,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     comid_q_df.rename(columns=column_mapping, inplace=True)    
 
     # Get the Extents and cellsizes of the Raster Data
-    print('\nGetting the Spatial information from ' + STRM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
+    print('\nGetting the Spatial information from ' + DEM_Raster_File)
+    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
     cellsize_x = abs(float(dx))
     cellsize_y = abs(float(dy))
     lat_base = float(maxy) - 0.5*cellsize_y
@@ -649,7 +947,7 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
-    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+    stream_raster_crs = Get_Raster_CRS(DEM_Raster_File, Rast_Projection)
 
     # When the raster is geographic, switch to a projected CRS for distance
     # calculations. When it is already projected, keep the native raster CRS.
@@ -669,19 +967,30 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     # Define the function to calculate TopWidth, Depth, and WSE for each row
     def calculate_values(row):
         flow = row['qout']
+        if not np.isfinite(flow):
+            # Skip interpolation entirely when the requested flow is invalid so
+            # downstream cleanup receives a plain NaN instead of a warning.
+            return pd.Series({'WSE': np.nan})
 
         # Extract flow, TopWidth, and WSE values for interpolation
         flow_values = row[flow_cols].values
-        top_width_values = row[top_width_cols].values
         wse_values = row[wse_cols].values
 
-        # Unique by x-value
-        flow_values, idx = np.unique(flow_values, return_index=True)
-        top_width_values = top_width_values[idx]
-        wse_values = wse_values[idx]
+        # Prepare the interpolation pairs first so interp1d never sees NaN/Inf
+        # values or a duplicate/degenerate flow axis.
+        flow_values, wse_values = Prepare_Interpolation_Pairs(flow_values, wse_values)
 
-        # Interpolation functions
-        top_width_interp = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')
+        if len(flow_values) == 0:
+            # No finite rating-curve pairs exist for this row, so return NaN
+            # and let the later dataframe filtering remove it cleanly.
+            return pd.Series({'WSE': np.nan})
+        if len(flow_values) == 1:
+            # A single valid point cannot define a slope, so reuse that value
+            # directly instead of calling interp1d and triggering divide logic.
+            return pd.Series({'WSE': float(wse_values[0])})
+
+        # Build the interpolator only after the inputs are known to contain at
+        # least two distinct finite flow values.
         wse_interp = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')
 
         wse = wse_interp(flow)
@@ -738,17 +1047,19 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, STRM_Rast
     COMID_MedWSE.rename(columns={'WaterSurfaceElev_m': 'COMID_MedWSE'}, inplace=True)
     vdt_gdf = vdt_gdf.merge(COMID_MedWSE, on="COMID")
 
+
     # thin the data before we go looking for SEED locations
     if Thin_Output is True:
         vdt_gdf = Thin_Curve_data(vdt_gdf, False)
 
+
     # find the SEED locations
     if os.path.isfile(SEED_Output_File):
         print("SEED file exists, we're using it...")
-        seed_gdf = gpd.read_file(SEED_Output_File)
+        seed_gdf = Read_Vector_GDF(SEED_Output_File)
         
     else:
-        seed_gdf = find_SEED_locations(StrmShp, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
+        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
     vdt_gdf = FindClosestSEEDPoints(seed_gdf, vdt_gdf, distance_crs)
 
     # output the GeoJSON file
@@ -1159,7 +1470,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
-    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+    stream_raster_crs = Get_Raster_CRS(STRM_Raster_File, Rast_Projection)
 
     # When the raster is geographic, switch to a projected CRS for distance
     # calculations. When it is already projected, keep the native raster CRS.
@@ -1282,7 +1593,7 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
-    stream_raster_crs = Get_Stream_Raster_CRS(STRM_Raster_File, Rast_Projection)
+    stream_raster_crs = Get_Raster_CRS(STRM_Raster_File, Rast_Projection)
 
     # When the raster is geographic, switch to a projected CRS for distance
     # calculations. When it is already projected, keep the native raster CRS.
@@ -1302,22 +1613,33 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     # Define the function to calculate TopWidth, Depth, and WSE for each row
     def calculate_values(row):
         flow = row['qout']
+        if not np.isfinite(flow):
+            # Skip interpolation entirely when the requested flow is invalid so
+            # downstream cleanup receives a plain NaN instead of a warning.
+            return pd.Series({'WSE': np.nan})
 
         # Extract flow, TopWidth, and WSE values for interpolation
         flow_values = row[flow_cols].values
-        top_width_values = row[top_width_cols].values
         wse_values = row[wse_cols].values
 
-        # Unique by x-value
-        flow_values, idx = np.unique(flow_values, return_index=True)
-        top_width_values = top_width_values[idx]
-        wse_values = wse_values[idx]
+        # Prepare the interpolation pairs first so interp1d never sees NaN/Inf
+        # values or a duplicate/degenerate flow axis.
+        flow_values, wse_values = Prepare_Interpolation_Pairs(flow_values, wse_values)
 
-        # Interpolation functions
-        top_width_interp = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')
+        if len(flow_values) == 0:
+            # Zero flows exist for this row, so return NaN
+            # and let the later dataframe filtering remove it cleanly.
+            return pd.Series({'WSE': np.nan})
+        if len(flow_values) == 1:
+            # A single valid point cannot define a slope, so reuse that value
+            # directly instead of calling interp1d and triggering divide logic.
+            return pd.Series({'WSE': round(float(wse_values[0]), 3)})
+
+        # Build the interpolator only after the inputs are known to contain at
+        # least two distinct finite flow values.
         wse_interp = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')
 
-        wse = wse_interp(flow)
+        wse = round(wse_interp(flow), 3)
 
         return pd.Series({'WSE': wse})
 
@@ -1402,14 +1724,21 @@ def main_write_seed():
 def main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector():
     parser = argparse.ArgumentParser(description="Generate GeoJSON from rating curves and stream vector data.")
     parser.add_argument("--curve_param_file", type=str, required=True, help="Path to ARC curve parameter file (CSV).")
-    parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to stream raster file (TIFF).")
+    parser.add_argument(
+        "--dem_raster_file",
+        "--strm_raster_file",
+        dest="dem_raster_file",
+        type=str,
+        required=True,
+        help="Path to DEM raster file (TIFF) used for vector-grid coordinates and SEED outlet inference.",
+    )
     parser.add_argument("--out_geojson_file", type=str, required=True, help="Output GeoJSON file path.")
     parser.add_argument("--out_projection", type=str, required=True, help="Output projection (e.g., EPSG:4269).")
     parser.add_argument("--thin_geojson", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
     parser.add_argument("--strm_shp", type=str, required=True, help="Path to stream shapefile.")
     parser.add_argument("--stream_id_field", type=str, required=True, help="Field in shapefile with unique stream identifiers.")
     parser.add_argument("--downstream_id_field", type=str, required=True, help="Field in shapefile with downstream identifiers.")
-    parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations shapefile.")
+    parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations vector file.")
     parser.add_argument("--thin_output", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
     parser.add_argument("--comid_q_file", type=str, required=True, help="Path to file with streamflow estimates (CSV).")
 
@@ -1418,7 +1747,7 @@ def main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector():
     # Call the main function with parsed arguments
     Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(
         CurveParam_File=args.curve_param_file,
-        STRM_Raster_File=args.strm_raster_file,
+        DEM_Raster_File=args.dem_raster_file,
         OutGeoJSON_File=args.out_geojson_file,
         OutProjection=args.out_projection,
         StrmShp=args.strm_shp,
@@ -1437,13 +1766,20 @@ if __name__ == "__main__":
     # Subparser for Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
     curve_to_geojson_parser = subparsers.add_parser("curve-to-geojson-stream-vector", help="Run curve to GeoJSON program")
     curve_to_geojson_parser.add_argument("--curve_param_file", type=str, required=True, help="Path to ARC curve parameter file (CSV).")
-    curve_to_geojson_parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to stream raster file (TIFF).")
+    curve_to_geojson_parser.add_argument(
+        "--dem_raster_file",
+        "--strm_raster_file",
+        dest="dem_raster_file",
+        type=str,
+        required=True,
+        help="Path to DEM raster file (TIFF) used for vector-grid coordinates and SEED outlet inference.",
+    )
     curve_to_geojson_parser.add_argument("--out_geojson_file", type=str, required=True, help="Output GeoJSON file path.")
     curve_to_geojson_parser.add_argument("--out_projection", type=str, required=True, help="Output projection (e.g., EPSG:4269).")
     curve_to_geojson_parser.add_argument("--strm_shp", type=str, required=True, help="Path to stream shapefile.")
     curve_to_geojson_parser.add_argument("--stream_id_field", type=str, required=True, help="Field in shapefile with unique stream identifiers.")
     curve_to_geojson_parser.add_argument("--downstream_id_field", type=str, required=True, help="Field in shapefile with downstream identifiers.")
-    curve_to_geojson_parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations shapefile.")
+    curve_to_geojson_parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations vector file.")
     curve_to_geojson_parser.add_argument("--thin_output", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
     curve_to_geojson_parser.add_argument("--comid_q_file", type=str, help="Path to file with streamflow estimates (optional).")
 
@@ -1458,7 +1794,7 @@ if __name__ == "__main__":
     if args.command == "curve-to-geojson-stream-vector":
         Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(
             CurveParam_File=args.curve_param_file,
-            STRM_Raster_File=args.strm_raster_file,
+            DEM_Raster_File=args.dem_raster_file,
             OutGeoJSON_File=args.out_geojson_file,
             OutProjection=args.out_projection,
             StrmShp=args.strm_shp,
