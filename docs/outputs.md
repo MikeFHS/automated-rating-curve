@@ -32,6 +32,8 @@ The following table details the columns in the curve file, which may be saved as
 | BaseElev | Float | The elevation of the channel bottom after bathymetry has been estimated where the stream cell is located.  |
 | DEM_Elev | Float | The elevation of the input DEM (before bathymetry estimation) where the stream cell is located. |
 | QMax | Float | The maximum flow used to generate the rating curves for the stream cell. This should be nearly equal to the value for the stream reach in the - - max_flow_field. The value will not likely be identical to the value in the max_flow_field as ARC iteratively solves Manning's equation and does so by - iteratively increasing the streamflow. |
+| Slope | Float | The slope of the stream at the stream cell. |
+| XS_Angle | Float | The angle of the cross-section sampled for the stream cell, in degrees from east (positive x-axis), clockwise. |
 | depth_a | Float | In the formula $depth = a * streamflow^b$, this value represent $a$. The value estimates a water depth at the stream channel thalweg for the stream cell if `Reach_Average_Curve_File` is `False`, otherwise it represents the average value for the entire reach. |
 | depth_b | Float | In the formula $depth = a * streamflow^b$, this value represent $b$. The value estimates a water depth at the stream channel thalweg for the stream cell if `Reach_Average_Curve_File` is `False`, otherwise it represents the average value for the entire reach. |
 | tw_a | Float | In the formula $top-width = a * streamflow^b$, this value represent $a$. The value estimates a top-width of the flow for the stream cell if `Reach_Average_Curve_File` is `False`, otherwise it represents the average value for the entire reach. |
