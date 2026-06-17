@@ -48,8 +48,9 @@ nav:
   - Examples: 
     - Produce Streamflow Inputs: produce_streamflow_inputs.md
     - Produce Geospatial Inputs: produce_geospatial_inputs.md
-    - Neuse River Flooding: neuse_river_flooding.md
+    - Running ARC: running_arc.md
     - Making Inputs for FIST: making_inputs_for_fist.md
+    - Neuse River Flooding: neuse_river_flooding.md
   - License: license.md
 
 plugins:

@@ -194,7 +194,19 @@ def GetReturnPeriodFlowValues(NetCDF_File_Path):
 
 def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Historical_Folder, Outfile_file_path):
     """
-    Creates a streamflow input file that can be used by the Automated Rating Curve (ARC) tool
+    Creates a streamflow input file that can be used by the Automated Rating Curve (ARC) tool.
+    The Outfile_file_path will be a csv file that looks like that contains: 
+
+    - COMID or the stream reach's unique identifier
+    - average flow, cubic meters per second (qout_mean)
+    - median flow, cubic meters per second (qout_median)
+    - maximum flow, cubic meters per second (qout_max) 
+    - 2-year return period streamflow, cubic meters per second (rp2)
+    - 5-year return period streamflow, cubic meters per second (rp5) 
+    - 10-year return period streamflow, cubic meters per second (rp10)
+    - 25-year return period streamflow, cubic meters per second (rp25)
+    - 50-year return period streamflow, cubic meters per second (rp50)
+    - 100-year return period streamflow, cubic meters per second (rp100)
 
     Parameters
     ----------

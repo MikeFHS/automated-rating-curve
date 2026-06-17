@@ -750,7 +750,11 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
 
 def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path, bathy_use_banks, use_land_cover_to_find_banks):
     """
-    Create DEM-aligned ARC geospatial inputs and a starter MIF.
+    Create DEM-aligned ARC geospatial inputs and a starter MIF. Assumes that you've stored your inputs in a specific way. In the same directory where you're planning to store your inputs should be:
+
+    1. A "DEM" directory with a GeoTIFF named "DEM.tif" representing your DEM input.
+    2. A "LandCover" directory with a GeoTIFF named "LandCover.tif" representing your LU/LC input.
+    3. A "StrmShp" directory with a shapefile named "StreamShapefile.shp" representing your streamline input. 
 
     Parameters
     ----------
