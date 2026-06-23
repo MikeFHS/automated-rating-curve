@@ -4,6 +4,8 @@ Now let's run ARC. [Here](https://github.com/MikeFHS/automated-rating-curve/blob
 
 The only argument that needs to pass to the `Arc.run()` function is a path to your ARC input file. The file will be the "ARC_InputFiles\ARC_Input_File.txt" that you created in [Produce Geospatial Inputs](produce_geospatial_inputs.md). 
 
+If you are running ARC from gap-crossing seasonal exports, add `Manual_Cross_Sections_File` to the MIF and set `Flow_File_ID` to the cross-section identifier field written by gap-crossing, typically `XS_ID`. ARC will then use the supplied manual profiles instead of sampling new cross sections from the stream raster.
+
 When the ARC simulation completes, you should find a `CurveFile.csv` and `VDT_Database.txt` in your "VDT" folder. If you do, congrats! You've completed a successful ARC simulation!
 
 [Here](outputs.md) is a breakdown of what these values represent, each row in the CurveFile or VDT Database is a stream cell in your domain of interest:

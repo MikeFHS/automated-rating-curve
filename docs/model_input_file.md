@@ -12,6 +12,7 @@ Flow_File: /path/to/Flow_File.csv
 Flow_File_ID: COMID
 Flow_File_BF: p_exceed_50
 Flow_File_QMax: rp100_premium
+Manual_Cross_Sections_File: /path/to/ARC_Manual_Cross_Sections.tsv
 Spatial_Units: deg
 X_Section_Dist: 5000
 Degree_Manip: 6.1
@@ -42,10 +43,11 @@ BATHY_Out_File: /path/to/Output_Bathy.tif
 | --- | --- | --- | --- |
 | `DEM_File` | --- | str | Path to the Digital Elevation Model (DEM) raster file. All subsequent raster files are assumed to have the same resolution, extent, and projection. |
 | `Flow_File` | --- | str | Path to the flow file containing streamflow data. |
-| `Flow_File_ID` | --- | str | Column name in the flow file that contains unique identifiers for each reach. |
+| `Flow_File_ID` | --- | str | Column name in the flow file that contains unique identifiers for each reach or manual cross section. When `Manual_Cross_Sections_File` is used, this same field name must also exist in the manual cross-section table. |
 | `Flow_File_BF` | --- | str | Column name in the flow file that contains baseflow values. |
 | `Flow_File_QMax` | --- | str | Column name in the flow file that contains maximum discharge values to simulate. |
 | `LU_Manning_n` | --- | str | Path to the text file containing Manning's n values for different land cover types. |
+| `Manual_Cross_Sections_File` | --- | str | Optional tabular cross-section input file. When provided, ARC skips raster-based cross-section sampling and instead uses the supplied profiles, row/column arrays, and land-cover arrays for each `Flow_File_ID`. |
 | `LU_Raster_SameRes` | --- | str | Path to the land cover raster file. |
 | `Stream_File` | --- | str | Path to the stream raster file. |
 | `StrmShp_File` | --- | str | Path to the stream shapefile. Required if `Stream_Slope_Method` is set to 'end_points' or 'reach_average'. |
@@ -74,6 +76,27 @@ See [**Outputs**](outputs.md) documentation for details on the output datasets t
 | `Print_Curve_File` | --- | str | Path to the output curve file. |
 | `Print_VDT_Database` | --- | str | Path to the output VDT database file. |
 | `XS_Out_File` | --- | str | Path to the output cross-section export file. |
+
+## Manual Cross-Section Input Schema
+
+When `Manual_Cross_Sections_File` is provided, ARC expects the following columns:
+
+| Column Name | Data Type | Description |
+| --- | --- | --- |
+| `Flow_File_ID` | Integer or string-like integer | The cross-section identifier used to join the manual table to the flow file. In the gap-crossing export this is `XS_ID`. |
+| `Row` | Integer | DEM row of the center stream cell. |
+| `Col` | Integer | DEM column of the center stream cell. |
+| `Ordinate_Dist` | Float | Distance between adjacent cross-section ordinates, in meters. |
+| `XS1_Profile` | JSON array string | Elevations from the center cell outward along side 1. |
+| `XS2_Profile` | JSON array string | Elevations from the center cell outward along side 2. |
+| `LC1_Profile` | JSON array string | Land-cover values for side 1, aligned to `XS1_Profile`. |
+| `LC2_Profile` | JSON array string | Land-cover values for side 2, aligned to `XS2_Profile`. |
+| `XS1_Row` | JSON array string | DEM row indices for the side-1 ordinates. |
+| `XS1_Col` | JSON array string | DEM column indices for the side-1 ordinates. |
+| `XS2_Row` | JSON array string | DEM row indices for the side-2 ordinates. |
+| `XS2_Col` | JSON array string | DEM column indices for the side-2 ordinates. |
+
+The gap-crossing seasonal export writes this schema directly. Additional metadata columns, such as `Route_ID`, `Source_Stream_ID`, or `XS_Angle`, are allowed and are preserved for reference but are not required by ARC.
 
 ### Bathymetry Information
 | Key | Default Value | Data Type | Description |

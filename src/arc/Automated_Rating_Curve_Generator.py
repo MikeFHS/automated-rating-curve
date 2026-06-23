@@ -19,6 +19,8 @@ override ``args`` dictionary. Input parameter strings are documented on the ARC
 wiki (see the repository's GitHub Wiki).
 """
 
+import ast
+import json
 import sys
 import os
 import math
@@ -62,11 +64,13 @@ _INDEX_FRACT_ARRAYS: np.ndarray = None
 _CELL_ROWS: np.ndarray = None
 _CELL_COLS: np.ndarray = None
 _CELL_COMIDS: np.ndarray = None
+_CELL_SOURCE_STREAM_IDS: np.ndarray = None
 _CELL_QBASE: np.ndarray = None
 _CELL_QMAX: np.ndarray = None
 _CELL_REACH_SLOPE: np.ndarray = None
 _CELL_SLOPE_25: np.ndarray = None
 _CELL_SLOPE_75: np.ndarray = None
+_MANUAL_CROSS_SECTION_RECORDS: dict[int, dict] | None = None
 
 ARRAY_NAMES = [
     '_DEM',
@@ -82,6 +86,7 @@ ARRAY_NAMES = [
     '_CELL_ROWS',
     '_CELL_COLS',
     '_CELL_COMIDS',
+    '_CELL_SOURCE_STREAM_IDS',
     '_CELL_QBASE',
     '_CELL_QMAX',
     '_CELL_REACH_SLOPE',
@@ -119,7 +124,7 @@ def _set_shared(name: str, shm: shared_memory.SharedMemory):
     _SHARED_MEMORYS[name] = shm
 
 def reset_globals():
-    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA']:
+    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA', '_MANUAL_CROSS_SECTION_RECORDS']:
         globals()[name] = None
 
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
@@ -570,6 +575,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'b_bathy_use_banks': b_bathy_use_banks, # Find the true/false variable to use the bank elevations to calculate the depth of the bathymetry estimate
         's_output_bathymetry_path': s_output_bathymetry_path, # Find the path to the output bathymetry file
         's_xs_output_file': get_parameter_name(sl_lines,  'XS_Out_File'), # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
+        's_manual_cross_section_file': get_parameter_name(sl_lines, 'Manual_Cross_Sections_File'),
         'i_lc_water_value': int(get_parameter_name(sl_lines,  'LC_Water_Value', 80)), # Find the value in the land cover dataset that corresponds to water. This is used to find the banks of the river if b_FindBanksBasedOnLandCover is set to True
         'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
         'b_FindBanksBasedOnLandCover': b_FindBanksBasedOnLandCover, # Find the true/false variable to find the banks of the river based on the land cover dataset instead of the DEM
@@ -696,6 +702,152 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
 
     flow_columns = [s_flow_qmax] if s_flow_baseflow == '' else [s_flow_baseflow, s_flow_qmax]
     return df.set_index(s_flow_id)[flow_columns].to_dict(orient='index')
+
+
+def _parse_manual_cross_section_array(value, dtype=float) -> np.ndarray:
+    """Parse one serialized manual cross-section array from the input file."""
+    if isinstance(value, np.ndarray):
+        return value.astype(dtype, copy=False)
+    if value in (None, "", "[]"):
+        return np.array([], dtype=dtype)
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value, dtype=dtype)
+
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        parsed = ast.literal_eval(value)
+
+    return np.asarray(parsed, dtype=dtype)
+
+
+def load_manual_cross_section_records(
+    manual_cross_section_file: str,
+    manual_id_field: str,
+    i_boundary_number: int,
+) -> tuple[dict[int, dict], float]:
+    """Load manual ARC cross sections and convert them to padded-grid indices.
+
+    Parameters
+    ----------
+    manual_cross_section_file : str
+        Path to the manual cross-section table written by gap-crossing.
+    manual_id_field : str
+        Column that should match ``Flow_File_ID`` in the ARC flow table.
+    i_boundary_number : int
+        Padding offset used by ARC's internal raster arrays.
+
+    Returns
+    -------
+    tuple
+        ``(records, required_x_section_distance)`` where ``records`` maps the
+        manual ID to the parsed cross-section data, and the distance term is the
+        minimum ``X_Section_Dist`` needed to hold the longest supplied profile.
+    """
+    if manual_cross_section_file.endswith(".parquet"):
+        manual_df = pd.read_parquet(manual_cross_section_file)
+    else:
+        separator = "\t" if manual_cross_section_file.lower().endswith((".tsv", ".txt")) else ","
+        manual_df = pd.read_csv(manual_cross_section_file, sep=separator)
+
+    required_columns = {
+        manual_id_field,
+        "Row",
+        "Col",
+        "Ordinate_Dist",
+        "XS1_Profile",
+        "XS2_Profile",
+        "LC1_Profile",
+        "LC2_Profile",
+        "XS1_Row",
+        "XS1_Col",
+        "XS2_Row",
+        "XS2_Col",
+    }
+    missing_columns = sorted(required_columns.difference(manual_df.columns))
+    if missing_columns:
+        raise KeyError(
+            "Manual cross-section file is missing required columns: "
+            + ", ".join(missing_columns)
+        )
+
+    records: dict[int, dict] = {}
+    required_x_section_distance = 0.0
+    for _, row in manual_df.iterrows():
+        manual_id = int(row[manual_id_field])
+        xs1_profile = _parse_manual_cross_section_array(row["XS1_Profile"], dtype=np.float64)
+        xs2_profile = _parse_manual_cross_section_array(row["XS2_Profile"], dtype=np.float64)
+        lc1_profile = _parse_manual_cross_section_array(row["LC1_Profile"], dtype=np.uint8)
+        lc2_profile = _parse_manual_cross_section_array(row["LC2_Profile"], dtype=np.uint8)
+        xs1_row = _parse_manual_cross_section_array(row["XS1_Row"], dtype=np.int64) + i_boundary_number
+        xs1_col = _parse_manual_cross_section_array(row["XS1_Col"], dtype=np.int64) + i_boundary_number
+        xs2_row = _parse_manual_cross_section_array(row["XS2_Row"], dtype=np.int64) + i_boundary_number
+        xs2_col = _parse_manual_cross_section_array(row["XS2_Col"], dtype=np.int64) + i_boundary_number
+
+        if len(xs1_profile) == 0 or len(xs2_profile) == 0:
+            raise ValueError(f"Manual cross section {manual_id} did not contain profile values on both sides.")
+        if not (len(xs1_profile) == len(lc1_profile) == len(xs1_row) == len(xs1_col)):
+            raise ValueError(f"Manual cross section {manual_id} has mismatched side-1 array lengths.")
+        if not (len(xs2_profile) == len(lc2_profile) == len(xs2_row) == len(xs2_col)):
+            raise ValueError(f"Manual cross section {manual_id} has mismatched side-2 array lengths.")
+
+        ordinate_dist = float(row["Ordinate_Dist"])
+        max_half_distance = max((len(xs1_profile) - 1) * ordinate_dist, (len(xs2_profile) - 1) * ordinate_dist)
+        required_x_section_distance = max(required_x_section_distance, 2.0 * max_half_distance)
+
+        source_stream_id = row.get("Source_Stream_ID", manual_id)
+        if pd.isna(source_stream_id):
+            source_stream_id = manual_id
+
+        records[manual_id] = {
+            "manual_id": manual_id,
+            "source_stream_id": int(source_stream_id),
+            "row": int(row["Row"]) + i_boundary_number,
+            "col": int(row["Col"]) + i_boundary_number,
+            "xs_angle": float(row.get("XS_Angle", 0.0) or 0.0),
+            "ordinate_dist": ordinate_dist,
+            "xs1_profile": xs1_profile,
+            "xs2_profile": xs2_profile,
+            "lc1_profile": lc1_profile,
+            "lc2_profile": lc2_profile,
+            "xs1_row": xs1_row,
+            "xs1_col": xs1_col,
+            "xs2_row": xs2_row,
+            "xs2_col": xs2_col,
+        }
+
+    return records, required_x_section_distance
+
+
+def apply_manual_cross_section_data(x_section: CrossSection, manual_record: dict) -> None:
+    """Populate a :class:`CrossSection` instance from a manual input record."""
+    x_section.row = manual_record["row"]
+    x_section.col = manual_record["col"]
+    x_section.d_xs_direction = manual_record["xs_angle"]
+    x_section.d_ordinate_dist = manual_record["ordinate_dist"]
+    x_section.xs1_n = len(manual_record["xs1_profile"])
+    x_section.xs2_n = len(manual_record["xs2_profile"])
+    x_section.i_precompute_angle_closest = 0
+
+    x_section.da_xs_profile1[:] = 0.0
+    x_section.da_xs_profile2[:] = 0.0
+    x_section.ia_lc_xs1[:] = 0
+    x_section.ia_lc_xs2[:] = 0
+
+    x_section.da_xs_profile1[:x_section.xs1_n] = manual_record["xs1_profile"]
+    x_section.da_xs_profile2[:x_section.xs2_n] = manual_record["xs2_profile"]
+    x_section.ia_lc_xs1[:x_section.xs1_n] = manual_record["lc1_profile"]
+    x_section.ia_lc_xs2[:x_section.xs2_n] = manual_record["lc2_profile"]
+    x_section.ia_xc_row1_index_main = manual_record["xs1_row"]
+    x_section.ia_xc_column1_index_main = manual_record["xs1_col"]
+    x_section.ia_xc_row2_index_main = manual_record["xs2_row"]
+    x_section.ia_xc_column2_index_main = manual_record["xs2_col"]
+    # Mirror the main indices into the "second" arrays because manual sections
+    # are already explicitly defined and do not need interpolation offsets.
+    x_section.ia_xc_row1_index_second = manual_record["xs1_row"]
+    x_section.ia_xc_column1_index_second = manual_record["xs1_col"]
+    x_section.ia_xc_row2_index_second = manual_record["xs2_row"]
+    x_section.ia_xc_column2_index_second = manual_record["xs2_col"]
 
 @vectorize(target='cpu', cache=True)
 def round_sig(x, sig=3):
@@ -1281,6 +1433,12 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     i_number_of_increments = _PARAMS['i_number_of_increments']
     i_general_direction_distance = _PARAMS['i_general_direction_distance']
     i_general_slope_distance = _PARAMS['i_general_slope_distance']
+    using_manual_cross_sections = bool(_PARAMS.get('s_manual_cross_section_file'))
+    manual_record = None
+    if using_manual_cross_sections:
+        manual_record = _MANUAL_CROSS_SECTION_RECORDS.get(int(i_cell_comid))
+        if manual_record is None:
+            raise KeyError(f"Manual cross section for ID {i_cell_comid} was not found.")
 
     # Get the Slope of each Stream Cell. Slope should be in m/m
     s_stream_slope_method = _PARAMS['s_stream_slope_method']
@@ -1304,29 +1462,40 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         #Default to using the 'local_average' method
         d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
 
-    # Get the Stream Direction of each Stream Cell.  Direction is between 0 and pi.  Also get the cross-section direction (also between 0 and pi)
-    d_stream_direction, d_xs_direction = get_stream_direction_information(i_row_cell, i_column_cell, _STREAMS, i_general_direction_distance)
-
-    # Now Pull the Cross-Section again with the new angle
     x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _PARAMS)
-    if d_xs_direction > np.pi:
-        i_precompute_angle_closest = round((d_xs_direction-np.pi) / x_section.d_precompute_angles)
+    if using_manual_cross_sections:
+        apply_manual_cross_section_data(x_section, manual_record)
     else:
-        i_precompute_angle_closest = round(d_xs_direction / x_section.d_precompute_angles)
+        # Get the Stream Direction of each Stream Cell.  Direction is between 0
+        # and pi. Also get the cross-section direction (also between 0 and pi).
+        d_stream_direction, d_xs_direction = get_stream_direction_information(
+            i_row_cell,
+            i_column_cell,
+            _STREAMS,
+            i_general_direction_distance,
+        )
 
-    x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
-    
-    # Adjust to the lowest-point in the Cross-Section
-    i_low_spot_range = _PARAMS['i_low_spot_range']
-    if i_low_spot_range > 0:
-        x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
-        # The r and c for the stream cell is adjusted because it may have moved
-        i_row_cell, i_column_cell = x_section.get_row_col()
+        # Pull the raster-derived cross section using the stream-normal angle.
+        if d_xs_direction > np.pi:
+            i_precompute_angle_closest = round((d_xs_direction - np.pi) / x_section.d_precompute_angles)
+        else:
+            i_precompute_angle_closest = round(d_xs_direction / x_section.d_precompute_angles)
+
+        x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
+        
+        # Adjust to the lowest-point in the Cross-Section
+        i_low_spot_range = _PARAMS['i_low_spot_range']
+        if i_low_spot_range > 0:
+            x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
+            # The r and c for the stream cell is adjusted because it may have moved
+            i_row_cell, i_column_cell = x_section.get_row_col()
     
     d_dem_low_point_elev = x_section.get_thalweg()
 
-    # Adjust cross-section angle to ensure shortest top-width at a specified depth
-    if x_section.has_angles_to_test():
+    # Adjust cross-section angle to ensure shortest top-width at a specified
+    # depth when ARC is sampling the section from rasters itself. Manual cross
+    # sections are already fixed and should not be reoriented here.
+    if (not using_manual_cross_sections) and x_section.has_angles_to_test():
         x_section.test_angles_and_reset_cross_section(i_row_cell, i_column_cell)
 
     # Burn bathymetry profile into cross-section profile
@@ -1721,14 +1890,15 @@ def _build_flow_arrays(id_flow_dict: dict,  baseflow_key: str, qmax_key: str, pr
 
 def _build_reach_slope_arrays(stream_slope_dicts: tuple[dict], params: dict, processes: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     method = params['s_stream_slope_method']
+    slope_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
     if method in {'reach_average', 'end_points'}:
         slope_dict = stream_slope_dicts[0]
-        create_array("_CELL_REACH_SLOPE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope_dict[cid] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+        create_array("_CELL_REACH_SLOPE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope_dict[cid] for cid in slope_ids), dtype=np.float64, count=len(_CELL_COMIDS))
     if method == 'local_average_corrected':
         slope25_dict = stream_slope_dicts[1]
         slope75_dict = stream_slope_dicts[2]
-        create_array("_CELL_SLOPE_25", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope25_dict[cid] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
-        create_array("_CELL_SLOPE_75", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope75_dict[cid] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+        create_array("_CELL_SLOPE_25", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope25_dict[cid] for cid in slope_ids), dtype=np.float64, count=len(_CELL_COMIDS))
+        create_array("_CELL_SLOPE_75", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope75_dict[cid] for cid in slope_ids), dtype=np.float64, count=len(_CELL_COMIDS))
 
 def run_main_loop(
     num_cells: int,
@@ -1972,9 +2142,56 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     if params['s_output_flood']:
         create_array("_OUT_FLOOD", processes, (nrows + i_boundary_number * 2, ncols + i_boundary_number * 2), np.uint8)
 
-    # Get the list of stream locations
+    ### Accessing the manual cross-section file that will by-pass the creation of the cross-sections in ARC. 
+    manual_cross_section_file = params.get('s_manual_cross_section_file', '')
+    manual_cross_section_records = None
+    if manual_cross_section_file:
+        manual_cross_section_records, required_x_section_distance = load_manual_cross_section_records(
+            manual_cross_section_file,
+            params['s_flow_file_id'],
+            i_boundary_number,
+        )
+        if required_x_section_distance > params['d_x_section_distance']:
+            LOG.info(
+                "Increasing X_Section_Dist from "
+                + str(params['d_x_section_distance'])
+                + " to "
+                + str(required_x_section_distance)
+                + " to accommodate the supplied manual cross sections."
+            )
+            params['d_x_section_distance'] = required_x_section_distance
+
+    # Get the list of stream locations. In manual mode, the location list comes
+    # from the manual cross-section file rather than from the stream raster.
     flow_ids = np.fromiter(id_flow_dict.keys(), count=len(id_flow_dict), dtype=np.int64)
-    ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, flow_ids, kind='table'))
+    if manual_cross_section_records:
+        matching_flow_ids = [int(flow_id) for flow_id in flow_ids if int(flow_id) in manual_cross_section_records]
+        if len(matching_flow_ids) == 0:
+            raise ValueError(
+                "No IDs were shared between the ARC flow file and the manual cross-section file."
+            )
+        ia_valued_row_indices = np.asarray(
+            [manual_cross_section_records[flow_id]['row'] for flow_id in matching_flow_ids],
+            dtype=np.int64,
+        )
+        ia_valued_column_indices = np.asarray(
+            [manual_cross_section_records[flow_id]['col'] for flow_id in matching_flow_ids],
+            dtype=np.int64,
+        )
+        create_array("_CELL_COMIDS", processes, (len(matching_flow_ids),), np.int64)[:] = np.asarray(matching_flow_ids, dtype=np.int64)
+        create_array("_CELL_SOURCE_STREAM_IDS", processes, (len(matching_flow_ids),), np.int64)[:] = np.asarray(
+            [manual_cross_section_records[flow_id]['source_stream_id'] for flow_id in matching_flow_ids],
+            dtype=np.int64,
+        )
+        global _MANUAL_CROSS_SECTION_RECORDS
+        _MANUAL_CROSS_SECTION_RECORDS = {
+            flow_id: manual_cross_section_records[flow_id]
+            for flow_id in matching_flow_ids
+        }
+    else:
+        ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, flow_ids, kind='table'))
+        create_array("_CELL_COMIDS", processes, (ia_valued_row_indices.size,), np.int64)[:] = dm_stream[ia_valued_row_indices, ia_valued_column_indices]
+
     for arr, name in zip([ia_valued_row_indices, ia_valued_column_indices], ["_CELL_ROWS", "_CELL_COLS"]):
         create_array(name, processes, arr.shape, arr.dtype)[:] = arr[:]
 
@@ -1989,7 +2206,6 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     # create a reach average slope before we go stream cell by stream cell
     stream_slope_dicts = initialize_stream_slope_dictionaries(params, dx, dy, dem_geotransform, dem_projection, quiet, processes)
 
-    create_array("_CELL_COMIDS", processes, (ia_valued_row_indices.size,), np.int64)[:] = dm_stream[ia_valued_row_indices, ia_valued_column_indices]
     _build_flow_arrays(id_flow_dict, params['s_flow_file_baseflow'], params['s_flow_file_qmax'], processes)
     _build_reach_slope_arrays(stream_slope_dicts, params, processes)
     

@@ -6,7 +6,7 @@ The VDT output is a per-stream-cell table of hydraulic variables by increment (e
 
 | Column Name | Data Type | Description |
 | --- | --- | --- |
-| COMID | String | The unique identifier for the stream reach. Even if this is "rivid" or "HydroID" in the original stream network, ARC currently outputs the name as COMID in the VDT database. |
+| COMID | String | The unique identifier for the simulated row. In standard raster-sampled runs this is the stream/reach ID. In manual-cross-section runs it is the manual cross-section ID from `Flow_File_ID` (for example `XS_ID`). |
 | Row | Integer | The row in the DEM where the stream cell is located. |
 | Col | Integer | The column in the DEM where the stream cell is located. |
 | Elev | Float | The elevation of the input DEM (before bathymetry estimation) where the stream cell is located. |
@@ -26,7 +26,7 @@ The following table details the columns in the curve file, which may be saved as
 
 | Column Name | Data Type | Description |
 | --- | --- | --- |
-| COMID | String | The unique identifier for the stream reach. Even if this is "rivid" or "HydroID" in the original stream network, ARC currently outputs the name as COMID in the CurveFile. |
+| COMID | String | The unique identifier for the simulated row. In standard raster-sampled runs this is the stream/reach ID. In manual-cross-section runs it is the manual cross-section ID from `Flow_File_ID`. |
 | Row | Integer | The row in the DEM where the stream cell is located. |
 | Col | Integer | The column in the DEM where the stream cell is located.  |
 | BaseElev | Float | The elevation of the channel bottom after bathymetry has been estimated where the stream cell is located.  |
@@ -50,7 +50,7 @@ The following table details the columns in the AP database, which may be saved a
 
 | Column Name | Data Type | Description |
 | --- | --- | --- |
-| COMID | String | The unique identifier for the stream reach. Even if this is "rivid" or "HydroID" in the original stream network, ARC currently outputs the name as COMID in the AP database. |
+| COMID | String | The unique identifier for the simulated row. In standard raster-sampled runs this is the stream/reach ID. In manual-cross-section runs it is the manual cross-section ID from `Flow_File_ID`. |
 | Row | Integer | The row in the DEM where the stream cell is located. |
 | Col | Integer | The column in the DEM where the stream cell is located.  |
 | q_* | Float | The discharge increment for the row. For example, q_1 is the first discharge increment, q_2 is the second discharge increment, etc. |
@@ -65,11 +65,13 @@ If bathymetry outputs are enabled, ARC writes a raster with estimated channel-be
 ## Cross section export
 If the cross section output is enabled, ARC writes a tab-delimited text file containing sampled cross-section profiles and the associated metadata used during computation.
 
+If `Manual_Cross_Sections_File` is provided, ARC uses the supplied cross-section table as input instead of sampling a new cross section from the raster stack. The exported `XS_Out_File`, if requested, still reflects the cross sections ARC actually used during the run.
+
 The following table details the columns in the cross section export file:
 
 | Column Name | Data Type | Description |
 | --- | --- | --- |
-| COMID | String | The unique identifier for the stream reach. Even if this is "rivid" or "HydroID" in the original stream network, ARC currently outputs the name as COMID in the cross section export. |
+| COMID | String | The unique identifier for the simulated row. In standard raster-sampled runs this is the stream/reach ID. In manual-cross-section runs it is the manual cross-section ID from `Flow_File_ID`. |
 | Row | Integer | The row in the DEM where the stream cell is located. |
 | Col | Integer | The column in the DEM where the stream cell is located. |
 | XS1_Profile | String | A string representation of one half of the cross-section profile. It is a list of elevation values, rounded to 6 decimal places. |
