@@ -151,7 +151,7 @@ def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_ro
 
     return np.nan, np.nan
 
-def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geotransform, length_m):
+def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geotransform, length_m, pad_distance: int = 0):
     """
     Compute slope along a line using a DEM that was read with read_raster_gdal.
 
@@ -165,6 +165,11 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
         GDAL geotransform from read_raster_gdal.
     length_m : float
         Length of the line_geom in meters.
+    pad_distance : int, optional
+        Number of cells of zero padding ARC added around the DEM array. The
+        geotransform still describes the original unpadded raster, so sampled
+        row/column indices must be shifted by this amount before indexing the
+        padded DEM array.
 
     Returns
     -------
@@ -201,12 +206,19 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
 
     # --- helper: convert lon/lat → row/col using GDAL geotransform ---
     gt0, gt1, gt2, gt3, gt4, gt5 = dem_geotransform
-    nrows, ncols = dm_elevation.shape
+    nrows_padded, ncols_padded = dm_elevation.shape
+    nrows = nrows_padded - 2 * pad_distance
+    ncols = ncols_padded - 2 * pad_distance
 
     def xy_to_rowcol(x, y):
         """
         Convert map coordinates (x,y) to DEM row/col indices.
         Assumes a north-up grid (gt2 == gt4 == 0).
+
+        The GDAL geotransform describes the original raster, not ARC's padded
+        in-memory array. This helper therefore computes indices in the original
+        DEM space first, validates them against the unpadded bounds, and only
+        then shifts them into the padded array.
         """
         # column: straightforward with positive pixel width
         col = int((x - gt0) / gt1)
@@ -217,10 +229,12 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
         else:
             row = int((y - gt3) / gt5)
 
-        # clip to DEM bounds; if outside, return None
+        # Clip against the original, unpadded raster extent described by the
+        # geotransform. Coordinates outside that extent should not sample the
+        # artificial zero border that ARC added for neighborhood operations.
         if row < 0 or row >= nrows or col < 0 or col >= ncols:
             return None
-        return row, col
+        return row + pad_distance, col + pad_distance
 
     rc1 = xy_to_rowcol(coord_1[0], coord_1[1])
     rc2 = xy_to_rowcol(coord_2[0], coord_2[1])
@@ -261,6 +275,12 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
     slope_fraction = rise / length_m
     slope_pct = slope_fraction * 100.0
     slope_deg = math.degrees(math.atan(slope_fraction))
+
+    print(f"Joseph, this is z_end {z_end}")
+    print(f"Joseph, this is z_start {z_start}")
+
+    print(f"Joseph, this is the length of slope: {slope_fraction}")
+
 
     return slope_pct, slope_deg, z_start, z_end, length_m
 
@@ -1342,7 +1362,7 @@ def create_reach_average_slope_dicts(dm_stream, dx, dy, quiet, i_general_slope_d
 
     return dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th
 
-def dict_stream_slopes_from_endpoints(dm_stream, dem_geotransform, dem_projection, s_strmshp_path, s_flow_file_id, quiet):
+def dict_stream_slopes_from_endpoints(dm_stream, dem_geotransform, dem_projection, s_strmshp_path, s_flow_file_id, quiet, pad_distance):
     # create a list of unique stream IDs to loop through
     unique_stream_ids = np.unique(dm_stream)
     unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
@@ -1356,7 +1376,13 @@ def dict_stream_slopes_from_endpoints(dm_stream, dem_geotransform, dem_projectio
         gdf_utm = gdf_StrmSHP_filtered.to_crs(utm_crs)
         StrmSHP_geom = gdf_StrmSHP_filtered.to_crs(dem_projection).geometry
         length_m = float(gdf_utm.length.iloc[0])
-        slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(StrmSHP_geom.iloc[0], _DEM, dem_geotransform, length_m)
+        slope_pct, slope_deg, z_start, z_end, length_m = line_slope_from_dem(
+            StrmSHP_geom.iloc[0],
+            _DEM,
+            dem_geotransform,
+            length_m,
+            pad_distance=pad_distance,
+        )
         dict_stream_slopes[stream_id] = round(slope_pct/100, 8)
 
     return dict_stream_slopes
@@ -1393,13 +1419,21 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
-def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform, dem_projection, quiet, processes):
+def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform, dem_projection, quiet, processes, i_boundary_number):
     s_stream_slope_method = params['s_stream_slope_method']
     if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
         dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(_STREAMS, dx, dy, quiet, params['i_general_slope_distance'], processes)
         return (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
     elif s_stream_slope_method == 'end_points':
-        dict_stream_slopes = dict_stream_slopes_from_endpoints(_STREAMS, dem_geotransform, dem_projection, params['s_strmshp_path'], params['s_flow_file_id'], quiet)
+        dict_stream_slopes = dict_stream_slopes_from_endpoints(
+            _STREAMS,
+            dem_geotransform,
+            dem_projection,
+            params['s_strmshp_path'],
+            params['s_flow_file_id'],
+            quiet,
+            i_boundary_number,
+        )
         return (dict_stream_slopes, None, None)
     
     return (None, None, None)
@@ -2204,7 +2238,16 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     LOG.info('Cellsize Y = ' + str(dy))
 
     # create a reach average slope before we go stream cell by stream cell
-    stream_slope_dicts = initialize_stream_slope_dictionaries(params, dx, dy, dem_geotransform, dem_projection, quiet, processes)
+    stream_slope_dicts = initialize_stream_slope_dictionaries(
+        params,
+        dx,
+        dy,
+        dem_geotransform,
+        dem_projection,
+        quiet,
+        processes,
+        i_boundary_number,
+    )
 
     _build_flow_arrays(id_flow_dict, params['s_flow_file_baseflow'], params['s_flow_file_qmax'], processes)
     _build_reach_slope_arrays(stream_slope_dicts, params, processes)

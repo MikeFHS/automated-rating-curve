@@ -242,10 +242,15 @@ class HydraulicData:
         for col in ['COMID', 'Row', 'Col']:
             vdt_df[col] = vdt_df[col].astype(int)
 
-        # Round all numeric columns to 3, except 'Slope'
+        # Round most numeric columns to 3 decimals, but preserve more precision
+        # for the diagnostic angle and slope metadata.
         for col in vdt_df.columns:
-            if col not in ('Slope', ):
+            if col not in ('Slope', 'XS_Angle'):
                 vdt_df[col] = vdt_df[col].round(3)
+
+        # Angle metadata benefits from finer precision than the hydraulic
+        # output columns because small orientation changes matter in debugging.
+        vdt_df['XS_Angle'] = vdt_df['XS_Angle'].round(7)
 
         # Now round Slope separately to 8
         vdt_df['Slope'] = vdt_df['Slope'].round(8)
@@ -316,11 +321,13 @@ class HydraulicData:
         flow_df = pd.DataFrame.from_dict(id_flow_dict, orient='index')
         reach_average_curvefile_df['QMax'] = reach_average_curvefile_df['COMID'].map(flow_df[qmax_key])
 
-        # All columns but slope rounded to 3
+        # Most columns are rounded to 3 decimals, but keep more precision for
+        # the cross-section angle metadata and the local slope metadata.
         for col in reach_average_curvefile_df.columns:
-            if col != 'Slope':
+            if col not in ('Slope', 'XS_Angle'):
                 reach_average_curvefile_df[col] = reach_average_curvefile_df[col].round(3)
 
+        reach_average_curvefile_df['XS_Angle'] = reach_average_curvefile_df['XS_Angle'].round(7)
         reach_average_curvefile_df['Slope'] = reach_average_curvefile_df['Slope'].round(8)
 
         # Dynamically select columns, starting with prefixes
@@ -433,10 +440,13 @@ class HydraulicData:
         flow_df = pd.DataFrame.from_dict(id_flow_dict, orient='index')
         o_curve_file_df['QMax'] = o_curve_file_df['COMID'].map(flow_df[qmax_key])
         
-        # Round all numeric columns to 3, except 'Slope'
+        # Round most numeric columns to 3 decimals, but preserve more precision
+        # for the diagnostic angle and slope metadata.
         for col in o_curve_file_df.columns:
-            if col not in ('Slope', ):
+            if col not in ('Slope', 'XS_Angle'):
                 o_curve_file_df[col] = o_curve_file_df[col].round(3)
+
+        o_curve_file_df['XS_Angle'] = o_curve_file_df['XS_Angle'].round(7)
 
         # Now round Slope separately to 8
         o_curve_file_df['Slope'] = o_curve_file_df['Slope'].round(8)
