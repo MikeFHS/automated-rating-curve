@@ -1262,7 +1262,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
     sqrt_slope = d_slope_use**0.5
 
     for i_entry_elevation in range(i_number_of_increments):
-        d_wse = thalweg + d_inc_y * i_entry_elevation
+        d_wse = np.round(thalweg + d_inc_y * i_entry_elevation, 3)
 
         # Calculate the geometry          
         A, P, V, Q, T = _calculate_all(*flood_increments_args, d_wse, sqrt_slope)
@@ -1290,7 +1290,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
             # if we reach the upper bound without a valid candidate, or we overshot, revert
             # also add a top‑level guard before saving the initial (non‑refined) Q
             # right after computing the first Q/V for this increment:
-            if (Q <= prev_q) or (Q > d_q_sum + 0.01):
+            if (Q <= prev_q) or (Q > d_q_sum + 1.0):
                 add_hydraulic_data(output_data, i_entry_elevation, prev_wse, prev_t, prev_p, prev_q, prev_v, i_entry_cell, b_modified_dem)
                 continue
 
@@ -1798,8 +1798,10 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
     # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
     if acceptable and d_maxflow_wse_final > 0.0:
+        # round d_q_sum to the 3rd decimal place
+        d_q_sum = round(d_q_sum, 3)
         # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
-        d_inc_y = (d_maxflow_wse_final - thalweg) / i_number_of_increments
+        d_inc_y = round((d_maxflow_wse_final - thalweg) / i_number_of_increments, 3)
         flood_increments_args = x_section.get_flood_increment_args()
         i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                         d_inc_y, 

@@ -922,9 +922,9 @@ def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarr
     A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(da_xs_profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1)
     A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(da_xs_profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2)
 
-    T = T1 + T2
-    A = A1 + A2
-    P = P1 + P2
+    T = np.round(T1 + T2, 3)
+    A = np.round(A1 + A2, 3)
+    P = np.round(P1 + P2, 3)
 
     if A <= 0.0 or P <= 0.0:
         return 0.0, 0.0, 0.0, 0.0, T
@@ -933,8 +933,8 @@ def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarr
     d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
 
     # use Manning's equation to estimate the flow
-    Q = (1 / d_composite_n) * A * (A / P)**(2 / 3) * sqrt_slope
-    V = Q / A
+    Q = np.round((1 / d_composite_n) * A * (A / P)**(2 / 3) * sqrt_slope, 3)
+    V = np.round(Q / A, 3)
 
     return A, P, V, Q, T
 
