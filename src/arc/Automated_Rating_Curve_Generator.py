@@ -276,12 +276,6 @@ def line_slope_from_dem(line_geom: LineString, dm_elevation: np.ndarray, dem_geo
     slope_pct = slope_fraction * 100.0
     slope_deg = math.degrees(math.atan(slope_fraction))
 
-    print(f"Joseph, this is z_end {z_end}")
-    print(f"Joseph, this is z_start {z_start}")
-
-    print(f"Joseph, this is the length of slope: {slope_fraction}")
-
-
     return slope_pct, slope_deg, z_start, z_end, length_m
 
 
