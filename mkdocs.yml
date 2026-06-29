@@ -44,6 +44,7 @@ nav:
   - Technical Details:
     - Bathymetry: bathymetry.md
     - Stream Slope Methods: stream_slope_methods.md
+    - Synthetic Unit Tests: testing_unit_tests.md
     - Miscellaneous: miscellaneous.md
   - Examples: 
     - Produce Streamflow Inputs: produce_streamflow_inputs.md
