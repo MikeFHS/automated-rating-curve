@@ -2296,9 +2296,6 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         if b_modified_dem:
             # Subtract 100 only for cells that are not NaN
             _BATHYMETRY[~np.isnan(_BATHYMETRY)] -= 100
-        # # Joseph was testing a simple smoothing algorithm here to attempt to reduce variation in the bank based bathmetry (functions but doesn't provide better results)
-        # if b_bathy_use_banks:
-        #     dm_output_bathymetry = smooth_bathymetry_gaussian_numba(dm_output_bathymetry)
         write_output_raster(s_output_bathymetry_path, _BATHYMETRY[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(_PARAMS['s_output_flood']) > 1:

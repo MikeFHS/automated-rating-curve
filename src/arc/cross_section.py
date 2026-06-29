@@ -1463,9 +1463,24 @@ def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_
     '''
     
     
+    # Very small floating-point remnants at exactly horizontal/vertical angles
+    # can otherwise shift the "secondary" sample one full cell away and assign
+    # it nearly all the interpolation weight. That creates artificial end-cell
+    # asymmetry when a stream terminates at the rasterized reach boundary.
+    d_axis_tolerance = 1.0e-12
+
     # Determine the best direction to perform calcualtions
     #  Row-Dominated
     if d_xs_direction >= (math.pi / 4) and d_xs_direction <= (3 * math.pi / 4):
+        if math.fabs(math.cos(d_xs_direction)) < d_axis_tolerance:
+            ia_xc_dr_index_main[0:i_centerpoint] = np.arange(i_centerpoint)
+            ia_xc_dc_index_main[0:i_centerpoint] = 0
+            ia_xc_dr_index_second[0:i_centerpoint] = np.arange(i_centerpoint)
+            ia_xc_dc_index_second[0:i_centerpoint] = 0
+            da_xc_main_fract[0:i_centerpoint] = 1.0
+            da_xc_second_fract[0:i_centerpoint] = 0.0
+            return d_dy
+
         # Calculate the distance in the x direction
         da_distance_x = np.arange(i_centerpoint) * d_dy * math.cos(d_xs_direction)
 
@@ -1496,6 +1511,19 @@ def get_xs_index_values_precalculated(ia_xc_dr_index_main: np.ndarray, ia_xc_dc_
 
     # Col-Dominated
     else:
+        if math.fabs(math.sin(d_xs_direction)) < d_axis_tolerance:
+            column_pos_or_neg = 1
+            if d_xs_direction >= (math.pi / 2):
+                column_pos_or_neg = -1
+
+            ia_xc_dr_index_main[0:i_centerpoint] = 0
+            ia_xc_dc_index_main[0:i_centerpoint] = np.arange(i_centerpoint) * column_pos_or_neg
+            ia_xc_dr_index_second[0:i_centerpoint] = 0
+            ia_xc_dc_index_second[0:i_centerpoint] = np.arange(i_centerpoint) * column_pos_or_neg
+            da_xc_main_fract[0:i_centerpoint] = 1.0
+            da_xc_second_fract[0:i_centerpoint] = 0.0
+            return d_dx
+
         # Calculate based on the column being the dominate direction
         # Calculate the distance in the y direction
         da_distance_y = np.arange(i_centerpoint) * d_dx * math.sin(d_xs_direction)
