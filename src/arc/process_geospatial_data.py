@@ -198,7 +198,27 @@ def Process_AutoRoute_Geospatial_Data_for_testing(test_case, id_field, flow_fiel
     ARC_FileName = os.path.join(ARC_Folder,'ARC_Input_File.txt')
     print('Creating ARC Input File: ' + ARC_FileName)
     COMID_Q_File = FlowFileFolder + '/' + 'COMID_Q_qout_max.txt'
-    Create_ARC_Model_Input_File(ARC_FileName, DEM_File, id_field, flow_field, baseflow_field, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File)
+    Create_ARC_Model_Input_File(
+        ARC_FileName,
+        DEM_File,
+        id_field,
+        flow_field,
+        baseflow_field,
+        STRM_File_Clean,
+        LAND_File,
+        FLOW_File,
+        VDT_File,
+        Curve_File,
+        ManningN,
+        FloodMapFile,
+        DepthMapFile,
+        ARC_BathyFile,
+        XS_Out_File,
+        DEM_Cleaner_File,
+        False,
+        False,
+        STRM_SHP_File=StrmSHP,
+    )
     
     
     print('\n\n')
@@ -227,7 +247,32 @@ def Create_Folder(F):
         os.makedirs(F)
     return
 
-def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, Q_BF_Param, STRM_File_Clean, LAND_File, FLOW_File, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File, bathy_use_banks, use_land_cover_to_find_banks):
+def Create_ARC_Model_Input_File(
+    ARC_Input_File,
+    DEM_File,
+    COMID_Param,
+    Q_Param,
+    Q_BF_Param,
+    STRM_File_Clean,
+    LAND_File,
+    FLOW_File,
+    VDT_File,
+    Curve_File,
+    ManningN,
+    FloodMapFile,
+    DepthMapFile,
+    ARC_BathyFile,
+    XS_Out_File,
+    DEM_Cleaner_File,
+    bathy_use_banks,
+    use_land_cover_to_find_banks,
+    STRM_SHP_File='',
+    drainage_area_field='',
+    coefficient_depth=None,
+    exponent_depth=None,
+    coefficient_width=None,
+    exponent_width=None,
+):
     """
     Creates an input text file for the Automated Rating Curve (ARC) tool
 
@@ -245,6 +290,9 @@ def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, 
         The header of the column in the FLOW_File that contains the streamflow value that will be used by ARC to estimate bathymetry
     STRM_File_Clean: str
         The path and file name of the stream raster that will be used in the ARC simulation
+    STRM_SHP_File: str, optional
+        The path and file name of the stream vector dataset used for stream
+        slopes and optional drainage-area bathymetry relationships.
     LAND_File: str
         The path and file name of the land-use/land-cover raster that will be used in the ARC simulation
     FLOW_File: str
@@ -269,6 +317,12 @@ def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, 
         True/False argument on whether to run ARC bathymetry estimation using the bank elevations (True) or water surface elevation (False)
     use_land_cover_to_find_banks: bool
         True/False argument on whether to use land cover to find banks (True) or to use the flat water surface in the DEM (False)
+    drainage_area_field: str, optional
+        Name of the drainage-area field in ``STRM_SHP_File`` to use when
+        estimating bathymetry depth/width from power laws.
+    coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
+        Power-law coefficients and exponents used by ARC when ``Flow_File_BF``
+        is intentionally omitted for bathymetry estimation.
 
     Returns
     -------
@@ -279,11 +333,14 @@ def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, 
     out_file.write('#ARC Inputs')
     out_file.write('\n' + 'DEM_File	' + DEM_File)
     out_file.write('\n' + 'Stream_File	' + STRM_File_Clean)
+    if STRM_SHP_File:
+        out_file.write('\n' + 'StrmShp_File\t' + STRM_SHP_File)
     out_file.write('\n' + 'LU_Raster_SameRes	' + LAND_File)
     out_file.write('\n' + 'LU_Manning_n	' + ManningN)
     out_file.write('\n' + 'Flow_File	' + FLOW_File)
     out_file.write('\n' + 'Flow_File_ID	' + COMID_Param)
-    out_file.write('\n' + 'Flow_File_BF	' + Q_BF_Param)
+    if Q_BF_Param:
+        out_file.write('\n' + 'Flow_File_BF	' + Q_BF_Param)
     out_file.write('\n' + 'Flow_File_QMax	' + Q_Param)
     out_file.write('\n' + 'Spatial_Units	deg')
     out_file.write('\n' + 'X_Section_Dist	5000.0')
@@ -305,6 +362,12 @@ def Create_ARC_Model_Input_File(ARC_Input_File, DEM_File, COMID_Param, Q_Param, 
     out_file.write('\n' + 'Bathy_Trap_H	0.20')
     out_file.write('\n' + 'Bathy_Use_Banks' + '\t' + str(bathy_use_banks))
     out_file.write('\n' + 'FindBanksBasedOnLandCover' + '\t' + str(use_land_cover_to_find_banks))
+    if drainage_area_field and coefficient_depth is not None and exponent_depth is not None and coefficient_width is not None and exponent_width is not None:
+        out_file.write('\n' + 'drainage_area_field\t' + str(drainage_area_field))
+        out_file.write('\n' + 'coefficient_depth\t' + str(coefficient_depth))
+        out_file.write('\n' + 'exponent_depth\t' + str(exponent_depth))
+        out_file.write('\n' + 'coefficient_width\t' + str(coefficient_width))
+        out_file.write('\n' + 'exponent_width\t' + str(exponent_width))
     out_file.write('\n' + 'AROutBATHY	' + ARC_BathyFile)
 
     out_file.write('\n\n#Cross Section Information')
@@ -748,7 +811,20 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
     #return B[1:nrows+1,1:ncols+1], ncols, nrows, cellsize, yll, yur, xll, xur
     return
 
-def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, baseflow_field, flow_file_path, bathy_use_banks, use_land_cover_to_find_banks):
+def Process_ARC_Geospatial_Data(
+    Main_Directory,
+    id_field,
+    max_flow_field,
+    baseflow_field,
+    flow_file_path,
+    bathy_use_banks,
+    use_land_cover_to_find_banks,
+    drainage_area_field='',
+    coefficient_depth=None,
+    exponent_depth=None,
+    coefficient_width=None,
+    exponent_width=None,
+):
     """
     Create DEM-aligned ARC geospatial inputs and a starter MIF. Assumes that you've stored your inputs in a specific way. In the same directory where you're planning to store your inputs should be:
 
@@ -774,6 +850,12 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     use_land_cover_to_find_banks: bool
         Whether bank finding should use land cover (``True``) vs. "flat water"
         in the DEM (``False``).
+    drainage_area_field: str, optional
+        Name of the drainage-area field in the stream shapefile to use when the
+        optional bathymetry power-law mode is desired.
+    coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
+        Power-law parameters used to estimate bathymetry depth and fallback
+        width from the drainage area field.
 
     Returns
     -------
@@ -857,7 +939,32 @@ def Process_ARC_Geospatial_Data(Main_Directory, id_field, max_flow_field, basefl
     #Create a Starting AutoRoute Input File
     ARC_FileName = os.path.join(ARC_Folder,'ARC_Input_File.txt')
     print('Creating ARC Input File: ' + ARC_FileName)
-    Create_ARC_Model_Input_File(ARC_FileName, DEM_File, id_field, max_flow_field, baseflow_field, STRM_File_Clean, LAND_File, flow_file_path, VDT_File, Curve_File, ManningN, FloodMapFile, DepthMapFile, ARC_BathyFile, XS_Out_File, DEM_Cleaner_File, bathy_use_banks, use_land_cover_to_find_banks)
+    Create_ARC_Model_Input_File(
+        ARC_FileName,
+        DEM_File,
+        id_field,
+        max_flow_field,
+        baseflow_field,
+        STRM_File_Clean,
+        LAND_File,
+        flow_file_path,
+        VDT_File,
+        Curve_File,
+        ManningN,
+        FloodMapFile,
+        DepthMapFile,
+        ARC_BathyFile,
+        XS_Out_File,
+        DEM_Cleaner_File,
+        bathy_use_banks,
+        use_land_cover_to_find_banks,
+        STRM_SHP_File=StrmSHP,
+        drainage_area_field=drainage_area_field,
+        coefficient_depth=coefficient_depth,
+        exponent_depth=exponent_depth,
+        coefficient_width=coefficient_width,
+        exponent_width=exponent_width,
+    )
     
     
     print('\n\n')

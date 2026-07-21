@@ -3,7 +3,7 @@
 ARC is a Python tool that generates rating-curve-like hydraulic relationships for each stream cell in a raster domain. Given a DEM, a stream-ID raster, land-cover, and a flow table, ARC:
 
 1. Samples a cross-section for each stream cell
-2. Estimates bathymetry (optional)
+2. Estimates bathymetry (optional), using either `Flow_File_BF` or an optional drainage-area power-law depth relationship
 3. Computes water-surface elevation (WSE), depth, velocity, and top width across discharge increments
 4. Writes one or more output datasets (VDT database, curve file, bathymetry raster, etc.)
 

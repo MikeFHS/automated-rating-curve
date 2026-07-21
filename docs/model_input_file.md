@@ -10,8 +10,15 @@ LU_Raster_SameRes: /path/to/Land_Cover.tif
 LU_Manning_n: /path/to/Mannings_n.txt
 Flow_File: /path/to/Flow_File.csv
 Flow_File_ID: COMID
-Flow_File_BF: p_exceed_50
 Flow_File_QMax: rp100_premium
+StrmShp_File: /path/to/stream_network.gpkg
+reach_id: COMID
+downstream_reach_id: ToCOMID
+drainage_area_field: TotDASqKm
+coefficient_depth: 0.12
+exponent_depth: 0.42
+coefficient_width: 1.75
+exponent_width: 0.55
 Manual_Cross_Sections_File: /path/to/ARC_Manual_Cross_Sections.tsv
 Spatial_Units: deg
 X_Section_Dist: 5000
@@ -27,6 +34,9 @@ Stream_Slope_Method: local_average_corrected
 VDT_Database_NumIterations: 30
 Print_VDT_Database: /path/to/Output_VDT_Database.csv
 Reach_Average_Curve_File: False
+XS_Out_File: /path/to/Output_Cross_Sections.txt
+Build_Representative_Cross_Section: True
+Representative_Cross_Section_File: /path/to/Representative_Cross_Sections.csv
 
 #Bathymetry_Information
 Bathy_Trap_H: 0.2
@@ -44,22 +54,25 @@ BATHY_Out_File: /path/to/Output_Bathy.tif
 | `DEM_File` | --- | str | Path to the Digital Elevation Model (DEM) raster file. All subsequent raster files are assumed to have the same resolution, extent, and projection. |
 | `Flow_File` | --- | str | Path to the flow file containing streamflow data. |
 | `Flow_File_ID` | --- | str | Column name in the flow file that contains unique identifiers for each reach or manual cross section. When `Manual_Cross_Sections_File` is used, this same field name must also exist in the manual cross-section table. |
-| `Flow_File_BF` | --- | str | Column name in the flow file that contains baseflow values. |
+| `Flow_File_BF` | --- | str | Column name in the flow file that contains baseflow or bankfull discharge values used for bathymetry estimation. This field is optional only when the full drainage-area bathymetry parameter set is provided (`drainage_area_field`, `coefficient_depth`, `exponent_depth`, `coefficient_width`, and `exponent_width`). |
 | `Flow_File_QMax` | --- | str | Column name in the flow file that contains maximum discharge values to simulate. |
 | `LU_Manning_n` | --- | str | Path to the text file containing Manning's n values for different land cover types. |
 | `Manual_Cross_Sections_File` | --- | str | Optional tabular cross-section input file. When provided, ARC skips raster-based cross-section sampling and instead uses the supplied profiles, row/column arrays, and land-cover arrays for each `Flow_File_ID`. |
 | `LU_Raster_SameRes` | --- | str | Path to the land cover raster file. |
 | `Stream_File` | --- | str | Path to the stream raster file. |
-| `StrmShp_File` | --- | str | Path to the stream shapefile. Required if `Stream_Slope_Method` is set to 'end_points' or 'reach_average'. |
+| `StrmShp_File` | --- | str | Path to the stream shapefile or vector stream network. Required if `Stream_Slope_Method` is set to `end_points`, and also required when the optional drainage-area bathymetry parameters are used because ARC reads `drainage_area_field` from this dataset. |
+| `reach_id` | --- | str | Field name in `StrmShp_File` containing the stream-network reach identifier used by the network-based bank-elevation smoother. When bathymetry output is requested, this parameter is required and ARC uses it instead of `Flow_File_ID` to build the directed reach graph. |
+| `downstream_reach_id` | --- | str | Field name in `StrmShp_File` containing the immediate downstream reach identifier for each reach. When bathymetry output is requested, this parameter is required so ARC can build the directed reach network with `networkx` and estimate smoothed bank elevations for all sampled cross sections. |
 
 ### Parameters
 | Key | Default Value | Data Type | Description |
 | --- | --- | --- | --- |
 | `Degree_Manip` | 1.1 | float | The maximum angle, in degrees, that the cross-section may be rotated in either direction from perpendicular to the stream direction to find the orientation which yields the smallest water surface top-width. |
 | `Degree_Interval` | 1.0 | float | The interval, in degrees, at which the cross-section is rotated to find the orientation which yields the smallest water surface top-width. |
+| `Build_Representative_Cross_Section` | False | bool | When true, ARC builds a representative cross section for each `Flow_File_ID` from the sampled cross sections. ARC first samples and low-spot-adjusts all stream-cell cross sections, then computes `get_representative_inflect_curve()` for each reach and uses the minimum of the reach-mean INFLECT `d2W_dy2` curve to define the representative flood-terrace depth. ARC then recomputes hydraulic properties every 0.01 m above each sampled thalweg up to that common terrace depth using Manning's equation. The output CSV stores the reach-median discharge, velocity, top width, area, and WSE at each depth stage, along with the representative cross-section dimensions derived from staged top width and staged area. This requires `Representative_Cross_Section_File` to also be provided. |
 | `Gen_Dir_Dist` | 10 | int | The number of DEM cells to look around (left, right, up, down) any given stream cell to use in calculating the direction of the stream. |
 | `Gen_Slope_Dist` | 0 | int | The number of DEM cells to look around (left, right, up, down) any given stream cell to use in calculating the slope of the stream. |
-| `Low_Spot_Range` | 0 | int | The number of DEM cells to look left and right of the stream centerline to find the lowest spot. If a spot with an elevation lower than the cell identified as the stream centerline by the stream raster is found, the cross-section is re-centered around that spot. |
+| `Low_Spot_Range` | 0 | int | The number of DEM cells to look left and right of the stream centerline to find the lowest spot. If a spot with an elevation lower than the cell identified as the stream centerline by the stream raster is found, the cross-section is re-centered around that spot and resampled before ARC performs any reach-scale INFLECT, bank-finding, or bathymetry steps. |
 | `Reach_Average_Curve_File` | --- | bool | Flag indicating whether to average the values of the curve file across reaches. |
 | `Stream_Slope_Method` | local_average_corrected | str | The method to use for calculating stream slope. Options include 'local_average_corrected', 'local_average', 'local_average_corrected', 'reach_average', and 'end_points'. See [**Stream Slope Methods**](stream_slope_methods.md) for more details. |
 | `VDT_Database_NumIterations` | 15 | int | The number of iterations to run when creating the VDT database. |
@@ -75,6 +88,7 @@ See [**Outputs**](outputs.md) documentation for details on the output datasets t
 | `Print_AP_Database` | --- | str | Path to the output Area/Perimeter (AP) database file. |
 | `Print_Curve_File` | --- | str | Path to the output curve file. |
 | `Print_VDT_Database` | --- | str | Path to the output VDT database file. |
+| `Representative_Cross_Section_File` | --- | str | Path to the output representative cross-section CSV file. This file is only written when `Build_Representative_Cross_Section` is `True`, and it stores one row per reach and 0.01 m depth stage up to the INFLECT-defined flood terrace after ARC has finished the sampled-section, bank-search, and optional bathymetry preprocessing passes. |
 | `XS_Out_File` | --- | str | Path to the output cross-section export file. |
 
 ## Manual Cross-Section Input Schema
@@ -102,6 +116,13 @@ The gap-crossing seasonal export writes this schema directly. Additional metadat
 | Key | Default Value | Data Type | Description |
 | --- | --- | --- | --- |
 | `Bathy_Trap_H` | 0.2 | float | A value from the range 0-1, representing how much of a trapezoidal bathymetry is sloping on one side. For example, a value of 0.2 indicates that, given a stream bathymetry with a width of 100 meters, the bathymetry is sloping on one side by 20 meters, for a total of 40 meters of sloping. |
-| `Bathy_Use_Banks` | False | bool | When false, ARC assumes that the DEM is representative of the water surface (typically not in a flood stage, and often much less than bankfull), and that the baseflow value is less than bankfull. It will try to find the banks based on the DEM or land cover information, and cut out just that area between the banks to fit the given baseflow. When true, ARC assumes that the baseflow value is a channel-forming discharge (bankfull flow), and is free to recreate the bathymetry in the channel. See [**Bathymetry**](bathymetry.md) for more details. |
-| `FindBanksBasedOnLandCover` | False | bool | If true, ARC will first attempt to find the banks based on the land cover, by identifying the cells that are classified as water. Requires `LC_Water_Value` to be defined. See [**Bathymetry**](bathymetry.md) for more details. |
+| `Bathy_Use_Banks` | False | bool | When false, ARC assumes that the DEM is representative of the water surface (typically not in a flood stage, and often much less than bankfull), and that bathymetry depth should be estimated within the detected banks using either `Flow_File_BF` or the optional drainage-area power-law depth. When true, ARC assumes that the detected bank elevations represent bankfull conditions and is free to recreate the bathymetry in the channel using either the discharge-based or drainage-area-based depth target. In both cases ARC now samples every cross section first, evaluates the land-cover/INFLECT/local-DEM bank hierarchy across the cached sections, filters reach-scale top-width outliers by replacing widths outside the 25th-75th percentile band with bank locations matching the reach-median top width, uses that same reach-median top width to fill any sampled sections whose bank indices remain invalid, smooths the resulting bank elevations longitudinally from upstream to downstream within each reach, and preserves the filtered or reach-filled bank indices and top widths. In the bank-elevation workflow, the smoothed elevation is then used as the vertical bathymetry control while the local width geometry is retained. Sampled sections that do not yield a usable local multi-cell bank result are still kept in the smoothing pass and can fall through to the single-cell triangular bathymetry fallback. See [**Bathymetry**](bathymetry.md) for more details. |
+| `drainage_area_field` | --- | str | Optional field name in `StrmShp_File` containing drainage area values. When this field and all four power-law coefficients/exponents below are supplied together, ARC can estimate bathymetry without `Flow_File_BF`. |
+| `coefficient_depth` | --- | float | Coefficient in the power-law relationship used to estimate bankfull depth: `depth = coefficient_depth * drainage_area ^ exponent_depth`. |
+| `exponent_depth` | --- | float | Exponent in the power-law relationship used to estimate bankfull depth. |
+| `coefficient_width` | --- | float | Coefficient in the power-law relationship used to estimate bankfull width: `width = coefficient_width * drainage_area ^ exponent_width`. When a width prior is available, ARC now uses it in the first bank-search gate to decide whether a sampled section is narrow enough to accept the explicit one-cell triangular bathymetry fallback. |
+| `exponent_width` | --- | float | Exponent in the power-law relationship used to estimate bankfull width. Together with `coefficient_width`, this value controls the expected-width test that limits the one-cell bathymetry path to channels no wider than three raster cells. |
+| `FindBanksBasedOnLandCover` | False | bool | If true, ARC will first attempt to find the banks based on the land cover, by identifying the cells that are classified as water. If that does not produce usable banks, ARC next tries a reach-average INFLECT maximum-curvature bank estimate before falling back to the older local DEM methods. All of those checks occur after ARC has sampled and cached the full set of stream-cell cross sections. Requires `LC_Water_Value` to be defined. See [**Bathymetry**](bathymetry.md) for more details. |
 | `LC_Water_Value` | 80 | int | The value in the land cover raster that corresponds to water. Required if `FindBanksBasedOnLandCover` is true. Defaults to 80, which is the value for water in the ESA Land Cover dataset. |
+
+`Flow_File_QMax` remains required even when `Flow_File_BF` is omitted. The new drainage-area parameters only replace the bathymetry depth estimate; ARC still needs `Flow_File_QMax` to build the hydraulic increments, VDT database, and curve outputs.

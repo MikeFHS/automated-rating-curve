@@ -31,9 +31,11 @@ import tqdm
 import yaml
 import numpy as np
 import pandas as pd
+import networkx as nx
 from datetime import datetime
 import geopandas as gpd
 from scipy.optimize import OptimizeWarning, brentq
+from scipy.signal import find_peaks
 from shapely.geometry import LineString, MultiLineString
 from osgeo import gdal
 from pyproj import CRS, Geod
@@ -41,7 +43,7 @@ from numba import njit, vectorize
 from multiprocessing import Pool, shared_memory
 
 from arc import LOG
-from arc.cross_section import CrossSection, calculate_discharge_from_wse, _calculate_all
+from arc.cross_section import CrossSection, calc_bankfull_elevation, calculate_discharge_from_wse, _calculate_all
 from arc.hydraulic_data import HydraulicData, add_hydraulic_data
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
@@ -67,10 +69,15 @@ _CELL_COMIDS: np.ndarray = None
 _CELL_SOURCE_STREAM_IDS: np.ndarray = None
 _CELL_QBASE: np.ndarray = None
 _CELL_QMAX: np.ndarray = None
+_CELL_BATHY_DEPTH: np.ndarray = None
+_CELL_BATHY_WIDTH: np.ndarray = None
 _CELL_REACH_SLOPE: np.ndarray = None
 _CELL_SLOPE_25: np.ndarray = None
 _CELL_SLOPE_75: np.ndarray = None
+_CELL_REACH_INFLECT_BANK_INDEX: np.ndarray = None
+_CELL_REACH_INFLECT_TERRACE_INDEX: np.ndarray = None
 _MANUAL_CROSS_SECTION_RECORDS: dict[int, dict] | None = None
+_PRECOMPUTED_CROSS_SECTION_RECORDS: list[dict | None] | None = None
 
 ARRAY_NAMES = [
     '_DEM',
@@ -89,9 +96,13 @@ ARRAY_NAMES = [
     '_CELL_SOURCE_STREAM_IDS',
     '_CELL_QBASE',
     '_CELL_QMAX',
+    '_CELL_BATHY_DEPTH',
+    '_CELL_BATHY_WIDTH',
     '_CELL_REACH_SLOPE',
     '_CELL_SLOPE_25',
     '_CELL_SLOPE_75',
+    '_CELL_REACH_INFLECT_BANK_INDEX',
+    '_CELL_REACH_INFLECT_TERRACE_INDEX',
 ]
 
 MIN_SLOPE = 1e-8
@@ -99,6 +110,13 @@ MIN_SLOPE_DECIMAL_PLACES = -int(math.log10(MIN_SLOPE))
 DEPTH_INCREMENT_BIG = 0.5
 DEPTH_INCREMENT_MEDIUM = 0.05
 DEPTH_INCREMENT_SMALL = 0.01
+
+# Temporary diagnostic output. When enabled, ARC saves one reach-average
+# INFLECT curve plot per analyzed reach while building the reach-scale bank
+# indices used by the bathymetry workflow.
+TEMP_PLOT_REACH_INFLECT_CURVES = True
+TEMP_REACH_INFLECT_PLOT_SUBDIRECTORY = 'Reach_Inflect_Curve_Plots'
+REACH_BANK_ELEVATION_SMOOTHING_WINDOW = 20
 
 def get_cross_section(*args):
     global _CROSS_SECTION, _INDEX_ARRAYS, _Z_DISTANCE_ARRAY, _INDEX_FRACT_ARRAYS
@@ -113,7 +131,91 @@ def get_hydraulic_data(*args):
         _HYDRAULIC_DATA = HydraulicData(*args)
         _HYDRAULIC_DATA.associate_with_cross_section(get_cross_section())
         _HYDRAULIC_DATA.associate_with_output_data(_OUTPUT_DATA_ARRAY)
+        _HYDRAULIC_DATA.associate_with_reach_inflect_terrace_index(_CELL_REACH_INFLECT_TERRACE_INDEX)
     return _HYDRAULIC_DATA
+
+def _get_reach_inflect_plot_directory(params: dict) -> str:
+    """Return the directory where temporary reach INFLECT plots should be saved.
+
+    The plots are diagnostic artifacts, so ARC keeps them next to the most
+    relevant user-facing output when possible. Representative cross-section
+    runs take priority because those workflows also depend on reach-scale
+    INFLECT analysis. If that file is not configured, ARC falls back to the
+    bathymetry raster directory and finally to the current working directory.
+    """
+    candidate_output = (
+        params.get('s_representative_cross_section_file')
+        or params.get('s_output_bathymetry_path')
+        or params.get('s_xs_output_file')
+        or ''
+    )
+    base_dir = os.path.dirname(candidate_output) if candidate_output else os.getcwd()
+    return os.path.join(base_dir, TEMP_REACH_INFLECT_PLOT_SUBDIRECTORY)
+
+def _plot_reach_average_inflect_curve(
+    reach_id: int,
+    depth_values: np.ndarray,
+    mean_curve: np.ndarray,
+    bank_index: int,
+    terrace_index: int,
+    plot_directory: str,
+) -> None:
+    """Write a temporary PNG of the reach-average INFLECT curve.
+
+    Parameters
+    ----------
+    reach_id : int
+        Stream-reach identifier used to label the output figure.
+    depth_values : numpy.ndarray
+        Depth axis aligned to ``mean_curve``. This is built from the actual
+        staged bank-height-driven depth samples used by the sampled cross
+        sections in the reach rather than from the older fixed 0.10 m spacing.
+    mean_curve : numpy.ndarray
+        Reach-average ``d2W/dy2`` curve computed from the sampled cross
+        sections belonging to the reach.
+    bank_index : int
+        Index of the maximum-inflection point currently used to define the
+        reach-scale bank depth.
+    terrace_index : int
+        Index of the negative-inflection point currently used to define the
+        reach-scale terrace depth.
+    plot_directory : str
+        Destination directory for the diagnostic PNG.
+    """
+    if mean_curve.size == 0 or depth_values.size == 0:
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as ex:
+        LOG.warning(f'Unable to create temporary reach INFLECT plots because matplotlib is unavailable: {ex}')
+        return
+
+    os.makedirs(plot_directory, exist_ok=True)
+    curve_length = min(mean_curve.size, depth_values.size)
+    mean_curve = np.asarray(mean_curve[:curve_length], dtype=np.float64)
+    depth_values = np.asarray(depth_values[:curve_length], dtype=np.float64)
+    bank_index = int(min(max(bank_index, 0), mean_curve.size - 1))
+    terrace_index = int(min(max(terrace_index, 0), mean_curve.size - 1))
+    bank_depth = depth_values[bank_index]
+    terrace_depth = depth_values[terrace_index]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(depth_values, mean_curve, color='steelblue', linewidth=2.0)
+    ax.scatter([bank_depth], [mean_curve[bank_index]], color='crimson', zorder=3, label='Bank Index')
+    ax.axvline(bank_depth, color='crimson', linestyle='--', linewidth=1.0)
+    ax.scatter([terrace_depth], [mean_curve[terrace_index]], color='darkgreen', zorder=3, label='Terrace Index')
+    ax.axvline(terrace_depth, color='darkgreen', linestyle=':', linewidth=1.0)
+    ax.set_title(f'Reach {reach_id} Mean INFLECT Curve')
+    ax.set_xlabel('Depth Above Thalweg (m)')
+    ax.set_ylabel('Mean d2W/dy2')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
+
+    output_path = os.path.join(plot_directory, f'reach_{reach_id}_inflect_curve.png')
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
 
 def _set_shared(name: str, shm: shared_memory.SharedMemory):
     """
@@ -124,7 +226,7 @@ def _set_shared(name: str, shm: shared_memory.SharedMemory):
     _SHARED_MEMORYS[name] = shm
 
 def reset_globals():
-    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA', '_MANUAL_CROSS_SECTION_RECORDS']:
+    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA', '_MANUAL_CROSS_SECTION_RECORDS', '_PRECOMPUTED_CROSS_SECTION_RECORDS']:
         globals()[name] = None
 
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
@@ -497,6 +599,144 @@ def to_bool(val):
         return val.strip().lower() in {"true", "1", "yes", "y"}
     return bool(val)
 
+
+def _get_optional_parameter_value(sl_lines: list[str], primary_key: str, secondary_key: str = ''):
+    """Read an optional MIF/YAML parameter while supporting a legacy alias.
+
+    ARC historically uses mixed-case parameter names in its MIF examples, while
+    this bathymetry enhancement introduces lower-case keys requested by the
+    user. This helper lets the parser accept either spelling without forcing the
+    rest of the code to care which form the input file used.
+
+    Parameters
+    ----------
+    sl_lines : list[str]
+        Parsed input-file lines in ARC's internal ``key<TAB>value`` form.
+    primary_key : str
+        Preferred parameter name to read first.
+    secondary_key : str, optional
+        Backwards-compatible alias to try when the preferred key is not
+        present.
+
+    Returns
+    -------
+    object
+        The parsed value returned by :func:`get_parameter_name`, or an empty
+        string when neither key was provided.
+    """
+    value = get_parameter_name(sl_lines, primary_key)
+    if value == '' and secondary_key:
+        value = get_parameter_name(sl_lines, secondary_key)
+    return value
+
+
+def _parse_optional_float_parameter(value, parameter_name: str) -> float | None:
+    """Convert an optional ARC parameter into ``float`` or ``None``.
+
+    The MIF parser returns ``''`` when a parameter is absent. Treating that as
+    ``None`` here keeps the validation logic explicit and avoids scattering
+    string checks throughout the bathymetry code.
+
+    Parameters
+    ----------
+    value : object
+        Raw parameter value from the MIF/YAML parser.
+    parameter_name : str
+        Human-readable name used in validation error messages.
+
+    Returns
+    -------
+    float or None
+        Parsed floating-point value, or ``None`` when the parameter was not
+        supplied.
+    """
+    if value in ('', None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{parameter_name} must be numeric when provided.") from exc
+
+
+def _build_bathymetry_powerlaw_config(sl_lines: list[str], s_strmshp_path: str) -> dict:
+    """Parse and validate the optional drainage-area bathymetry parameters.
+
+    The new bathymetry mode replaces the discharge-driven depth estimate with
+    drainage-area power laws:
+
+    ``depth = coefficient_depth * drainage_area ** exponent_depth``
+    ``width = coefficient_width * drainage_area ** exponent_width``
+
+    The width relationship is intentionally a fallback-only tool. ARC still
+    prefers to detect banks directly from land cover / DEM evidence, and only
+    uses the estimated width if those searches fail.
+
+    Parameters
+    ----------
+    sl_lines : list[str]
+        Parsed input-file lines in ARC's internal ``key<TAB>value`` form.
+    s_strmshp_path : str
+        Path to the stream vector dataset. Required because the drainage-area
+        attribute must be read from this file.
+
+    Returns
+    -------
+    dict
+        Normalized configuration describing whether the power-law mode is fully
+        configured, plus the parsed field names and coefficients.
+    """
+    drainage_area_field = _get_optional_parameter_value(
+        sl_lines, 'drainage_area_field', 'Drainage_Area_Field'
+    )
+    coefficient_depth = _parse_optional_float_parameter(
+        _get_optional_parameter_value(sl_lines, 'coefficient_depth', 'Coefficient_Depth'),
+        'coefficient_depth',
+    )
+    exponent_depth = _parse_optional_float_parameter(
+        _get_optional_parameter_value(sl_lines, 'exponent_depth', 'Exponent_Depth'),
+        'exponent_depth',
+    )
+    coefficient_width = _parse_optional_float_parameter(
+        _get_optional_parameter_value(sl_lines, 'coefficient_width', 'Coefficient_Width'),
+        'coefficient_width',
+    )
+    exponent_width = _parse_optional_float_parameter(
+        _get_optional_parameter_value(sl_lines, 'exponent_width', 'Exponent_Width'),
+        'exponent_width',
+    )
+
+    provided_flags = {
+        'drainage_area_field': drainage_area_field != '',
+        'coefficient_depth': coefficient_depth is not None,
+        'exponent_depth': exponent_depth is not None,
+        'coefficient_width': coefficient_width is not None,
+        'exponent_width': exponent_width is not None,
+    }
+    any_provided = any(provided_flags.values())
+    all_provided = all(provided_flags.values())
+
+    if any_provided and not s_strmshp_path:
+        raise ValueError(
+            "StrmShp_File is required when configuring drainage-area bathymetry "
+            "parameters because ARC reads the drainage area attribute from that dataset."
+        )
+
+    if any_provided and not all_provided:
+        missing = [name for name, supplied in provided_flags.items() if not supplied]
+        raise ValueError(
+            "The drainage-area bathymetry mode requires all five optional "
+            "parameters together. Missing: " + ", ".join(missing)
+        )
+
+    return {
+        'enabled': all_provided,
+        'drainage_area_field': drainage_area_field if all_provided else '',
+        'coefficient_depth': coefficient_depth,
+        'exponent_depth': exponent_depth,
+        'coefficient_width': coefficient_width,
+        'exponent_width': exponent_width,
+    }
+
 def read_main_input_file(s_mif_name: str, args: dict):
     """
     Parse an ARC model input file (MIF) and apply overrides.
@@ -556,14 +796,50 @@ def read_main_input_file(s_mif_name: str, args: dict):
     b_reach_average_curve_file = to_bool(
         get_parameter_name(sl_lines, 'Reach_Average_Curve_File', False)
     ) and curve_file
+    b_build_representative_cross_section = to_bool(
+        get_parameter_name(sl_lines, 'Build_Representative_Cross_Section', False)
+    )
+    s_representative_cross_section_file = get_parameter_name(
+        sl_lines,
+        'Representative_Cross_Section_File',
+    )
+    s_reach_id_field = _get_optional_parameter_value(
+        sl_lines,
+        'reach_id',
+        'Reach_ID',
+    )
+    s_downstream_reach_id_field = _get_optional_parameter_value(
+        sl_lines,
+        'downstream_reach_id',
+        'Downstream_Reach_ID',
+    )
+    if b_build_representative_cross_section and not s_representative_cross_section_file:
+        raise ValueError(
+            'Build_Representative_Cross_Section requires Representative_Cross_Section_File.'
+        )
+
+    # Bathymetry can now be driven by either a discharge column (legacy path) or
+    # a drainage-area power law (new optional path). Parse the power-law
+    # configuration first so the baseflow validation below can decide whether
+    # omitting Flow_File_BF is intentional.
+    bathymetry_powerlaw = _build_bathymetry_powerlaw_config(sl_lines, s_strmshp_path)
 
     # check for baseflow parameters for bathymetry estimation. If not provided, disable bathymetry estimation.
     s_flow_file_baseflow = get_parameter_name(sl_lines,  'Flow_File_BF')
     s_flow_file_qmax = get_parameter_name(sl_lines,  'Flow_File_QMax')
     s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File'))
-    if s_flow_file_baseflow == '' and len(s_output_bathymetry_path) > 1:
-        LOG.warning('Flow_File_BF was not provided; disabling bathymetry estimation.')
+    if s_flow_file_baseflow == '' and len(s_output_bathymetry_path) > 1 and not bathymetry_powerlaw['enabled']:
+        LOG.warning(
+            'Flow_File_BF was not provided and the drainage-area bathymetry '
+            'parameters were not fully configured; disabling bathymetry estimation.'
+        )
         s_output_bathymetry_path = ''
+    if len(s_output_bathymetry_path) > 1:
+        if not s_reach_id_field or not s_downstream_reach_id_field:
+            raise ValueError(
+                'Bathymetry output requires both reach_id and downstream_reach_id '
+                'to be provided in the input file.'
+            )
 
     params = {
         's_input_dem_path': get_parameter_name(sl_lines,  'DEM_File'), # Find the path to the DEM file
@@ -576,6 +852,12 @@ def read_main_input_file(s_mif_name: str, args: dict):
         's_flow_file_id': get_parameter_name(sl_lines,  'Flow_File_ID'), # Find the column name 
         's_flow_file_baseflow': s_flow_file_baseflow, # Find the baseflow column name
         's_flow_file_qmax': s_flow_file_qmax, # Find the column name for the maximum flow
+        'b_use_bathymetry_powerlaw': bathymetry_powerlaw['enabled'],
+        's_bathymetry_drainage_area_field': bathymetry_powerlaw['drainage_area_field'],
+        'd_bathymetry_coefficient_depth': bathymetry_powerlaw['coefficient_depth'],
+        'd_bathymetry_exponent_depth': bathymetry_powerlaw['exponent_depth'],
+        'd_bathymetry_coefficient_width': bathymetry_powerlaw['coefficient_width'],
+        'd_bathymetry_exponent_width': bathymetry_powerlaw['exponent_width'],
         'd_x_section_distance': float(get_parameter_name(sl_lines,  'X_Section_Dist', 5000.0)), # Find the x section distance
         's_output_vdt_database': get_parameter_name(sl_lines,  'Print_VDT_Database'), # Find the path to the output velocity, depth, and top width file
         's_output_ap_database': get_parameter_name(sl_lines,  'Print_AP_Database'), # Find the path to the output area and wetted perimeter file
@@ -589,6 +871,10 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'b_bathy_use_banks': b_bathy_use_banks, # Find the true/false variable to use the bank elevations to calculate the depth of the bathymetry estimate
         's_output_bathymetry_path': s_output_bathymetry_path, # Find the path to the output bathymetry file
         's_xs_output_file': get_parameter_name(sl_lines,  'XS_Out_File'), # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
+        'b_build_representative_cross_section': b_build_representative_cross_section,
+        's_representative_cross_section_file': s_representative_cross_section_file,
+        's_reach_id_field': s_reach_id_field,
+        's_downstream_reach_id_field': s_downstream_reach_id_field,
         's_manual_cross_section_file': get_parameter_name(sl_lines, 'Manual_Cross_Sections_File'),
         'i_lc_water_value': int(get_parameter_name(sl_lines,  'LC_Water_Value', 80)), # Find the value in the land cover dataset that corresponds to water. This is used to find the banks of the river if b_FindBanksBasedOnLandCover is set to True
         'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
@@ -599,6 +885,114 @@ def read_main_input_file(s_mif_name: str, args: dict):
     }
 
     return params
+
+
+def _power_law_geometry_from_drainage_area(
+    drainage_area: float,
+    coefficient_depth: float,
+    exponent_depth: float,
+    coefficient_width: float,
+    exponent_width: float,
+) -> tuple[float, float]:
+    """Estimate bathymetry target depth and fallback width from drainage area.
+
+    Parameters
+    ----------
+    drainage_area : float
+        Drainage-area attribute value read from the stream vector dataset.
+    coefficient_depth, exponent_depth : float
+        Power-law parameters used to estimate bankfull depth.
+    coefficient_width, exponent_width : float
+        Power-law parameters used to estimate bankfull width.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(estimated_depth, estimated_width)``.
+    """
+    estimated_depth = coefficient_depth * (drainage_area ** exponent_depth)
+    estimated_width = coefficient_width * (drainage_area ** exponent_width)
+    return float(estimated_depth), float(estimated_width)
+
+
+def build_bathymetry_geometry_dict(
+    s_strmshp_path: str,
+    s_flow_file_id: str,
+    drainage_area_field: str,
+    coefficient_depth: float,
+    exponent_depth: float,
+    coefficient_width: float,
+    exponent_width: float,
+) -> dict[int, dict[str, float]]:
+    """Read stream attributes and convert them into per-reach bathymetry targets.
+
+    The resulting dictionary lets the per-cell compute loop operate entirely on
+    numeric arrays. All vector I/O is completed once up front, which keeps the
+    hot loop simple and multiprocessing-friendly.
+
+    Parameters
+    ----------
+    s_strmshp_path : str
+        Path to the vector dataset identified by ``StrmShp_File``.
+    s_flow_file_id : str
+        Reach identifier field shared by the flow file and stream vector.
+    drainage_area_field : str
+        Field in ``s_strmshp_path`` containing drainage area values.
+    coefficient_depth, exponent_depth, coefficient_width, exponent_width : float
+        Power-law coefficients and exponents used to estimate target geometry.
+
+    Returns
+    -------
+    dict[int, dict[str, float]]
+        Mapping ``reach_id -> {"depth": depth, "width": width}``.
+    """
+    gdf_stream = gpd.read_file(s_strmshp_path)
+    required_columns = {s_flow_file_id, drainage_area_field}
+    missing_columns = sorted(required_columns.difference(gdf_stream.columns))
+    if missing_columns:
+        raise KeyError(
+            "The stream vector dataset is missing the columns required for "
+            "drainage-area bathymetry: " + ", ".join(missing_columns)
+        )
+
+    attribute_df = gdf_stream[[s_flow_file_id, drainage_area_field]].copy()
+    attribute_df = attribute_df.dropna(subset=[s_flow_file_id, drainage_area_field])
+    attribute_df[s_flow_file_id] = pd.to_numeric(attribute_df[s_flow_file_id], errors='raise').astype(np.int64)
+    attribute_df[drainage_area_field] = pd.to_numeric(attribute_df[drainage_area_field], errors='raise')
+
+    bathymetry_geometry: dict[int, dict[str, float]] = {}
+    for reach_id, group in attribute_df.groupby(s_flow_file_id, sort=False):
+        drainage_area = float(group[drainage_area_field].iloc[0])
+        if not np.isfinite(drainage_area) or drainage_area <= 0.0:
+            raise ValueError(
+                f"Drainage area for reach {reach_id} must be positive in field "
+                f"{drainage_area_field}."
+            )
+
+        estimated_depth, estimated_width = _power_law_geometry_from_drainage_area(
+            drainage_area,
+            coefficient_depth,
+            exponent_depth,
+            coefficient_width,
+            exponent_width,
+        )
+        if not np.isfinite(estimated_depth) or estimated_depth <= 0.0:
+            raise ValueError(
+                f"Estimated depth for reach {reach_id} was not positive. "
+                "Check coefficient_depth, exponent_depth, and the drainage area values."
+            )
+        if not np.isfinite(estimated_width) or estimated_width <= 0.0:
+            raise ValueError(
+                f"Estimated width for reach {reach_id} was not positive. "
+                "Check coefficient_width, exponent_width, and the drainage area values."
+            )
+
+        bathymetry_geometry[int(reach_id)] = {
+            'depth': estimated_depth,
+            'width': estimated_width,
+        }
+
+    return bathymetry_geometry
 
 def convert_cell_size(
     d_dem_cell_size_x: float,
@@ -1432,14 +1826,1428 @@ def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform,
     
     return (None, None, None)
 
+
+def _get_cell_bathymetry_inputs(i_entry_cell: int, i_row_cell: int, i_column_cell: int, params: dict) -> tuple[float, float, float | None, float | None]:
+    """Return the bathymetry-driving inputs for a sampled stream cell.
+
+    The reach-average INFLECT prepass and the main hydraulic loop both need to
+    derive bathymetry from the same per-cell baseflow, slope, and optional
+    drainage-area power-law targets. Centralizing that logic keeps the
+    representative INFLECT prepass consistent with the actual production
+    bathymetry workflow.
+    """
+    d_q_baseflow = _CELL_QBASE[i_entry_cell]
+    d_bathy_target_depth = None if _CELL_BATHY_DEPTH is None else _CELL_BATHY_DEPTH[i_entry_cell]
+    d_bathy_target_width = None if _CELL_BATHY_WIDTH is None else _CELL_BATHY_WIDTH[i_entry_cell]
+    i_general_slope_distance = params['i_general_slope_distance']
+    s_stream_slope_method = params['s_stream_slope_method']
+    dx = params['dx']
+    dy = params['dy']
+
+    if s_stream_slope_method == 'local_average':
+        d_slope_use = get_local_average_stream_slope_information(
+            i_row_cell,
+            i_column_cell,
+            _DEM,
+            _STREAMS,
+            dx,
+            dy,
+            i_general_slope_distance,
+        )
+    elif s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'end_points':
+        d_slope_use = _CELL_REACH_SLOPE[i_entry_cell]
+    elif s_stream_slope_method == 'local_average_corrected':
+        d_slope_use = get_local_average_stream_slope_information(
+            i_row_cell,
+            i_column_cell,
+            _DEM,
+            _STREAMS,
+            dx,
+            dy,
+            i_general_slope_distance,
+        )
+        d_slope_25th = _CELL_SLOPE_25[i_entry_cell]
+        d_slope_75th = _CELL_SLOPE_75[i_entry_cell]
+        if d_slope_use < d_slope_25th:
+            d_slope_use = d_slope_25th
+        elif d_slope_use > d_slope_75th:
+            d_slope_use = d_slope_75th
+    else:
+        d_slope_use = get_local_average_stream_slope_information(
+            i_row_cell,
+            i_column_cell,
+            _DEM,
+            _STREAMS,
+            dx,
+            dy,
+            i_general_slope_distance,
+        )
+
+    return d_q_baseflow, d_slope_use, d_bathy_target_depth, d_bathy_target_width
+
+
+def _apply_bathymetry_to_cross_section(
+    x_section: CrossSection,
+    params: dict,
+    d_q_baseflow: float,
+    d_slope_use: float,
+    d_bathy_target_depth: float | None,
+    d_bathy_target_width: float | None,
+    bank_search_result: dict | None = None,
+) -> None:
+    """Apply ARC's bathymetry workflow to the current sampled cross section.
+
+    This helper intentionally mutates ``x_section`` in-place so downstream
+    geometry calculations can reuse the staged profile without resampling.
+    When ``bank_search_result`` is supplied, ARC reuses the bank hierarchy
+    chosen during the prepass that evaluated bank locations for every stream
+    cell before any bathymetry was applied. The output raster backing array is
+    reused here because the existing bathymetry methods write both the adjusted
+    profile and raster output together.
+    """
+    s_output_bathymetry_path = params['s_output_bathymetry_path']
+    if s_output_bathymetry_path == '':
+        return
+
+    if not params['b_bathy_use_banks']:
+        x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(
+            d_q_baseflow,
+            d_slope_use,
+            _BATHYMETRY,
+            d_bathy_target_depth=d_bathy_target_depth,
+            d_bathy_target_width=d_bathy_target_width,
+            bank_search_result=bank_search_result,
+        )
+    else:
+        x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(
+            d_q_baseflow,
+            d_slope_use,
+            _BATHYMETRY,
+            d_bathy_target_depth=d_bathy_target_depth,
+            d_bathy_target_width=d_bathy_target_width,
+            bank_search_result=bank_search_result,
+        )
+
+
+def _build_precomputed_cross_section_record(
+    x_section: CrossSection,
+    dem_low_point_elev: float,
+    bathymetry_applied: bool = False,
+    inflect_curve: np.ndarray | None = None,
+    bank_search_result: dict | None = None,
+) -> dict:
+    """Capture the current cross section so it can be replayed later.
+
+    ARC now moves through three distinct cross-section stages:
+
+    1. sample the raw DEM/land-cover cross section for every stream cell,
+    2. determine banks for every cached section after the reach-scale INFLECT
+       curves have been assembled, and
+    3. optionally apply bathymetry to the cached section before hydraulics.
+
+    This record stores the currently active state of the section, plus enough
+    metadata to replay it later without touching the DEM again.
+    """
+    record = {
+        "row": int(x_section.row),
+        "col": int(x_section.col),
+        "xs_angle": float(x_section.d_xs_direction),
+        "ordinate_dist": float(x_section.d_ordinate_dist),
+        "xs1_profile": x_section.da_xs_profile1[:x_section.xs1_n].copy(),
+        "xs2_profile": x_section.da_xs_profile2[:x_section.xs2_n].copy(),
+        "lc1_profile": x_section.ia_lc_xs1[:x_section.xs1_n].copy(),
+        "lc2_profile": x_section.ia_lc_xs2[:x_section.xs2_n].copy(),
+        "xs1_row": x_section.ia_xc_row1_index_main[:x_section.xs1_n].copy(),
+        "xs1_col": x_section.ia_xc_column1_index_main[:x_section.xs1_n].copy(),
+        "xs2_row": x_section.ia_xc_row2_index_main[:x_section.xs2_n].copy(),
+        "xs2_col": x_section.ia_xc_column2_index_main[:x_section.xs2_n].copy(),
+        "dem_low_point_elev": float(dem_low_point_elev),
+        "bathymetry_applied": bool(bathymetry_applied),
+    }
+    if inflect_curve is not None:
+        record["inflect_curve"] = np.asarray(inflect_curve, dtype=np.float64).copy()
+    if bank_search_result is not None:
+        record["bank_search_result"] = dict(bank_search_result)
+    return record
+
+
+def _build_cross_section_export_record(
+    x_section: CrossSection,
+    params: dict,
+    i_cell_comid: int,
+    i_row_cell: int,
+    i_column_cell: int,
+    d_slope_use: float,
+    inflect_curve: np.ndarray | None,
+) -> dict:
+    """Build the persisted per-cell cross-section record used by ARC outputs."""
+    b_modified_dem = params['b_modified_dem']
+    return {
+        'COMID': int(i_cell_comid),
+        'Row': int(i_row_cell - x_section.i_boundary_number),
+        'Col': int(i_column_cell - x_section.i_boundary_number),
+        'XS1_Profile': x_section.da_xs_profile1[0:x_section.xs1_n].copy() - 100 if b_modified_dem else x_section.da_xs_profile1[0:x_section.xs1_n].copy(),
+        'Ordinate_Dist': float(x_section.d_ordinate_dist),
+        'Manning_N_Raster1': x_section.mannings_n1[:x_section.xs1_n].copy(),
+        'XS2_Profile': x_section.da_xs_profile2[0:x_section.xs2_n].copy() - 100 if b_modified_dem else x_section.da_xs_profile2[0:x_section.xs2_n].copy(),
+        'Manning_N_Raster2': x_section.mannings_n2[:x_section.xs2_n].copy(),
+        'r1': int(x_section.ia_xc_row1_index_main[x_section.xs1_n-1] - x_section.i_boundary_number),
+        'c1': int(x_section.ia_xc_column1_index_main[x_section.xs1_n-1] - x_section.i_boundary_number),
+        'r2': int(x_section.ia_xc_row2_index_main[x_section.xs2_n-1] - x_section.i_boundary_number),
+        'c2': int(x_section.ia_xc_column2_index_main[x_section.xs2_n-1] - x_section.i_boundary_number),
+        'Slope': float(d_slope_use),
+        'Thalweg': float(x_section.get_thalweg() - 100 if b_modified_dem else x_section.get_thalweg()),
+        'Inflect_D2W_Dy2': None if inflect_curve is None else np.asarray(inflect_curve, dtype=np.float64).copy(),
+    }
+
+
+def _sample_cross_section_for_cell(
+    x_section: CrossSection,
+    i_entry_cell: int,
+    params: dict,
+) -> tuple[bool, int, int, int, float]:
+    """Sample, low-spot adjust, and resample one stream-cell cross section.
+
+    This helper performs only the DEM/land-cover sampling stage. It does not
+    attempt bank detection or bathymetry. That separation is intentional: ARC
+    first samples *all* stream-cell cross sections, then computes reach-scale
+    INFLECT curves and bank locations across the full sampled population, and
+    only after that applies bathymetry.
+    """
+    i_row_cell = int(_CELL_ROWS[i_entry_cell])
+    i_column_cell = int(_CELL_COLS[i_entry_cell])
+    i_cell_comid = int(_CELL_COMIDS[i_entry_cell])
+    using_manual_cross_sections = bool(params.get('s_manual_cross_section_file'))
+
+    if using_manual_cross_sections:
+        manual_record = _MANUAL_CROSS_SECTION_RECORDS.get(i_cell_comid)
+        if manual_record is None:
+            raise KeyError(f"Manual cross section for ID {i_cell_comid} was not found.")
+        apply_manual_cross_section_data(x_section, manual_record)
+    else:
+        d_stream_direction, d_xs_direction = get_stream_direction_information(
+            i_row_cell,
+            i_column_cell,
+            _STREAMS,
+            params['i_general_direction_distance'],
+        )
+        if d_xs_direction > np.pi:
+            i_precompute_angle_closest = round((d_xs_direction - np.pi) / x_section.d_precompute_angles)
+        else:
+            i_precompute_angle_closest = round(d_xs_direction / x_section.d_precompute_angles)
+
+        x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
+
+        i_low_spot_range = params['i_low_spot_range']
+        if i_low_spot_range > 0:
+            x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
+            i_row_cell, i_column_cell = x_section.get_row_col()
+
+        if x_section.has_angles_to_test():
+            x_section.test_angles_and_reset_cross_section(i_row_cell, i_column_cell)
+
+    if not x_section.is_valid():
+        return False, i_cell_comid, i_row_cell, i_column_cell, float("nan")
+
+    i_row_cell, i_column_cell = x_section.get_row_col()
+    return True, i_cell_comid, i_row_cell, i_column_cell, float(x_section.get_thalweg())
+
+
+def _replay_precomputed_cross_section(
+    x_section: CrossSection,
+    precomputed_record: dict,
+    reach_bank_index: float | None = None,
+) -> None:
+    """Load a cached cross section back into a reusable sampler instance."""
+    apply_manual_cross_section_data(x_section, precomputed_record)
+    x_section.set_reach_scale_inflect_bank_index(reach_bank_index)
+
+# Function for identifying top inflection point peaks
+def top_peaks_id(peaks_array, num_peaks):
+    if len(peaks_array[0]) < num_peaks:
+        peak_range = len(peaks_array[0])
+    else: 
+        peak_range = num_peaks
+    peak_indices = peaks_array[0]
+    max_peaks = []
+    for i in range(0, peak_range): # Here is where to define number of peaks looking for 
+        current_max = 0 
+        current_max_index = 0
+        for j in range(len(peak_indices)):
+            if abs(peaks_array[1]['peak_heights'][j]) > current_max:
+                current_max = abs(peaks_array[1]['peak_heights'][j])
+                current_max_index = j
+        peaks_array[1]['peak_heights'] = np.delete(peaks_array[1]['peak_heights'], current_max_index)
+        max_peaks.append(peak_indices[current_max_index])
+        peak_indices = np.delete(peak_indices, current_max_index)
+    return max_peaks
+
+def _build_reach_inflect_index_dictionaries(
+    grouped_curves: dict[int, list[tuple[np.ndarray, np.ndarray]]],
+    params: dict,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """Aggregate per-cell INFLECT curves into reach-scale bank/terrace depths.
+
+    ``_calculate_inflect_curve_with_depths`` now produces both the
+    ``d2W/dy2`` curve and the exact depth axis used to evaluate that curve.
+    This helper therefore returns physical depths above the thalweg, not
+    synthetic curve indices, so the reach-scale INFLECT bank finder and the
+    representative-cross-section workflow both use the same staged geometry.
+    """
+    inflect_bank_index_dict: dict[int, float] = {}
+    inflect_terrace_index_dict: dict[int, float] = {}
+    plot_directory = _get_reach_inflect_plot_directory(params) if TEMP_PLOT_REACH_INFLECT_CURVES else ''
+    max_peak_ratio = 2 # The ratio of max peak:detected peak. Default val 2 means the detected peak must be one half the magnitude of the maximum peak. 
+    distance_val = 5 # The minimum distance required between individual peaks, unitless. Must be greater or equal to 1. 
+    width_val = 2 # The minumum width of an individual peak at the base, unitless
+
+    for reach_id, curves in grouped_curves.items():
+        min_length = min(curve.shape[0] for curve, _ in curves)
+        if min_length <= 0:
+            continue
+        aligned_curves = np.vstack([curve[:min_length] for curve, _ in curves])
+        aligned_depths = np.vstack([depths[:min_length] for _, depths in curves])
+        inflections_array = np.nanmean(aligned_curves, axis=0)
+        mean_depth_values = np.nanmean(aligned_depths, axis=0)
+
+        # identify top three peaks (across positive and negative)
+        peaks_pos = find_peaks(inflections_array, height=max(inflections_array)/max_peak_ratio, distance=distance_val, width=width_val) #, prominence=prominence_val) # require peaks to be at least half the mag of max peak
+        inflections_array_neg = [-i for i in inflections_array] # invert all signs to detect negative peaks
+        peaks_neg = find_peaks(inflections_array_neg, height=max(inflections_array_neg)/max_peak_ratio, distance=distance_val, width=width_val) #, prominence=prominence_val) # require peaks to be at least half the mag of max peak
+
+        # potential bank locations are the postiive peaks
+        bank_indices = top_peaks_id(peaks_pos, 3)
+
+        # order the bank indices from lowest to highest
+        bank_indices = sorted(bank_indices)
+
+        # remove the bank indices if it is 0 or if it is the last index of the array (the end of the cross section)
+        bank_indices = [i for i in bank_indices if i > 0 and i < len(inflections_array) - 1]
+
+        # if no positive peaks are detected, set bank_index to 0 (the start of the array)
+        if len(bank_indices) <= 0:
+            bank_index = -1
+        else:
+            bank_index = int(bank_indices[0])
+
+        # if bank_index is 0, try to find the next lowest index in bank_indices that is not a depth value of 0 to see if it is a better candidate for the bank location
+        if bank_index >= 0 and inflections_array[bank_index] <= 0.0:
+            if len(bank_indices) > 1:
+                for i in range(1, len(bank_indices)):
+                    if inflections_array[bank_indices[i]] > 0.0:
+                        bank_index = int(bank_indices[i]) - 1
+                        break
+            # Otherwise we don't know what the bank index is, so add None to the dictionary and set terrace_index to a large number
+            else:
+                bank_index = -1
+
+        if bank_index > 0:
+            # potential negative peaks are the terrace locations
+            terrace_indices = top_peaks_id(peaks_neg, 3)
+            # sort the terrace indices from lowest to highest
+            terrace_indices = sorted(terrace_indices)
+            # remove the terrace indices if it is the first or last index of the array (the start or end of the cross section)
+            terrace_indices = [i for i in terrace_indices if i > 0 and i < len(inflections_array) - 1]
+            if len(terrace_indices) <= 0:
+                terrace_index = len(inflections_array) + 20
+            elif len(terrace_indices) == 1:
+                terrace_index = terrace_indices[0]
+                if terrace_index < bank_index:
+                    terrace_index = -1
+            elif len(terrace_indices) > 1:
+                terrace_index = -1
+                for terrace_index in terrace_indices:
+                    if terrace_index > bank_index:
+                        break
+                if terrace_index <= bank_index:
+                    terrace_index = -1
+        else:
+            terrace_index = -1
+
+        bank_depth = -1.0
+        if bank_index >= 0 and bank_index < mean_depth_values.size:
+            bank_depth = float(mean_depth_values[bank_index])
+
+        terrace_depth = -1.0
+        if terrace_index >= 0 and terrace_index < mean_depth_values.size:
+            terrace_depth = float(mean_depth_values[terrace_index])
+
+        inflect_bank_index_dict[int(reach_id)] = bank_depth
+        inflect_terrace_index_dict[int(reach_id)] = terrace_depth
+        if TEMP_PLOT_REACH_INFLECT_CURVES:
+            _plot_reach_average_inflect_curve(
+                int(reach_id),
+                mean_depth_values,
+                inflections_array,
+                bank_index,
+                terrace_index,
+                plot_directory,
+            )
+
+    return inflect_bank_index_dict, inflect_terrace_index_dict
+
+
+def _populate_reach_inflect_arrays(
+    inflect_bank_index_dict: dict[int, float],
+    inflect_terrace_index_dict: dict[int, float],
+    processes: int,
+) -> None:
+    """Create shared per-cell arrays from reach-level INFLECT depths."""
+    source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
+    create_array("_CELL_REACH_INFLECT_BANK_INDEX", processes, (_CELL_COMIDS.size,), np.float64, fill_value=-1.0)
+    create_array("_CELL_REACH_INFLECT_TERRACE_INDEX", processes, (_CELL_COMIDS.size,), np.float64, fill_value=-1.0)
+
+    if inflect_bank_index_dict:
+        _CELL_REACH_INFLECT_BANK_INDEX[:] = np.fromiter(
+            (inflect_bank_index_dict.get(int(stream_id), -1.0) for stream_id in source_ids),
+            dtype=np.float64,
+            count=len(_CELL_COMIDS),
+        )
+
+    if inflect_terrace_index_dict:
+        _CELL_REACH_INFLECT_TERRACE_INDEX[:] = np.fromiter(
+            (inflect_terrace_index_dict.get(int(stream_id), -1.0) for stream_id in source_ids),
+            dtype=np.float64,
+            count=len(_CELL_COMIDS),
+        )
+
+
+def _get_local_bank_search_result(
+    x_section: CrossSection,
+    params: dict,
+    d_bathy_target_width: float | None,
+) -> dict:
+    """Run the appropriate local bank-search workflow for the current section."""
+    if params['b_bathy_use_banks']:
+        return x_section.get_bank_elevation_search_result(
+            d_bathy_target_width=d_bathy_target_width,
+        )
+    return x_section.get_wse_or_lc_bank_search_result(
+        d_bathy_target_width=d_bathy_target_width,
+    )
+
+
+def _annotate_cross_sections_with_bank_search_results(
+    sampled_records: list[dict | None],
+    params: dict,
+    quiet: bool,
+) -> None:
+    """Run the bank-search hierarchy for every cached sampled cross section."""
+    x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
+
+    for i_entry_cell in tqdm.tqdm(range(_CELL_COMIDS.size), total=_CELL_COMIDS.size, disable=quiet):
+        sampled_record = sampled_records[i_entry_cell]
+        if sampled_record is None:
+            continue
+
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
+        _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+        (_, _, _, d_bathy_target_width) = _get_cell_bathymetry_inputs(
+            i_entry_cell,
+            int(_CELL_ROWS[i_entry_cell]),
+            int(_CELL_COLS[i_entry_cell]),
+            params,
+        )
+        bank_search_result = _get_local_bank_search_result(
+            x_section,
+            params,
+            d_bathy_target_width,
+        )
+        sampled_record["bank_search_result"] = dict(bank_search_result)
+
+
+def _compute_mean_reach_stream_direction(stream_directions: list[float]) -> float:
+    """Estimate one representative along-stream axis for a reach.
+
+    ``get_stream_direction_information`` returns an angle for each stream cell,
+    but ARC only needs the line orientation here, not the sign. This helper
+    therefore averages directions modulo ``pi`` using a doubled-angle mean.
+    """
+    if len(stream_directions) == 0:
+        return 0.0
+
+    angles = np.mod(np.asarray(stream_directions, dtype=np.float64), np.pi)
+    sin_2theta = np.nanmean(np.sin(2.0 * angles))
+    cos_2theta = np.nanmean(np.cos(2.0 * angles))
+    if not np.isfinite(sin_2theta) or not np.isfinite(cos_2theta):
+        return float(angles[0])
+
+    mean_angle = 0.5 * math.atan2(sin_2theta, cos_2theta)
+    if mean_angle < 0.0:
+        mean_angle += np.pi
+    return float(mean_angle)
+
+
+def _compute_raw_bank_elevation_from_result(
+    x_section: CrossSection,
+    bank_search_result: dict | None,
+) -> float:
+    """Extract one representative bank elevation from a local bank result.
+
+    Bank elevations equal to the sampled thalweg are treated as unresolved
+    placeholders and excluded from the reach-smoothing input.
+    """
+    if bank_search_result is None:
+        return np.nan
+
+    thalweg = float(x_section.get_thalweg())
+
+    try:
+        bank_elev_1 = float(bank_search_result.get("bank_elev_1"))
+    except Exception:
+        bank_elev_1 = np.nan
+    try:
+        bank_elev_2 = float(bank_search_result.get("bank_elev_2"))
+    except Exception:
+        bank_elev_2 = np.nan
+
+    valid_bank_elevations = np.asarray(
+        [
+            elev
+            for elev in (bank_elev_1, bank_elev_2)
+            if np.isfinite(elev) and not np.isclose(elev, thalweg)
+        ],
+        dtype=np.float64,
+    )
+    if valid_bank_elevations.size == 0:
+        return np.nan
+
+    bank_elevation = float(np.nanmin(valid_bank_elevations))
+
+    return bank_elevation
+
+
+def _get_bank_search_result_for_smoothing(
+    x_section: CrossSection,
+    sampled_record: dict,
+    params: dict,
+    i_entry_cell: int,
+) -> dict:
+    """Return a bank-search result for the reach-smoothing prepass.
+
+    The staged bathymetry workflow now tries to give every sampled cross
+    section a smoothed reach-scale bank elevation. If an earlier prepass did
+    not store a bank-search result for this sampled section, or stored a
+    non-dictionary placeholder, ARC reruns the local bank hierarchy here so
+    the reach smoother still has a consistent input record to work with.
+    """
+    bank_search_result = sampled_record.get("bank_search_result")
+    if isinstance(bank_search_result, dict):
+        return dict(bank_search_result)
+
+    (_, _, _, d_bathy_target_width) = _get_cell_bathymetry_inputs(
+        i_entry_cell,
+        int(sampled_record["row"]),
+        int(sampled_record["col"]),
+        params,
+    )
+    if params['b_bathy_use_banks']:
+        return x_section.get_bank_elevation_search_result(
+            d_bathy_target_width=d_bathy_target_width,
+        )
+    return x_section.get_wse_or_lc_bank_search_result(
+        d_bathy_target_width=d_bathy_target_width,
+    )
+
+
+def _apply_reach_top_width_filter(
+    x_section: CrossSection,
+    sampled_records: list[dict | None],
+    reach_entries: list[dict],
+    reach_id: int,
+) -> dict | None:
+    """Replace reach top-width outliers with the reach-median width geometry.
+
+    ARC groups sampled cross sections by reach before it smooths bank
+    elevations. This helper uses those same grouped sections to evaluate local
+    bank-to-bank top width at each stream cell, compute the 25th, 50th, and
+    75th percentile widths for the reach, and replace any outlier bank result
+    with bank indices that match the reach-median width as closely as the
+    sampled cross-section spacing allows. The percentile summary is returned
+    so later reach-level geometry fallbacks can reuse the same median width.
+    """
+    widths_by_entry_index: dict[int, float] = {}
+    reach_widths: list[float] = []
+
+    for reach_entry in reach_entries:
+        entry_index = int(reach_entry["entry_index"])
+        sampled_record = sampled_records[entry_index]
+        if sampled_record is None:
+            continue
+
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[entry_index])
+        _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+        bank_search_result = sampled_record.get("bank_search_result")
+        top_width = x_section.get_top_width_from_bank_search_result(bank_search_result)
+        if np.isfinite(top_width) and top_width > 0.0:
+            widths_by_entry_index[entry_index] = float(top_width)
+            reach_widths.append(float(top_width))
+
+    if len(reach_widths) == 0:
+        return None
+
+    reach_width_array = np.asarray(reach_widths, dtype=np.float64)
+    q25 = float(np.percentile(reach_width_array, 30))
+    median_width = float(np.percentile(reach_width_array, 50))
+    q75 = float(np.percentile(reach_width_array, 75))
+    if not np.isfinite(q25) or not np.isfinite(median_width) or not np.isfinite(q75):
+        return None
+
+    for reach_entry in reach_entries:
+        entry_index = int(reach_entry["entry_index"])
+        sampled_record = sampled_records[entry_index]
+        if sampled_record is None:
+            continue
+
+        bank_search_result = sampled_record.get("bank_search_result")
+        observed_top_width = widths_by_entry_index.get(entry_index, float("nan"))
+        if not isinstance(bank_search_result, dict):
+            continue
+
+        if np.isfinite(observed_top_width) and (observed_top_width < q25 or observed_top_width > q75):
+            reach_bank_index = None
+            if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+                reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[entry_index])
+            _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+            updated_bank_result = x_section.build_bank_search_result_from_target_width(
+                bank_search_result,
+                median_width,
+                "filter_bank_width_to_reach_median",
+            )
+            updated_bank_result["reach_top_width_filter_reach_id"] = int(reach_id)
+            updated_bank_result["reach_top_width_filter_q25"] = float(q25)
+            updated_bank_result["reach_top_width_filter_median_top_width"] = float(median_width)
+            updated_bank_result["reach_top_width_filter_q75"] = float(q75)
+            updated_bank_result["reach_top_width_filter_observed_top_width"] = float(observed_top_width)
+            updated_bank_result["reach_top_width_filter_final_top_width"] = float(
+                x_section.get_top_width_from_bank_search_result(updated_bank_result)
+            )
+            sampled_record["bank_search_result"] = updated_bank_result
+        else:
+            bank_search_result["reach_top_width_filter_applied"] = False
+            bank_search_result["reach_top_width_filter_reach_id"] = int(reach_id)
+            bank_search_result["reach_top_width_filter_q25"] = float(q25)
+            bank_search_result["reach_top_width_filter_median_top_width"] = float(median_width)
+            bank_search_result["reach_top_width_filter_q75"] = float(q75)
+            bank_search_result["reach_top_width_filter_observed_top_width"] = float(observed_top_width)
+            bank_search_result["reach_top_width_filter_final_top_width"] = float(observed_top_width)
+
+    return {
+        "reach_id": int(reach_id),
+        "q25": float(q25),
+        "median_top_width": float(median_width),
+        "q75": float(q75),
+    }
+
+
+def _apply_reach_median_top_width_to_missing_bank(
+    x_section: CrossSection,
+    sampled_records: list[dict | None],
+    reach_entries: list[dict],
+    reach_top_width_stats: dict | None,
+) -> None:
+    """Assign reach-median bank indices to sections lacking a valid bank result.
+
+    Reach smoothing already computes a representative bankfull width from the
+    valid sections in the reach. This helper reuses that median width to
+    rebuild bank indices for any cross section whose local bank search still
+    returned an invalid result, allowing the later bathymetry stages to carry
+    a reach-consistent width geometry into the smoothed-bank workflow.
+    """
+    if not isinstance(reach_top_width_stats, dict):
+        return
+
+    median_top_width = float(reach_top_width_stats.get("median_top_width", np.nan))
+    if not np.isfinite(median_top_width) or median_top_width <= 0.0:
+        return
+
+    reach_id = int(reach_top_width_stats.get("reach_id", -1))
+
+    for reach_entry in reach_entries:
+        entry_index = int(reach_entry["entry_index"])
+        sampled_record = sampled_records[entry_index]
+        if sampled_record is None:
+            continue
+
+        bank_search_result = sampled_record.get("bank_search_result")
+        if isinstance(bank_search_result, dict) and bool(bank_search_result.get("is_valid", False)):
+            bank_search_result["reach_median_bank_fill_applied"] = False
+            bank_search_result["reach_median_bank_fill_reach_id"] = reach_id
+            bank_search_result["reach_median_bank_fill_target_top_width"] = float(median_top_width)
+            continue
+
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[entry_index])
+        _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+        updated_bank_result = x_section.build_bank_search_result_from_target_width(
+            bank_search_result,
+            median_top_width,
+            "fill_missing_bank_with_reach_median_top_width",
+        )
+        updated_bank_result["reach_median_bank_fill_applied"] = bool(updated_bank_result.get("is_valid", False))
+        updated_bank_result["reach_median_bank_fill_reach_id"] = reach_id
+        updated_bank_result["reach_median_bank_fill_target_top_width"] = float(median_top_width)
+        updated_bank_result["reach_median_bank_fill_final_top_width"] = float(
+            x_section.get_top_width_from_bank_search_result(updated_bank_result)
+        )
+        sampled_record["bank_search_result"] = updated_bank_result
+
+
+def _estimate_minimum_smoothed_bank_elevation(
+    x_section: CrossSection,
+    minimum_bank_height: float = 0.6,
+) -> float:
+    """Build a conservative bank-elevation seed from the sampled profile.
+
+    Some sampled cross sections never yield a valid local multi-cell bank
+    width, but the reach smoother still needs a finite elevation for those
+    sections so they can inherit the reach-scale trend. ARC therefore falls
+    back to the first sampled ordinates beside the thalweg when available and
+    otherwise uses the thalweg, which will be left out of the reach-smoothing median calculation.
+    """
+    thalweg = float(x_section.get_thalweg())
+    candidate_elevations = []
+    if x_section.xs1_n > 1:
+        candidate_elevations.append(float(x_section.da_xs_profile1[1]))
+    if x_section.xs2_n > 1:
+        candidate_elevations.append(float(x_section.da_xs_profile2[1]))
+
+    valid_candidates = [
+        elevation
+        for elevation in candidate_elevations
+        if np.isfinite(elevation) and elevation > thalweg
+    ]
+    if len(valid_candidates) == 0:
+        return thalweg
+
+    return float(np.nanmedian(np.asarray(valid_candidates, dtype=np.float64)))
+
+
+def _moving_window_median(
+                          values: np.ndarray,
+                          window_size: int,
+                        ) -> np.ndarray:
+    """Apply a local median smoother, referenced to the thalweg.
+
+    When ``reference_values`` is supplied, this function computes a 
+    smoothed profile for the stream reach.
+    """
+    if values.size == 0:
+        return values.copy()
+
+    values = np.asarray(values, dtype=np.float64)
+
+
+    half_window = max(int(window_size) // 2, 0)
+    smoothed = np.zeros(values.size, dtype=np.float64)
+    for i in range(values.size):
+        start = max(0, i - half_window)
+        stop = min(values.size, i + half_window + 1)
+        window_values = values[start:stop]
+        finite_window_values = window_values[np.isfinite(window_values)]
+        if finite_window_values.size > 0:
+            smoothed[i] = float(np.nanmin(finite_window_values))
+
+    finite_smoothed = smoothed[np.isfinite(smoothed)]
+    return finite_smoothed
+
+
+def _fit_monotone_decreasing_bank_line(
+    along_stream_coordinates: np.ndarray,
+    smoothed_bank_elevations: np.ndarray,
+    thalweg_elevations: np.ndarray,
+) -> np.ndarray:
+    """Finalize a thalweg-parallel smoothed bank-elevation line.
+
+    The moving-window smoother now operates on bank height above the thalweg
+    and reconstructs a bank-elevation line that already follows the exact
+    reach thalweg slope. This helper therefore only performs safety checks to
+    ensure the smoothed bank elevation stays above the local thalweg.
+    """
+    del along_stream_coordinates
+    if smoothed_bank_elevations.size == 0:
+        return smoothed_bank_elevations.copy()
+    if smoothed_bank_elevations.size == 1:
+        return np.maximum(smoothed_bank_elevations.copy(), thalweg_elevations + 0.01)
+    return np.maximum(
+        np.asarray(smoothed_bank_elevations, dtype=np.float64).copy(),
+        np.asarray(thalweg_elevations, dtype=np.float64) + 0.01,
+    )
+
+def _coerce_optional_reach_identifier(value) -> int | None:
+    """Convert a reach identifier read from a table into ``int`` or ``None``."""
+    if value in ('', None):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _build_reach_network_graph(
+    s_strmshp_path: str,
+    reach_id_field: str,
+    downstream_reach_id_field: str,
+) -> tuple[nx.DiGraph, dict[int, int | None]]:
+    """Read the stream network table and build an upstream-to-downstream graph.
+
+    Parameters
+    ----------
+    s_strmshp_path : str
+        Path to the stream vector dataset used by ARC.
+    reach_id_field : str
+        Field containing each reach identifier.
+    downstream_reach_id_field : str
+        Field containing the immediate downstream reach identifier.
+
+    Returns
+    -------
+    tuple
+        ``(graph, downstream_map)`` where ``graph`` is a
+        :class:`networkx.DiGraph` with one node per reach and one directed edge
+        per upstream-to-downstream connection, and ``downstream_map`` stores
+        the immediate downstream reach ID for each reach when available.
+    """
+    graph = nx.DiGraph()
+    downstream_map: dict[int, int | None] = {}
+
+    if not s_strmshp_path:
+        raise ValueError(
+            'StrmShp_File is required to build the reach bank-elevation network.'
+        )
+    if not reach_id_field or not downstream_reach_id_field:
+        raise ValueError(
+            'Both reach_id and downstream_reach_id are required to build the '
+            'reach bank-elevation network.'
+        )
+
+    try:
+        gdf_stream = gpd.read_file(s_strmshp_path)
+    except Exception as ex:
+        raise ValueError(
+            'Unable to read StrmShp_File for downstream reach smoothing: '
+            + str(ex)
+        )
+
+    required_columns = {reach_id_field, downstream_reach_id_field}
+    missing_columns = sorted(required_columns.difference(gdf_stream.columns))
+    if missing_columns:
+        raise ValueError(
+            'Unable to build the reach bank-elevation network because '
+            + ', '.join(missing_columns)
+            + ' was not found in StrmShp_File.'
+        )
+
+    reach_records: dict[int, tuple[int | None, float]] = {}
+    for _, row in gdf_stream.iterrows():
+        reach_id = _coerce_optional_reach_identifier(row[reach_id_field])
+        if reach_id is None:
+            continue
+
+        downstream_reach_id = _coerce_optional_reach_identifier(row[downstream_reach_id_field])
+        if downstream_reach_id == reach_id:
+            downstream_reach_id = None
+
+        reach_length = 1.0
+        geometry = row.geometry
+        if geometry is not None:
+            try:
+                geometry_length = float(geometry.length)
+                if np.isfinite(geometry_length) and geometry_length > 0.0:
+                    reach_length = geometry_length
+            except Exception:
+                pass
+
+        if reach_id not in reach_records:
+            reach_records[reach_id] = (downstream_reach_id, reach_length)
+
+    if len(reach_records) == 0:
+        raise ValueError(
+            'Unable to build the reach bank-elevation network because no valid '
+            'reach_id values were found in StrmShp_File.'
+        )
+
+    for reach_id, (_, reach_length) in reach_records.items():
+        graph.add_node(reach_id, length=float(reach_length))
+
+    for reach_id, (downstream_reach_id, reach_length) in reach_records.items():
+        downstream_map[reach_id] = downstream_reach_id
+        if downstream_reach_id is None or downstream_reach_id not in reach_records:
+            continue
+        graph.add_edge(reach_id, downstream_reach_id, length=float(reach_length))
+
+    if graph.number_of_nodes() == 0:
+        raise ValueError(
+            'Unable to build the reach bank-elevation network because no valid '
+            'stream reaches were added to the graph.'
+        )
+
+    return graph, downstream_map
+
+def _fill_segment(
+    start_index: int,
+    end_index: int,
+    start_elevation: float,
+    path_stations: np.array,
+    path_smoothed: np.array,
+    end_elevation: float | None = None,
+) -> None:
+    start_station = path_stations[start_index]
+    end_station = path_stations[end_index]
+    delta_station = start_station - end_station
+    if not np.isfinite(delta_station) or delta_station <= 0.0:
+        delta_station = float(max(end_index - start_index, 1))
+
+    if end_elevation is not None and np.isfinite(end_elevation) and float(end_elevation) < float(start_elevation):
+        slope = (float(end_elevation) - float(start_elevation)) / float(delta_station)
+    else:
+        slope = -0.001
+
+    for idx in range(start_index, end_index + 1):
+        distance_from_start = start_station - path_stations[idx]
+        if not np.isfinite(distance_from_start):
+            distance_from_start = float(idx - start_index)
+        smoothed_elevation = float(start_elevation) + float(slope) * float(distance_from_start)
+        if np.isfinite(path_smoothed[idx]):
+            path_smoothed[idx] = min(float(path_smoothed[idx]), smoothed_elevation)
+        else:
+            path_smoothed[idx] = smoothed_elevation
+
+def _estimate_network_smoothed_reach_min_bank_elevations(
+    reach_network_graph: nx.DiGraph,
+    reach_min_bank_elevation_dict: dict[int, float],
+) -> dict[int, float]:
+    """Estimate one monotone downstream minimum bank elevation for each reach.
+
+    The stream network is represented as an upstream-to-downstream directed
+    graph. ARC walks every headwater-to-outlet path, finds the observed reach
+    minimum bank elevations on that path, and linearly interpolates between
+    each observed reach and the lowest observed downstream minimum that remains
+    on the same path. Whenever no downstream observed minimum is lower than the
+    upstream reach minimum, ARC falls back to a small downstream drop of
+    ``-0.001`` per unit network distance for that segment.
+    """
+    if len(reach_min_bank_elevation_dict) == 0:
+        return {}
+    if reach_network_graph.number_of_nodes() == 0:
+        raise ValueError(
+            'The reach bank-elevation network was empty, so network smoothing '
+            'could not be performed.'
+        )
+
+    reverse_graph = reach_network_graph.reverse(copy=False)
+    outlets = [node for node in reach_network_graph.nodes if reach_network_graph.out_degree(node) == 0]
+    if len(outlets) == 0:
+        outlets = list(reach_network_graph.nodes)
+
+    distance_to_outlet: dict[int, float] = {}
+    for outlet in outlets:
+        outlet_lengths = nx.single_source_dijkstra_path_length(
+            reverse_graph,
+            outlet,
+            weight='length',
+        )
+        for node, distance in outlet_lengths.items():
+            previous_distance = distance_to_outlet.get(node)
+            if previous_distance is None or distance < previous_distance:
+                distance_to_outlet[node] = float(distance)
+
+    headwaters = [node for node in reach_network_graph.nodes if reach_network_graph.in_degree(node) == 0]
+    if len(headwaters) == 0:
+        headwaters = list(reach_network_graph.nodes)
+
+    candidate_elevations: dict[int, list[float]] = {}
+    for headwater in headwaters:
+        path = [headwater]
+        visited = set()
+        current_node = headwater
+        while reach_network_graph.out_degree(current_node) > 0 and current_node not in visited:
+            visited.add(current_node)
+            successors = list(reach_network_graph.successors(current_node))
+            if len(successors) == 0:
+                break
+            current_node = successors[0]
+            path.append(current_node)
+
+        path_stations = np.asarray(
+            [float(distance_to_outlet.get(node, np.nan)) for node in path],
+            dtype=np.float64,
+        )
+        path_observed = np.asarray(
+            [float(reach_min_bank_elevation_dict.get(node, np.nan)) for node in path],
+            dtype=np.float64,
+        )
+        observed_indices = np.flatnonzero(np.isfinite(path_observed))
+        if observed_indices.size == 0:
+            continue
+
+        downstream_min_indices = np.full(observed_indices.size, -1, dtype=np.int64)
+        downstream_min_elevations = np.full(observed_indices.size, np.nan, dtype=np.float64)
+        running_min_index = int(observed_indices[-1])
+        running_min_elevation = float(path_observed[running_min_index])
+        for reverse_observed_position in range(observed_indices.size - 1, -1, -1):
+            observed_index = int(observed_indices[reverse_observed_position])
+            observed_elevation = float(path_observed[observed_index])
+            if not np.isfinite(running_min_elevation) or observed_elevation <= running_min_elevation:
+                running_min_elevation = observed_elevation
+                running_min_index = observed_index
+            downstream_min_indices[reverse_observed_position] = running_min_index
+            downstream_min_elevations[reverse_observed_position] = running_min_elevation
+
+        path_smoothed = np.full(len(path), np.nan, dtype=np.float64)
+
+        if observed_indices.size == 1:
+            only_index = int(observed_indices[0])
+            _fill_segment(0, len(path) - 1, float(path_observed[only_index]), path_stations, path_smoothed, None)
+        else:
+            first_observed_index = int(observed_indices[0])
+            second_observed_index = int(downstream_min_indices[1])
+            first_observed_elevation = float(path_observed[first_observed_index])
+            second_observed_elevation = float(path_observed[second_observed_index])
+
+            if first_observed_index > 0:
+                start_station = path_stations[0]
+                anchor_station = path_stations[first_observed_index]
+                if second_observed_elevation < first_observed_elevation:
+                    anchor_delta = anchor_station - path_stations[second_observed_index]
+                    if not np.isfinite(anchor_delta) or anchor_delta <= 0.0:
+                        anchor_delta = float(max(second_observed_index - first_observed_index, 1))
+                    upstream_slope = (second_observed_elevation - first_observed_elevation) / float(anchor_delta)
+                    if upstream_slope >= 0.0:
+                        upstream_slope = 0.0
+                else:
+                    upstream_slope = 0.0
+
+                for idx in range(0, first_observed_index + 1):
+                    if np.isfinite(path_stations[idx]) and np.isfinite(anchor_station):
+                        distance_from_anchor = float(path_stations[idx] - anchor_station)
+                    else:
+                        distance_from_anchor = float(idx - first_observed_index)
+                    candidate_elevation = first_observed_elevation - upstream_slope * distance_from_anchor
+                    if np.isfinite(path_smoothed[idx]):
+                        path_smoothed[idx] = min(float(path_smoothed[idx]), float(candidate_elevation))
+                    else:
+                        path_smoothed[idx] = float(candidate_elevation)
+
+            for obs_index in range(observed_indices.size - 1):
+                start_index = int(observed_indices[obs_index])
+                next_observed_index = int(observed_indices[obs_index + 1])
+                next_observed_elevation = float(path_observed[next_observed_index])
+                downstream_min_index = int(downstream_min_indices[obs_index + 1])
+                downstream_min_elevation = float(downstream_min_elevations[obs_index + 1])
+                if (
+                    np.isfinite(downstream_min_elevation)
+                    and downstream_min_index > start_index
+                    and downstream_min_elevation < float(path_observed[start_index])
+                ):
+                    end_index = downstream_min_index
+                    end_elevation = downstream_min_elevation
+                else:
+                    end_index = next_observed_index
+                    end_elevation = (
+                        next_observed_elevation
+                        if np.isfinite(next_observed_elevation)
+                        and next_observed_elevation < float(path_observed[start_index])
+                        else None
+                    )
+                _fill_segment(
+                    start_index,
+                    int(end_index),
+                    float(path_observed[start_index]),
+                    path_stations, 
+                    path_smoothed, 
+                    end_elevation,
+
+                )
+
+            last_observed_index = int(observed_indices[-1])
+            if last_observed_index < len(path) - 1:
+                _fill_segment(
+                    last_observed_index,
+                    len(path) - 1,
+                    float(path_observed[last_observed_index]),
+                    path_stations, 
+                    path_smoothed, 
+                    None,
+                )
+
+        for idx, node in enumerate(path):
+            if np.isfinite(path_smoothed[idx]):
+                candidate_elevations.setdefault(int(node), []).append(float(path_smoothed[idx]))
+
+    smoothed_reach_min_elevations: dict[int, float] = {}
+    for node, candidates in candidate_elevations.items():
+        candidate_array = np.asarray(candidates, dtype=np.float64)
+        finite_candidates = candidate_array[np.isfinite(candidate_array)]
+        if finite_candidates.size > 0:
+            smoothed_reach_min_elevations[int(node)] = float(np.nanmin(finite_candidates))
+
+    missing_reaches = sorted(
+        int(reach_id)
+        for reach_id in reach_min_bank_elevation_dict
+        if reach_id not in smoothed_reach_min_elevations
+    )
+    if missing_reaches:
+        raise ValueError(
+            'Network smoothing did not produce bank elevations for reach_id '
+            + ', '.join(map(str, missing_reaches[:10]))
+            + ('...' if len(missing_reaches) > 10 else '')
+            + '.'
+        )
+
+    return smoothed_reach_min_elevations
+
+def _smooth_reach_bank_elevations(
+    sampled_records: list[dict | None],
+    params: dict,
+    quiet: bool,
+) -> None:
+    """Create one network-smoothed bank elevation for each sampled section.
+
+    After ARC estimates local bank indices for every sampled cross section, it
+    reorders the sections within each reach from upstream to downstream using
+    ``get_stream_direction_information``. ARC then evaluates local bank-to-bank
+    top width at each stream cell, replaces any width outside the 25th-75th
+    percentile band with bank locations that match the reach-median width,
+    uses that same reach-median width to fill sections whose local bank
+    indices remained invalid, and then assigns each sampled cross section the
+    network-smoothed minimum bank elevation computed for its reach. The
+    network-smoothed elevation remains only the vertical bathymetry control
+    while the filtered local bank indices and top width are preserved for each
+    sampled cross section.
+    """
+    source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
+    x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
+    grouped_reach_entries: dict[int, list[dict]] = {}
+    reach_network_graph, reach_downstream_map = _build_reach_network_graph(
+        params.get('s_strmshp_path', ''),
+        params.get('s_reach_id_field', ''),
+        params.get('s_downstream_reach_id_field', ''),
+    )
+
+    for i_entry_cell in tqdm.tqdm(range(_CELL_COMIDS.size), total=_CELL_COMIDS.size, disable=quiet):
+        sampled_record = sampled_records[i_entry_cell]
+        if sampled_record is None:
+            continue
+
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
+        _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+        bank_search_result = _get_bank_search_result_for_smoothing(
+            x_section,
+            sampled_record,
+            params,
+            i_entry_cell,
+        )
+        sampled_record["bank_search_result"] = dict(bank_search_result)
+
+        row = int(sampled_record["row"])
+        col = int(sampled_record["col"])
+        stream_direction, _ = get_stream_direction_information(
+            row,
+            col,
+            _STREAMS,
+            params['i_general_direction_distance'],
+        )
+        grouped_reach_entries.setdefault(int(source_ids[i_entry_cell]), []).append(
+            {
+                "entry_index": i_entry_cell,
+                "row": row,
+                "col": col,
+                "stream_direction": float(stream_direction),
+            }
+        )
+
+    reach_summaries: dict[int, dict] = {}
+    for reach_id, reach_entries in grouped_reach_entries.items():
+        if len(reach_entries) == 0:
+            continue
+
+        reach_top_width_stats = _apply_reach_top_width_filter(
+            x_section,
+            sampled_records,
+            reach_entries,
+            int(reach_id),
+        )
+        _apply_reach_median_top_width_to_missing_bank(
+            x_section,
+            sampled_records,
+            reach_entries,
+            reach_top_width_stats,
+        )
+
+        mean_direction = _compute_mean_reach_stream_direction(
+            [entry["stream_direction"] for entry in reach_entries]
+        )
+        along_stream_unit_x = math.cos(mean_direction)
+        along_stream_unit_y = math.sin(mean_direction)
+
+        along_stream_coordinates = np.asarray(
+            [
+                entry["col"] * along_stream_unit_x + entry["row"] * along_stream_unit_y
+                for entry in reach_entries
+            ],
+            dtype=np.float64,
+        )
+        raw_bank_elevations = np.full(len(reach_entries), np.nan, dtype=np.float64)
+        function_used_by_entry_index: dict[int, str | None] = {}
+        for elevation_index, entry in enumerate(reach_entries):
+            sampled_record = sampled_records[int(entry["entry_index"])]
+            if sampled_record is None:
+                continue
+
+            reach_bank_index = None
+            if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+                reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[int(entry["entry_index"])])
+            _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+            bank_search_result = sampled_record.get("bank_search_result")
+            bank_elevation_to_use = _compute_raw_bank_elevation_from_result(
+                x_section,
+                bank_search_result,
+            )
+            if bank_elevation_to_use != 0.0 and not np.isnan(bank_elevation_to_use):
+                raw_bank_elevations[elevation_index] = bank_elevation_to_use
+                function_used_by_entry_index[int(entry["entry_index"])] = (
+                    bank_search_result.get("function_used") if isinstance(bank_search_result, dict) else None
+                )
+            else:
+                continue
+        order = np.argsort(along_stream_coordinates)
+        sample_size = min(10, order.size)
+        if sample_size > 0:
+            upstream_slice = raw_bank_elevations[order[:sample_size]]
+            downstream_slice = raw_bank_elevations[order[-sample_size:]]
+            upstream_finite = upstream_slice[np.isfinite(upstream_slice)]
+            downstream_finite = downstream_slice[np.isfinite(downstream_slice)]
+            if upstream_finite.size > 0 and downstream_finite.size > 0:
+                upstream_reference = float(np.nanmean(upstream_finite))
+                downstream_reference = float(np.nanmean(downstream_finite))
+                if upstream_reference < downstream_reference:
+                    order = order[::-1]
+
+        ordered_coordinates = along_stream_coordinates[order]
+        ordered_raw_bank_elevations = raw_bank_elevations[order]
+        finite_ordered_bank_elevations = ordered_raw_bank_elevations[np.isfinite(ordered_raw_bank_elevations)]
+        minimum_bank_elevation = (
+            float(np.nanmin(finite_ordered_bank_elevations))
+            if finite_ordered_bank_elevations.size > 0
+            else np.nan
+        )
+
+        reach_summaries[int(reach_id)] = {
+            'reach_entries': reach_entries,
+            'order': order.copy(),
+            'ordered_coordinates': ordered_coordinates.copy(),
+            'ordered_raw_bank_elevations': ordered_raw_bank_elevations.copy(),
+            'function_used_by_entry_index': dict(function_used_by_entry_index),
+            'mean_direction': float(mean_direction),
+            'minimum_bank_elevation': minimum_bank_elevation,
+        }
+
+    reach_min_bank_elevation_dict = {
+        int(reach_id): float(summary['minimum_bank_elevation'])
+        for reach_id, summary in reach_summaries.items()
+        if np.isfinite(summary['minimum_bank_elevation'])
+    }
+    if len(reach_summaries) > 0 and len(reach_min_bank_elevation_dict) == 0:
+        raise ValueError(
+            'Network bank-elevation smoothing could not proceed because no '
+            'finite minimum bank elevations were found for any reach.'
+        )
+    network_smoothed_reach_min_bank_elevations = _estimate_network_smoothed_reach_min_bank_elevations(
+        reach_network_graph,
+        reach_min_bank_elevation_dict,
+    )
+
+    for reach_id, reach_summary in reach_summaries.items():
+        reach_entries = reach_summary['reach_entries']
+        order = np.asarray(reach_summary['order'], dtype=np.int64)
+        ordered_coordinates = np.asarray(reach_summary['ordered_coordinates'], dtype=np.float64)
+        ordered_raw_bank_elevations = np.asarray(reach_summary['ordered_raw_bank_elevations'], dtype=np.float64)
+        function_used_by_entry_index = reach_summary['function_used_by_entry_index']
+        mean_direction = float(reach_summary['mean_direction'])
+        minimum_bank_elevation = float(reach_summary['minimum_bank_elevation'])
+
+        if reach_id not in network_smoothed_reach_min_bank_elevations:
+            raise ValueError(
+                'Network smoothing did not return a bank elevation for reach_id '
+                + str(reach_id)
+                + '.'
+            )
+        upstream_network_elevation = float(
+            network_smoothed_reach_min_bank_elevations[reach_id]
+        )
+        downstream_reach_id = reach_downstream_map.get(int(reach_id))
+        if downstream_reach_id is None:
+            downstream_network_elevation = np.nan
+        else:
+            if downstream_reach_id not in network_smoothed_reach_min_bank_elevations:
+                downstream_network_elevation = np.nan
+            else:
+                downstream_network_elevation = float(
+                    network_smoothed_reach_min_bank_elevations[downstream_reach_id]
+                )
+        locally_smoothed_bank_elevations = np.full(
+            ordered_raw_bank_elevations.size,
+            upstream_network_elevation,
+            dtype=np.float64,
+        )
+
+        for reach_order, (ordered_position, target_bank_elevation) in enumerate(
+            zip(order, locally_smoothed_bank_elevations)
+        ):
+            reach_entry = reach_entries[int(ordered_position)]
+            sampled_record = sampled_records[int(reach_entry["entry_index"])]
+            if sampled_record is None:
+                continue
+
+            reach_bank_index = None
+            if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+                reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[int(reach_entry["entry_index"])])
+            _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+            current_bank_search_result = sampled_record.get("bank_search_result")
+            updated_bank_result = x_section.build_bank_search_result_from_smoothed_elevation(
+                current_bank_search_result,
+                float(target_bank_elevation),
+                function_used_by_entry_index.get(int(reach_entry["entry_index"])),
+            )
+            updated_bank_result["raw_bank_elevation"] = float(
+                ordered_raw_bank_elevations[reach_order]
+            )
+            updated_bank_result["locally_smoothed_bank_elevation"] = float(
+                locally_smoothed_bank_elevations[reach_order]
+            )
+            updated_bank_result["smoothed_bank_elevation"] = float(target_bank_elevation)
+            updated_bank_result["reach_minimum_bank_elevation"] = minimum_bank_elevation
+            updated_bank_result["network_smoothed_reach_minimum_bank_elevation"] = upstream_network_elevation
+            updated_bank_result["downstream_reach_id"] = (
+                int(downstream_reach_id) if downstream_reach_id is not None else -1
+            )
+            updated_bank_result["downstream_network_bank_elevation"] = downstream_network_elevation
+            updated_bank_result["reach_order_index"] = int(reach_order)
+            updated_bank_result["reach_stream_direction"] = float(mean_direction)
+            updated_bank_result["along_stream_coordinate"] = float(ordered_coordinates[reach_order])
+            sampled_record["bank_search_result"] = updated_bank_result
+
+
+def _finalize_cross_section_records(
+    sampled_records: list[dict | None],
+    params: dict,
+    quiet: bool,
+    collect_cross_section_data: bool = False,
+) -> tuple[list[dict | None] | None, list[dict | None]]:
+    """Smooth reach bank elevations, apply staged bathymetry, and build exports.
+
+    Once local bank indices have been estimated for all sampled cross sections,
+    ARC smooths the implied bank elevations along each reach, preserves the
+    locally detected bank indices and top widths, and uses only the smoothed
+    elevation as the vertical bathymetry control before beginning the
+    existing bathymetry estimation workflow.
+    """
+    if params['s_output_bathymetry_path']:
+        _smooth_reach_bank_elevations(
+            sampled_records,
+            params,
+            quiet,
+        )
+
+    x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
+    cross_section_data = [None] * _CELL_COMIDS.size if collect_cross_section_data else None
+    finalized_records = [None] * _CELL_COMIDS.size
+
+    for i_entry_cell in tqdm.tqdm(range(_CELL_COMIDS.size), total=_CELL_COMIDS.size, disable=quiet):
+        sampled_record = sampled_records[i_entry_cell]
+        if sampled_record is None:
+            continue
+
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
+        _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+
+        i_row_cell = int(_CELL_ROWS[i_entry_cell])
+        i_column_cell = int(_CELL_COLS[i_entry_cell])
+        d_q_baseflow, d_slope_use, d_bathy_target_depth, d_bathy_target_width = _get_cell_bathymetry_inputs(
+            i_entry_cell,
+            i_row_cell,
+            i_column_cell,
+            params,
+        )
+
+        bathymetry_applied = False
+        if params['s_output_bathymetry_path']:
+            _apply_bathymetry_to_cross_section(
+                x_section,
+                params,
+                d_q_baseflow,
+                d_slope_use,
+                d_bathy_target_depth,
+                d_bathy_target_width,
+                bank_search_result=sampled_record.get("bank_search_result"),
+            )
+            bathymetry_applied = True
+
+        # Export records and staged representative hydraulics should reflect the
+        # finalized profile geometry, so re-sample Manning's n after any
+        # low-spot, angle, and bathymetry adjustments.
+        x_section.set_mannings_n_values(_MANNINGS_N)
+
+        inflect_curve = sampled_record.get("inflect_curve")
+        finalized_records[i_entry_cell] = _build_precomputed_cross_section_record(
+            x_section,
+            sampled_record["dem_low_point_elev"],
+            bathymetry_applied=bathymetry_applied,
+            inflect_curve=inflect_curve,
+            bank_search_result=sampled_record.get("bank_search_result"),
+        )
+
+        if collect_cross_section_data:
+            export_row, export_col = x_section.get_row_col()
+            cross_section_data[i_entry_cell] = _build_cross_section_export_record(
+                x_section,
+                params,
+                int(_CELL_COMIDS[i_entry_cell]),
+                export_row,
+                export_col,
+                d_slope_use,
+                inflect_curve,
+            )
+
+    return cross_section_data, finalized_records
+
 def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     """
-    Compute bathymetry and hydraulic increments for a single stream cell.
+    Compute hydraulic increments for a single stream cell.
 
     This function is the core per-cell kernel. It reads per-cell metadata
-    (row/col, COMID, baseflow, qmax) from shared/global arrays, samples a
-    cross-section, optionally estimates bathymetry, then fills the shared output
-    array with hydraulic results.
+    (row/col, COMID, baseflow, qmax) from shared/global arrays, then either
+    replays the staged precomputed cross section or samples a fresh section if
+    no staged cache is available. If bathymetry has not already been applied to
+    the cached section, the function applies it here using the precomputed bank
+    search result. It then fills the shared output array with hydraulic
+    results.
 
     Parameters
     ----------
@@ -1449,81 +3257,53 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
     Returns
     -------
-    tuple or None
-        If cross-section output is enabled, returns a tuple containing the
-        per-cell cross-section export fields. Otherwise returns ``None``.
+    dict or None
+        If a cross-section-based export is enabled, returns a per-cell record
+        containing the sampled profile and metadata. Otherwise returns
+        ``None``.
     """
     i_row_cell = _CELL_ROWS[i_entry_cell]
     i_column_cell = _CELL_COLS[i_entry_cell]
     i_cell_comid = _CELL_COMIDS[i_entry_cell]
-    d_q_baseflow = _CELL_QBASE[i_entry_cell]
     d_q_maximum = _CELL_QMAX[i_entry_cell]
     i_number_of_increments = _PARAMS['i_number_of_increments']
     i_general_direction_distance = _PARAMS['i_general_direction_distance']
-    i_general_slope_distance = _PARAMS['i_general_slope_distance']
     using_manual_cross_sections = bool(_PARAMS.get('s_manual_cross_section_file'))
     manual_record = None
+    precomputed_record = None
     if using_manual_cross_sections:
         manual_record = _MANUAL_CROSS_SECTION_RECORDS.get(int(i_cell_comid))
         if manual_record is None:
             raise KeyError(f"Manual cross section for ID {i_cell_comid} was not found.")
+    if _PRECOMPUTED_CROSS_SECTION_RECORDS is not None:
+        precomputed_record = _PRECOMPUTED_CROSS_SECTION_RECORDS[i_entry_cell]
 
-    # Get the Slope of each Stream Cell. Slope should be in m/m
-    s_stream_slope_method = _PARAMS['s_stream_slope_method']
     dx = _PARAMS['dx']
     dy = _PARAMS['dy']
-    if s_stream_slope_method == 'local_average':
-        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
-    elif s_stream_slope_method =='reach_average' or s_stream_slope_method == 'end_points':
-        d_slope_use = _CELL_REACH_SLOPE[i_entry_cell]
-    elif s_stream_slope_method == 'local_average_corrected':
-        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
-        d_slope_25th = _CELL_SLOPE_25[i_entry_cell]
-        d_slope_75th = _CELL_SLOPE_75[i_entry_cell]
-        # if the corrected slope is less than the streams 25th percentile slope, use the 25th percentile slope
-        if d_slope_use < d_slope_25th:
-            d_slope_use = d_slope_25th
-        # if the corrected slope is greater than the streams 75th percentile slope, use the 75th percentile slope
-        elif d_slope_use > d_slope_75th:
-            d_slope_use = d_slope_75th  
-    else: 
-        #Default to using the 'local_average' method
-        d_slope_use = get_local_average_stream_slope_information(i_row_cell, i_column_cell, _DEM, _STREAMS, dx, dy, i_general_slope_distance)
+    d_q_baseflow, d_slope_use, d_bathy_target_depth, d_bathy_target_width = _get_cell_bathymetry_inputs(
+        i_entry_cell,
+        i_row_cell,
+        i_column_cell,
+        _PARAMS,
+    )
 
-    x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _PARAMS)
-    if using_manual_cross_sections:
+    x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _STREAMS, _PARAMS)
+    if precomputed_record is not None:
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
+        _replay_precomputed_cross_section(x_section, precomputed_record, reach_bank_index=reach_bank_index)
+        i_row_cell, i_column_cell = x_section.get_row_col()
+        d_dem_low_point_elev = precomputed_record["dem_low_point_elev"]
+    elif using_manual_cross_sections:
         apply_manual_cross_section_data(x_section, manual_record)
-    else:
-        # Get the Stream Direction of each Stream Cell.  Direction is between 0
-        # and pi. Also get the cross-section direction (also between 0 and pi).
-        d_stream_direction, d_xs_direction = get_stream_direction_information(
-            i_row_cell,
-            i_column_cell,
-            _STREAMS,
-            i_general_direction_distance,
-        )
+        d_dem_low_point_elev = x_section.get_thalweg()
 
-        # Pull the raster-derived cross section using the stream-normal angle.
-        if d_xs_direction > np.pi:
-            i_precompute_angle_closest = round((d_xs_direction - np.pi) / x_section.d_precompute_angles)
-        else:
-            i_precompute_angle_closest = round(d_xs_direction / x_section.d_precompute_angles)
-
-        x_section.set_cross_section(i_row_cell, i_column_cell, i_precompute_angle_closest, d_xs_direction)
-        
-        # Adjust to the lowest-point in the Cross-Section
-        i_low_spot_range = _PARAMS['i_low_spot_range']
-        if i_low_spot_range > 0:
-            x_section.adjust_cross_section_to_lowest_point(i_low_spot_range)
-            # The r and c for the stream cell is adjusted because it may have moved
-            i_row_cell, i_column_cell = x_section.get_row_col()
-    
-    d_dem_low_point_elev = x_section.get_thalweg()
 
     # Adjust cross-section angle to ensure shortest top-width at a specified
     # depth when ARC is sampling the section from rasters itself. Manual cross
     # sections are already fixed and should not be reoriented here.
-    if (not using_manual_cross_sections) and x_section.has_angles_to_test():
+    if (precomputed_record is None and not using_manual_cross_sections) and x_section.has_angles_to_test():
         x_section.test_angles_and_reset_cross_section(i_row_cell, i_column_cell)
 
     # Burn bathymetry profile into cross-section profile
@@ -1535,15 +3315,20 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_slope_use, i_entry_cell)
         return
 
-    #BATHYMETRY CALCULATION
-    #This method calculates bathymetry based on the water surface elevation or LandCover ("FindBanksBasedOnLandCover" and "LC_Water_Value").
-    b_bathy_use_banks = _PARAMS['b_bathy_use_banks']
-    s_output_bathymetry_path = _PARAMS['s_output_bathymetry_path']
-    if not b_bathy_use_banks and s_output_bathymetry_path != '':
-        x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(d_q_baseflow, d_slope_use, _BATHYMETRY)
-    #This method calculates the banks based on the Riverbank
-    elif b_bathy_use_banks and s_output_bathymetry_path != '':
-        x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(d_q_baseflow, d_slope_use, _BATHYMETRY)
+    if precomputed_record is None and _CELL_REACH_INFLECT_BANK_INDEX is not None:
+        x_section.set_reach_scale_inflect_bank_index(float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell]))
+
+    if precomputed_record is None or not bool(precomputed_record.get("bathymetry_applied", False)):
+        _apply_bathymetry_to_cross_section(
+            x_section,
+            _PARAMS,
+            d_q_baseflow,
+            d_slope_use,
+            d_bathy_target_depth,
+            d_bathy_target_width,
+            bank_search_result=None if precomputed_record is None else precomputed_record.get("bank_search_result"),
+        )
+
 
     # Calculate the volumes
     # VolumeFillApproach 1 is to find the height within ElevList_mm that corresponds to the Qmax flow.  THen increment depths to have a standard number of depths to get to Qmax.  
@@ -1819,7 +3604,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     hydraulic_data.set_non_vdt_data(i_start_elevation_index, i_last_elevation_index, i_cell_comid, i_row_cell, i_column_cell,
                                     d_slope_use, d_dem_low_point_elev, i_entry_cell)
     
-    if hydraulic_data.s_xs_output_file:
+    if hydraulic_data.wants_cross_section_records():
         return hydraulic_data.get_cross_section_data(i_cell_comid, i_row_cell, i_column_cell)
     
 def close_shared_arrays(names: list[str] = None):
@@ -1910,13 +3695,39 @@ def init_parallel(
     global _PARAMS
     if params is not None:
         _PARAMS = params
+        globals()['_PRECOMPUTED_CROSS_SECTION_RECORDS'] = params.get('_precomputed_cross_section_records')
 
-def _build_flow_arrays(id_flow_dict: dict,  baseflow_key: str, qmax_key: str, processes: int) -> tuple[np.ndarray, np.ndarray]:
+def _build_flow_arrays(
+    id_flow_dict: dict,
+    baseflow_key: str,
+    qmax_key: str,
+    processes: int,
+    bathymetry_geometry_dict: dict[int, dict[str, float]] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     if baseflow_key == '':
         create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64, fill_value=0.0)
     else:
         create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][baseflow_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
     create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][qmax_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+
+    if bathymetry_geometry_dict is None:
+        return
+
+    # Manual cross-section runs may use manual IDs in the flow file while the
+    # stream vector still stores drainage area by the source stream ID. Reuse
+    # the same source-ID fallback that ARC already applies for reach-average
+    # slopes so the optional power-law bathymetry mode behaves consistently.
+    source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
+    create_array("_CELL_BATHY_DEPTH", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter(
+        (bathymetry_geometry_dict[int(stream_id)]['depth'] for stream_id in source_ids),
+        dtype=np.float64,
+        count=len(_CELL_COMIDS),
+    )
+    create_array("_CELL_BATHY_WIDTH", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter(
+        (bathymetry_geometry_dict[int(stream_id)]['width'] for stream_id in source_ids),
+        dtype=np.float64,
+        count=len(_CELL_COMIDS),
+    )
 
 def _build_reach_slope_arrays(stream_slope_dicts: tuple[dict], params: dict, processes: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     method = params['s_stream_slope_method']
@@ -1930,11 +3741,98 @@ def _build_reach_slope_arrays(stream_slope_dicts: tuple[dict], params: dict, pro
         create_array("_CELL_SLOPE_25", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope25_dict[cid] for cid in slope_ids), dtype=np.float64, count=len(_CELL_COMIDS))
         create_array("_CELL_SLOPE_75", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((slope75_dict[cid] for cid in slope_ids), dtype=np.float64, count=len(_CELL_COMIDS))
 
+def compute_cross_section_data(
+    params: dict,
+    processes: int,
+    quiet: bool,
+    collect_cross_section_data: bool = False,
+) -> tuple[dict[int, int], dict[int, int], list[dict | None] | None, list[dict | None] | None]:
+    """Precompute sampled sections, banks, and staged bathymetry.
+
+    The cross-section workflow is intentionally split into ordered passes:
+
+    1. sample every stream-cell cross section from the DEM (or manual input),
+       apply the low-spot adjustment, and resample the final profile,
+    2. compute reach-scale INFLECT curves and use them, together with the
+       legacy bank heuristics, to identify banks for every cached section, and
+    3. once the banks are known, optionally apply bathymetry and build any
+       requested cross-section export records.
+    """
+    x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
+    grouped_curves: dict[int, list[tuple[np.ndarray, np.ndarray]]] = {}
+    source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
+    sampled_records = [None] * _CELL_COMIDS.size
+
+    for i_entry_cell in tqdm.tqdm(range(_CELL_COMIDS.size), total=_CELL_COMIDS.size, disable=quiet):
+        i_reach_id = int(source_ids[i_entry_cell])
+        valid, i_cell_comid, i_row_cell, i_column_cell, d_dem_low_point_elev = _sample_cross_section_for_cell(
+            x_section,
+            i_entry_cell,
+            params,
+        )
+        if not valid:
+            continue
+
+        depth_values, curve = x_section.get_representative_inflect_curve_with_depths()
+        sampled_records[i_entry_cell] = _build_precomputed_cross_section_record(
+            x_section,
+            d_dem_low_point_elev,
+            bathymetry_applied=False,
+            inflect_curve=curve,
+        )
+        if curve.size > 0 and depth_values.size > 0:
+            grouped_curves.setdefault(i_reach_id, []).append((curve.copy(), depth_values.copy()))
+
+    inflect_bank_index_dict, inflect_terrace_index_dict = _build_reach_inflect_index_dictionaries(
+        grouped_curves,
+        params,
+    )
+    _populate_reach_inflect_arrays(
+        inflect_bank_index_dict,
+        inflect_terrace_index_dict,
+        processes,
+    )
+    _annotate_cross_sections_with_bank_search_results(
+        sampled_records,
+        params,
+        quiet,
+    )
+    cross_section_data, precomputed_records = _finalize_cross_section_records(
+        sampled_records,
+        params,
+        quiet,
+        collect_cross_section_data=collect_cross_section_data,
+    )
+
+    return inflect_bank_index_dict, inflect_terrace_index_dict, cross_section_data, precomputed_records
+
+
+def compute_cross_section_and_inflect_curve(
+    params: dict,
+    processes: int,
+    quiet: bool,
+    collect_cross_section_data: bool = False,
+) -> list[dict | None] | None:
+    """Build the staged cross-section cache and optional export records."""
+    if TEMP_PLOT_REACH_INFLECT_CURVES:
+        LOG.info('Temporary reach INFLECT plots will be written to ' + _get_reach_inflect_plot_directory(params))
+    inflect_bank_index_dict, inflect_terrace_index_dict, cross_section_data, precomputed_records = compute_cross_section_data(
+        params,
+        processes,
+        quiet,
+        collect_cross_section_data=collect_cross_section_data,
+    )
+    global _PRECOMPUTED_CROSS_SECTION_RECORDS
+    _PRECOMPUTED_CROSS_SECTION_RECORDS = precomputed_records
+    params['_precomputed_cross_section_records'] = precomputed_records
+    return cross_section_data
+
 def run_main_loop(
     num_cells: int,
     params: dict,
     quiet: bool,
     processes: int,
+    precomputed_cross_section_data: list[dict | None] | None = None,
 ) -> HydraulicData:
     """
     Run the per-cell simulation loop (serial or parallel).
@@ -1956,15 +3854,33 @@ def run_main_loop(
         An instance bound to the shared output array and containing any
         requested cross-section export data.
     """
-    want_xs = bool(params.get('s_xs_output_file'))
-    cross_section_data: list | None = [] if want_xs else None
+    # Representative cross sections are rebuilt later from stored per-cell
+    # cross-section records using INFLECT-limited 0.10 m hydraulic staging, so
+    # either output requires retaining the sampled profile records. When the
+    # reach-INFLECT prepass already built those records, reuse them directly
+    # instead of collecting duplicate copies in the hydraulic loop.
+    want_xs = bool(
+        params.get('s_xs_output_file')
+        or (
+            params.get('b_build_representative_cross_section')
+            and params.get('s_representative_cross_section_file')
+        )
+    )
+    cross_section_data: list | None = None
+    collect_cross_section_data = False
+    if want_xs:
+        if precomputed_cross_section_data is not None:
+            cross_section_data = precomputed_cross_section_data
+        else:
+            cross_section_data = []
+            collect_cross_section_data = True
 
     LOG.info('Looking at ' + str(num_cells) + ' stream cells')
 
     if processes == 1:
         for i_entry_cell in tqdm.tqdm(range(num_cells), total=num_cells, disable=quiet):
             item = calculate_hydraulic_data_for_cell(i_entry_cell)
-            if cross_section_data is not None and item is not None:
+            if collect_cross_section_data and item is not None:
                 cross_section_data.append(item)
 
         hydraulic_data = get_hydraulic_data(params)
@@ -1977,7 +3893,7 @@ def run_main_loop(
     with Pool(processes=processes, initializer=init_parallel, initargs=(*args, params)) as pool:
         chunksize = min(1_000, num_cells // (processes * 4) + 1)
         for item in tqdm.tqdm(pool.imap(calculate_hydraulic_data_for_cell, range(num_cells), chunksize=chunksize), total=num_cells, disable=quiet):
-            if cross_section_data is not None and item is not None:
+            if collect_cross_section_data and item is not None:
                 cross_section_data.append(item)
 
     hydraulic_data = get_hydraulic_data(params)
@@ -2100,6 +4016,17 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     
     ### Read the Flow Information ###
     id_flow_dict = read_flow_file(params['s_input_flow_file_path'], params['s_flow_file_id'], params['s_flow_file_baseflow'], params['s_flow_file_qmax'])
+    bathymetry_geometry_dict = None
+    if params['b_use_bathymetry_powerlaw']:
+        bathymetry_geometry_dict = build_bathymetry_geometry_dict(
+            params['s_strmshp_path'],
+            params['s_flow_file_id'],
+            params['s_bathymetry_drainage_area_field'],
+            params['d_bathymetry_coefficient_depth'],
+            params['d_bathymetry_exponent_depth'],
+            params['d_bathymetry_coefficient_width'],
+            params['d_bathymetry_exponent_width'],
+        )
 
     ### Read Raster Data ###
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
@@ -2245,7 +4172,13 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         i_boundary_number,
     )
 
-    _build_flow_arrays(id_flow_dict, params['s_flow_file_baseflow'], params['s_flow_file_qmax'], processes)
+    _build_flow_arrays(
+        id_flow_dict,
+        params['s_flow_file_baseflow'],
+        params['s_flow_file_qmax'],
+        processes,
+        bathymetry_geometry_dict=bathymetry_geometry_dict,
+    )
     _build_reach_slope_arrays(stream_slope_dicts, params, processes)
     
     # Make all Land Cover that is a stream look like water
@@ -2270,22 +4203,51 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         global_arr = create_array(name, processes, arr.shape, arr.dtype)
         global_arr[:] = arr[:]
 
+    want_xs = bool(
+        params.get('s_xs_output_file')
+        or (
+            params.get('b_build_representative_cross_section')
+            and params.get('s_representative_cross_section_file')
+        )
+    )
+
+    # Precompute cross-section data before performing hydraulic calculations.
+    precomputed_cross_section_data = compute_cross_section_and_inflect_curve(
+        params,
+        processes,
+        quiet,
+        collect_cross_section_data=want_xs,
+    )
+
     # Extract some parameters
     b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
-    ### Begin the stream cell solution loop ###
-    hydraulic_data = run_main_loop(len(ia_valued_row_indices), params, quiet, processes)
+    # If b_build_representative_cross_section is False, then we want to generate hydraulic_data
+    if params['b_build_representative_cross_section'] is False:
+        ### Begin the stream cell solution loop ###
+        hydraulic_data = run_main_loop(
+            len(ia_valued_row_indices),
+            params,
+            quiet,
+            processes,
+            precomputed_cross_section_data=precomputed_cross_section_data,
+        )
 
-    # Create the output VDT Database file - datatypes are figured out automatically
-    if not hydraulic_data.has_vdt_data():
-        LOG.warning('No VDT data was generated, so no hydraulic output files will be created.')
-        return
-    
-    # At this point, release all memory except for bathymetry, output array, and elevation
-    close_shared_arrays([name for name in ARRAY_NAMES if name not in {"_BATHYMETRY", "_OUTPUT_DATA_ARRAY", "_DEM"}])
-    
-    hydraulic_data.save_files(id_flow_dict, params['s_flow_file_qmax'])
+        # Create the output VDT Database file - datatypes are figured out automatically
+        if not hydraulic_data.has_vdt_data():
+            LOG.warning('No VDT data was generated, so no hydraulic output files will be created.')
+            if precomputed_cross_section_data is not None:
+                hydraulic_data.add_cross_section_data(precomputed_cross_section_data)
+                hydraulic_data.save_cross_section_outputs_only()
+        else:
+            # At this point, release all memory except for bathymetry, output array, and elevation
+            close_shared_arrays([name for name in ARRAY_NAMES if name not in {"_BATHYMETRY", "_OUTPUT_DATA_ARRAY", "_DEM"}])
+            hydraulic_data.save_files(id_flow_dict, params['s_flow_file_qmax'])
+    elif precomputed_cross_section_data is not None:
+        hydraulic_data = get_hydraulic_data(params)
+        hydraulic_data.add_cross_section_data(precomputed_cross_section_data)
+        hydraulic_data.save_cross_section_outputs_only()
 
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:

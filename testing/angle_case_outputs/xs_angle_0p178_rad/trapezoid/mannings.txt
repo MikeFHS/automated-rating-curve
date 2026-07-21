@@ -1,0 +1,2 @@
+lu	desc	roughness
+1	land	0.025
