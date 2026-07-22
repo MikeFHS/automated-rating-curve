@@ -2269,7 +2269,14 @@ def _compute_mean_reach_stream_direction(stream_directions: list[float]) -> floa
     if len(stream_directions) == 0:
         return 0.0
 
+    # Collapse opposite bearings onto the same [0, pi) axis. A reach directed
+    # northeast and one directed southwest describe the same line for the
+    # coordinate projection performed by the caller.
     angles = np.mod(np.asarray(stream_directions, dtype=np.float64), np.pi)
+
+    # Doubling axial angles turns them into ordinary circular data. Their
+    # vector mean can then be halved to recover the mean unoriented axis while
+    # avoiding the discontinuity between angles just below pi and just above 0.
     sin_2theta = np.nanmean(np.sin(2.0 * angles))
     cos_2theta = np.nanmean(np.cos(2.0 * angles))
     if not np.isfinite(sin_2theta) or not np.isfinite(cos_2theta):
@@ -2304,6 +2311,8 @@ def _compute_raw_bank_elevation_from_result(
     except Exception:
         bank_elev_2 = np.nan
 
+    # Either side may be missing or may still equal the thalweg placeholder.
+    # Only genuinely elevated, finite banks are allowed to seed smoothing.
     valid_bank_elevations = np.asarray(
         [
             elev
@@ -2315,6 +2324,8 @@ def _compute_raw_bank_elevation_from_result(
     if valid_bank_elevations.size == 0:
         return np.nan
 
+    # The lower of the two banks is the first elevation at which water can
+    # leave the channel, so it is the conservative bankfull control elevation.
     bank_elevation = float(np.nanmin(valid_bank_elevations))
 
     return bank_elevation
@@ -2334,10 +2345,14 @@ def _get_bank_search_result_for_smoothing(
     non-dictionary placeholder, ARC reruns the local bank hierarchy here so
     the reach smoother still has a consistent input record to work with.
     """
+    # Prefer the cached result from the bank-search prepass; copying prevents
+    # later annotations from unexpectedly mutating a shared dictionary.
     bank_search_result = sampled_record.get("bank_search_result")
     if isinstance(bank_search_result, dict):
         return dict(bank_search_result)
 
+    # A missing cache entry is recoverable: reconstruct the cell-specific
+    # target width and run the same configured local search hierarchy now.
     (_, _, _, d_bathy_target_width) = _get_cell_bathymetry_inputs(
         i_entry_cell,
         int(sampled_record["row"]),
@@ -2363,12 +2378,14 @@ def _apply_reach_top_width_filter(
 
     ARC groups sampled cross sections by reach before it smooths bank
     elevations. This helper uses those same grouped sections to evaluate local
-    bank-to-bank top width at each stream cell, compute the 25th, 50th, and
+    bank-to-bank top width at each stream cell, compute the 30th, 50th, and
     75th percentile widths for the reach, and replace any outlier bank result
     with bank indices that match the reach-median width as closely as the
     sampled cross-section spacing allows. The percentile summary is returned
     so later reach-level geometry fallbacks can reuse the same median width.
     """
+    # First pass: replay each cached cross section so width is measured from
+    # that section's own profile and bank indices, not the previous section's.
     widths_by_entry_index: dict[int, float] = {}
     reach_widths: list[float] = []
 
@@ -2392,6 +2409,8 @@ def _apply_reach_top_width_filter(
     if len(reach_widths) == 0:
         return None
 
+    # The current lower cutoff is the 30th percentile (q25 is a legacy field
+    # name); the upper cutoff remains the 75th percentile.
     reach_width_array = np.asarray(reach_widths, dtype=np.float64)
     q25 = float(np.percentile(reach_width_array, 30))
     median_width = float(np.percentile(reach_width_array, 50))
@@ -2399,6 +2418,8 @@ def _apply_reach_top_width_filter(
     if not np.isfinite(q25) or not np.isfinite(median_width) or not np.isfinite(q75):
         return None
 
+    # Second pass: replace only finite widths outside the reach band. Missing
+    # or invalid bank results are handled separately by the median-fill helper.
     for reach_entry in reach_entries:
         entry_index = int(reach_entry["entry_index"])
         sampled_record = sampled_records[entry_index]
@@ -2416,6 +2437,8 @@ def _apply_reach_top_width_filter(
                 reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[entry_index])
             _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
 
+            # Convert the median physical width back to the closest attainable
+            # pair of bank indices on this particular sampled profile.
             updated_bank_result = x_section.build_bank_search_result_from_target_width(
                 bank_search_result,
                 median_width,
@@ -2477,6 +2500,8 @@ def _apply_reach_median_top_width_to_missing_bank(
             continue
 
         bank_search_result = sampled_record.get("bank_search_result")
+        # Preserve every valid local/filtered bank pair. This helper supplies
+        # geometry only where the local search hierarchy failed completely.
         if isinstance(bank_search_result, dict) and bool(bank_search_result.get("is_valid", False)):
             bank_search_result["reach_median_bank_fill_applied"] = False
             bank_search_result["reach_median_bank_fill_reach_id"] = reach_id
@@ -2488,6 +2513,8 @@ def _apply_reach_median_top_width_to_missing_bank(
             reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[entry_index])
         _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
 
+        # Rebuild indices independently for this profile because equal target
+        # widths can correspond to different indices at different resolutions.
         updated_bank_result = x_section.build_bank_search_result_from_target_width(
             bank_search_result,
             median_top_width,
@@ -2587,6 +2614,8 @@ def _coerce_optional_reach_identifier(value) -> int | None:
     """Convert a reach identifier read from a table into ``int`` or ``None``."""
     if value in ('', None):
         return None
+    # Geospatial drivers commonly return IDs as integer-like floats or strings,
+    # so try the lossless/common integer form before accepting float text.
     try:
         if pd.isna(value):
             return None
@@ -2656,6 +2685,8 @@ def _build_reach_network_graph(
             + ' was not found in StrmShp_File.'
         )
 
+    # Collapse duplicate feature rows to one topology record per reach. The
+    # first occurrence supplies its downstream link and its distance weight.
     reach_records: dict[int, tuple[int | None, float]] = {}
     for _, row in gdf_stream.iterrows():
         reach_id = _coerce_optional_reach_identifier(row[reach_id_field])
@@ -2663,9 +2694,13 @@ def _build_reach_network_graph(
             continue
 
         downstream_reach_id = _coerce_optional_reach_identifier(row[downstream_reach_id_field])
+        # A self-link cannot advance a downstream path; treat it as an outlet.
         if downstream_reach_id == reach_id:
             downstream_reach_id = None
 
+        # Geometry length is the interpolation distance assigned to the edge
+        # leaving this reach. Unit distance keeps topology usable when geometry
+        # is missing, empty, or has a non-finite/zero length.
         reach_length = 1.0
         geometry = row.geometry
         if geometry is not None:
@@ -2685,6 +2720,8 @@ def _build_reach_network_graph(
             'reach_id values were found in StrmShp_File.'
         )
 
+    # Add all reaches as nodes first so outlets and reaches whose downstream
+    # IDs fall outside the input dataset remain represented in the graph.
     for reach_id, (_, reach_length) in reach_records.items():
         graph.add_node(reach_id, length=float(reach_length))
 
@@ -2710,12 +2747,24 @@ def _fill_segment(
     path_smoothed: np.array,
     end_elevation: float | None = None,
 ) -> None:
+    """Fill one downstream path interval from an upstream elevation anchor.
+
+    ``path_stations`` are distances to an outlet, so they decrease as ``idx``
+    moves downstream. If a lower downstream anchor exists, the helper draws a
+    straight line between the anchors; otherwise it imposes a small default
+    downstream decline. Existing values are combined with ``min`` because a
+    reach can receive candidates from overlapping segments or network paths.
+    """
     start_station = path_stations[start_index]
     end_station = path_stations[end_index]
+    # Distance-to-outlet should decrease downstream. Fall back to index spacing
+    # when network distances are missing or do not provide a positive interval.
     delta_station = start_station - end_station
     if not np.isfinite(delta_station) or delta_station <= 0.0:
         delta_station = float(max(end_index - start_index, 1))
 
+    # Interpolate only toward a genuinely lower downstream control. Otherwise
+    # force a slight decline rather than allowing a flat or rising bank line.
     if end_elevation is not None and np.isfinite(end_elevation) and float(end_elevation) < float(start_elevation):
         slope = (float(end_elevation) - float(start_elevation)) / float(delta_station)
     else:
@@ -2726,6 +2775,8 @@ def _fill_segment(
         if not np.isfinite(distance_from_start):
             distance_from_start = float(idx - start_index)
         smoothed_elevation = float(start_elevation) + float(slope) * float(distance_from_start)
+        # At confluences/overlaps, retain the lower candidate so the assembled
+        # network surface cannot be raised by another path traversal.
         if np.isfinite(path_smoothed[idx]):
             path_smoothed[idx] = min(float(path_smoothed[idx]), smoothed_elevation)
         else:
@@ -2753,11 +2804,15 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             'could not be performed.'
         )
 
+    # Reverse the edges so a shortest-path search starting at an outlet can
+    # assign every upstream reach its along-network distance to that outlet.
     reverse_graph = reach_network_graph.reverse(copy=False)
     outlets = [node for node in reach_network_graph.nodes if reach_network_graph.out_degree(node) == 0]
     if len(outlets) == 0:
         outlets = list(reach_network_graph.nodes)
 
+    # In a network with more than one reachable outlet, use the nearest outlet
+    # as the station reference for each reach.
     distance_to_outlet: dict[int, float] = {}
     for outlet in outlets:
         outlet_lengths = nx.single_source_dijkstra_path_length(
@@ -2774,11 +2829,15 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
     if len(headwaters) == 0:
         headwaters = list(reach_network_graph.nodes)
 
+    # Each headwater traces one downstream route. Nodes shared below a
+    # confluence consequently collect one candidate from each upstream path.
     candidate_elevations: dict[int, list[float]] = {}
     for headwater in headwaters:
         path = [headwater]
         visited = set()
         current_node = headwater
+        # The input model expects at most one immediate downstream successor.
+        # ``visited`` prevents malformed cyclic topology from looping forever.
         while reach_network_graph.out_degree(current_node) > 0 and current_node not in visited:
             visited.add(current_node)
             successors = list(reach_network_graph.successors(current_node))
@@ -2799,6 +2858,9 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
         if observed_indices.size == 0:
             continue
 
+        # Scan observations from outlet toward headwater. At every observed
+        # position, remember the lowest observed elevation at or downstream of
+        # that point and the path index where that minimum occurs.
         downstream_min_indices = np.full(observed_indices.size, -1, dtype=np.int64)
         downstream_min_elevations = np.full(observed_indices.size, np.nan, dtype=np.float64)
         running_min_index = int(observed_indices[-1])
@@ -2815,6 +2877,8 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
         path_smoothed = np.full(len(path), np.nan, dtype=np.float64)
 
         if observed_indices.size == 1:
+            # With only one measurement, use its elevation as the headwater-end
+            # seed and apply the default gentle decline across the entire path.
             only_index = int(observed_indices[0])
             _fill_segment(0, len(path) - 1, float(path_observed[only_index]), path_stations, path_smoothed, None)
         else:
@@ -2824,6 +2888,9 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             second_observed_elevation = float(path_observed[second_observed_index])
 
             if first_observed_index > 0:
+                # Extrapolate reaches above the first observation using the
+                # slope toward the next downstream minimum when it is lower;
+                # otherwise hold the upstream extension level.
                 start_station = path_stations[0]
                 anchor_station = path_stations[first_observed_index]
                 if second_observed_elevation < first_observed_elevation:
@@ -2847,6 +2914,9 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
                     else:
                         path_smoothed[idx] = float(candidate_elevation)
 
+            # Fill intervals beginning at every observed control. Prefer the
+            # lowest later observation as the downstream anchor so intervening
+            # high observations cannot create an artificial downstream rise.
             for obs_index in range(observed_indices.size - 1):
                 start_index = int(observed_indices[obs_index])
                 next_observed_index = int(observed_indices[obs_index + 1])
@@ -2878,6 +2948,8 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
 
                 )
 
+            # No observed control remains below the last observation, so carry
+            # the default small decline from there to the outlet.
             last_observed_index = int(observed_indices[-1])
             if last_observed_index < len(path) - 1:
                 _fill_segment(
@@ -2893,6 +2965,8 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             if np.isfinite(path_smoothed[idx]):
                 candidate_elevations.setdefault(int(node), []).append(float(path_smoothed[idx]))
 
+    # A reach below a confluence may have several path-derived estimates. Use
+    # the lowest to reconcile those paths into one conservative network value.
     smoothed_reach_min_elevations: dict[int, float] = {}
     for node, candidates in candidate_elevations.items():
         candidate_array = np.asarray(candidates, dtype=np.float64)
@@ -2925,7 +2999,7 @@ def _smooth_reach_bank_elevations(
     After ARC estimates local bank indices for every sampled cross section, it
     reorders the sections within each reach from upstream to downstream using
     ``get_stream_direction_information``. ARC then evaluates local bank-to-bank
-    top width at each stream cell, replaces any width outside the 25th-75th
+    top width at each stream cell, replaces any width outside the 30th-75th
     percentile band with bank locations that match the reach-median width,
     uses that same reach-median width to fill sections whose local bank
     indices remained invalid, and then assigns each sampled cross section the
@@ -2934,6 +3008,8 @@ def _smooth_reach_bank_elevations(
     while the filtered local bank indices and top width are preserved for each
     sampled cross section.
     """
+    # Source-stream IDs preserve the original reach grouping when processing
+    # has reassigned cell COMIDs; otherwise the cell COMID is the reach key.
     source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
     x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
     grouped_reach_entries: dict[int, list[dict]] = {}
@@ -2943,6 +3019,8 @@ def _smooth_reach_bank_elevations(
         params.get('s_downstream_reach_id_field', ''),
     )
 
+    # Prepass: restore each sampled profile, ensure it has a local bank result,
+    # and gather the location/direction metadata used for reach grouping.
     for i_entry_cell in tqdm.tqdm(range(_CELL_COMIDS.size), total=_CELL_COMIDS.size, disable=quiet):
         sampled_record = sampled_records[i_entry_cell]
         if sampled_record is None:
@@ -2963,6 +3041,8 @@ def _smooth_reach_bank_elevations(
 
         row = int(sampled_record["row"])
         col = int(sampled_record["col"])
+        # Direction is sampled locally but later averaged as an unoriented axis
+        # so all cells in the reach can be projected onto one ordering line.
         stream_direction, _ = get_stream_direction_information(
             row,
             col,
@@ -2978,6 +3058,8 @@ def _smooth_reach_bank_elevations(
             }
         )
 
+    # Reach pass: normalize horizontal bank geometry, order sections along the
+    # reach, and reduce the local elevations to one observed reach minimum.
     reach_summaries: dict[int, dict] = {}
     for reach_id, reach_entries in grouped_reach_entries.items():
         if len(reach_entries) == 0:
@@ -2996,6 +3078,8 @@ def _smooth_reach_bank_elevations(
             reach_top_width_stats,
         )
 
+        # Project row/column coordinates onto the representative stream axis.
+        # The projection initially supplies an order but not its downstream sign.
         mean_direction = _compute_mean_reach_stream_direction(
             [entry["stream_direction"] for entry in reach_entries]
         )
@@ -3009,6 +3093,9 @@ def _smooth_reach_bank_elevations(
             ],
             dtype=np.float64,
         )
+        # Replay profiles again because the shared CrossSection instance only
+        # contains one sampled section at a time. Extract the lower valid bank
+        # after width filtering/filling and retain which search method found it.
         raw_bank_elevations = np.full(len(reach_entries), np.nan, dtype=np.float64)
         function_used_by_entry_index: dict[int, str | None] = {}
         for elevation_index, entry in enumerate(reach_entries):
@@ -3033,6 +3120,9 @@ def _smooth_reach_bank_elevations(
                 )
             else:
                 continue
+        # Resolve the sign ambiguity of the mean axis: compare up to ten values
+        # at each end and reverse if the nominal upstream end is lower. This
+        # makes ``order`` run from the generally higher end to the lower end.
         order = np.argsort(along_stream_coordinates)
         sample_size = min(10, order.size)
         if sample_size > 0:
@@ -3049,6 +3139,8 @@ def _smooth_reach_bank_elevations(
         ordered_coordinates = along_stream_coordinates[order]
         ordered_raw_bank_elevations = raw_bank_elevations[order]
         finite_ordered_bank_elevations = ordered_raw_bank_elevations[np.isfinite(ordered_raw_bank_elevations)]
+        # This single conservative observation is what the network-level
+        # smoother uses to represent the reach vertically.
         minimum_bank_elevation = (
             float(np.nanmin(finite_ordered_bank_elevations))
             if finite_ordered_bank_elevations.size > 0
@@ -3065,6 +3157,8 @@ def _smooth_reach_bank_elevations(
             'minimum_bank_elevation': minimum_bank_elevation,
         }
 
+    # Omit reaches without a finite local observation; graph interpolation may
+    # still populate graph nodes lying between reaches that do have controls.
     reach_min_bank_elevation_dict = {
         int(reach_id): float(summary['minimum_bank_elevation'])
         for reach_id, summary in reach_summaries.items()
@@ -3080,6 +3174,8 @@ def _smooth_reach_bank_elevations(
         reach_min_bank_elevation_dict,
     )
 
+    # Final pass: apply the graph-smoothed reach value to every cross section
+    # while preserving local bank indices/top width as horizontal geometry.
     for reach_id, reach_summary in reach_summaries.items():
         reach_entries = reach_summary['reach_entries']
         order = np.asarray(reach_summary['order'], dtype=np.int64)
@@ -3098,6 +3194,8 @@ def _smooth_reach_bank_elevations(
         upstream_network_elevation = float(
             network_smoothed_reach_min_bank_elevations[reach_id]
         )
+        # The downstream value is diagnostic metadata for later inspection; the
+        # current implementation assigns a constant elevation within this reach.
         downstream_reach_id = reach_downstream_map.get(int(reach_id))
         if downstream_reach_id is None:
             downstream_network_elevation = np.nan
@@ -3128,6 +3226,8 @@ def _smooth_reach_bank_elevations(
             _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
 
             current_bank_search_result = sampled_record.get("bank_search_result")
+            # Rebuild the result at the network elevation while carrying forward
+            # the locally chosen bank pair and the search method that produced it.
             updated_bank_result = x_section.build_bank_search_result_from_smoothed_elevation(
                 current_bank_search_result,
                 float(target_bank_elevation),
