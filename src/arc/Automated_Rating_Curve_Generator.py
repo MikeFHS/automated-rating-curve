@@ -1889,21 +1889,14 @@ def _get_cell_bathymetry_inputs(i_entry_cell: int, i_row_cell: int, i_column_cel
 def _apply_bathymetry_to_cross_section(
     x_section: CrossSection,
     params: dict,
-    d_q_baseflow: float,
-    d_slope_use: float,
-    d_bathy_target_depth: float | None,
-    d_bathy_target_width: float | None,
     bank_search_result: dict | None = None,
 ) -> None:
-    """Apply ARC's bathymetry workflow to the current sampled cross section.
+    """Burn a previously staged bathymetry depth into a cross section.
 
-    This helper intentionally mutates ``x_section`` in-place so downstream
-    geometry calculations can reuse the staged profile without resampling.
-    When ``bank_search_result`` is supplied, ARC reuses the bank hierarchy
-    chosen during the prepass that evaluated bank locations for every stream
-    cell before any bathymetry was applied. The output raster backing array is
-    reused here because the existing bathymetry methods write both the adjusted
-    profile and raster output together.
+    Bank finding and hydraulic-depth estimation have already finished before
+    this helper is called. The burn methods therefore use the bank geometry and
+    ``bathymetry_depth`` stored in ``bank_search_result`` and do not solve
+    Manning's equation while mutating the cross-section profiles.
     """
     s_output_bathymetry_path = params['s_output_bathymetry_path']
     if s_output_bathymetry_path == '':
@@ -1911,22 +1904,96 @@ def _apply_bathymetry_to_cross_section(
 
     if not params['b_bathy_use_banks']:
         x_section.Calculate_Bathymetry_Based_on_WSE_or_LC(
-            d_q_baseflow,
-            d_slope_use,
             _BATHYMETRY,
-            d_bathy_target_depth=d_bathy_target_depth,
-            d_bathy_target_width=d_bathy_target_width,
             bank_search_result=bank_search_result,
         )
     else:
         x_section.Calculate_Bathymetry_Based_on_RiverBank_Elevations(
-            d_q_baseflow,
-            d_slope_use,
             _BATHYMETRY,
-            d_bathy_target_depth=d_bathy_target_depth,
-            d_bathy_target_width=d_bathy_target_width,
             bank_search_result=bank_search_result,
         )
+
+
+def _stage_cross_section_bathymetry_depths(
+    sampled_records: list[dict | None],
+    params: dict,
+    quiet: bool,
+) -> None:
+    """Estimate one bathymetry depth per cell after all banks have been found.
+
+    This is deliberately a separate pass over the cached, unmodified cross
+    sections. Drainage-area power-law depths are copied directly when present.
+    Otherwise, the baseflow and local/reach slope are passed to the hydraulic
+    depth solver using the already selected bank geometry. The resulting depth
+    is stored with the bank result for the later bathymetry-only burn pass.
+    """
+    x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
+
+    for i_entry_cell in tqdm.tqdm(
+        range(_CELL_COMIDS.size),
+        total=_CELL_COMIDS.size,
+        disable=quiet,
+    ):
+        sampled_record = sampled_records[i_entry_cell]
+        if sampled_record is None:
+            continue
+
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
+        _replay_precomputed_cross_section(
+            x_section,
+            sampled_record,
+            reach_bank_index=reach_bank_index,
+        )
+
+        i_row_cell = int(_CELL_ROWS[i_entry_cell])
+        i_column_cell = int(_CELL_COLS[i_entry_cell])
+        (
+            d_q_baseflow,
+            d_slope_use,
+            d_bathy_target_depth,
+            _d_bathy_target_width,
+        ) = _get_cell_bathymetry_inputs(
+            i_entry_cell,
+            i_row_cell,
+            i_column_cell,
+            params,
+        )
+
+        existing_result = sampled_record.get("bank_search_result")
+        staged_result = dict(existing_result) if isinstance(existing_result, dict) else {}
+        using_target_depth = x_section._is_valid_bathymetry_target(
+            d_bathy_target_depth
+        )
+
+        if using_target_depth:
+            bathymetry_depth = float(d_bathy_target_depth)
+            depth_source = "drainage_area_power_law"
+        else:
+            bathymetry_depth = x_section.calculate_hydraulic_bathymetry_depth(
+                d_q_baseflow,
+                d_slope_use,
+                staged_result,
+            )
+            depth_source = "baseflow_manning"
+            staged_result["hydraulic_bathymetry_depth"] = float(bathymetry_depth)
+
+        # These fields make the depth decision explicit and allow the burn pass
+        # to operate without receiving discharge, slope, or target parameters.
+        staged_result["bathymetry_depth"] = float(bathymetry_depth)
+        # Preserve the former in-method gate exactly: a target depth can be
+        # applied without baseflow, while a hydraulically solved depth is only
+        # applied when baseflow is positive. This flag also distinguishes a
+        # legitimate computed zero from the no-baseflow early-return case.
+        staged_result["bathymetry_should_apply"] = bool(
+            using_target_depth or d_q_baseflow > 0.0
+        )
+        staged_result["bathymetry_depth_source"] = depth_source
+        staged_result["bathymetry_depth_baseflow"] = float(d_q_baseflow)
+        staged_result["bathymetry_depth_slope"] = float(d_slope_use)
+        sampled_record["bank_search_result"] = staged_result
+
 
 
 def _build_precomputed_cross_section_record(
@@ -3720,16 +3787,24 @@ def _finalize_cross_section_records(
     quiet: bool,
     collect_cross_section_data: bool = False,
 ) -> tuple[list[dict | None] | None, list[dict | None]]:
-    """Smooth reach bank elevations, apply staged bathymetry, and build exports.
+    """Finalize banks and depths, burn staged bathymetry, and build exports.
 
     Once local bank indices have been estimated for all sampled cross sections,
     ARC smooths the implied bank elevations along each reach, preserves the
-    locally detected bank indices and top widths, and uses only the smoothed
-    elevation as the vertical bathymetry control before beginning the
-    existing bathymetry estimation workflow.
+    locally detected bank indices and top widths, then estimates every
+    non-target hydraulic depth in a separate pass over the unmodified cached
+    profiles. A final pass burns those stored depths into the profiles and
+    bathymetry raster.
     """
     if params['s_output_bathymetry_path']:
         _smooth_reach_bank_elevations(
+            sampled_records,
+            params,
+            quiet,
+        )
+        # Hydraulic depths must be solved from the finalized bank geometry,
+        # but before any profile is lowered by the bathymetry burn.
+        _stage_cross_section_bathymetry_depths(
             sampled_records,
             params,
             quiet,
@@ -3763,10 +3838,6 @@ def _finalize_cross_section_records(
             _apply_bathymetry_to_cross_section(
                 x_section,
                 params,
-                d_q_baseflow,
-                d_slope_use,
-                d_bathy_target_depth,
-                d_bathy_target_width,
                 bank_search_result=sampled_record.get("bank_search_result"),
             )
             bathymetry_applied = True
@@ -3884,10 +3955,6 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         _apply_bathymetry_to_cross_section(
             x_section,
             _PARAMS,
-            d_q_baseflow,
-            d_slope_use,
-            d_bathy_target_depth,
-            d_bathy_target_width,
             bank_search_result=None if precomputed_record is None else precomputed_record.get("bank_search_result"),
         )
 

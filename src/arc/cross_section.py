@@ -1064,39 +1064,17 @@ class CrossSection:
 
     def Calculate_Bathymetry_Based_on_WSE_or_LC(
         self,
-        d_q_baseflow: float,
-        d_slope_use: float,
         output_bathymetry: np.ndarray,
-        d_bathy_target_depth: float | None = None,
-        d_bathy_target_width: float | None = None,
         bank_search_result: dict | None = None,
     ):
-        """Estimate bathymetry using WSE/land-cover banks or drainage-area targets.
+        """Burn a staged depth using the previously selected WSE/LC banks.
 
-        ARC now completes bank detection during staged preprocessing and passes
-        the selected bank geometry into this method through
-        ``bank_search_result``. This routine therefore only solves for a
-        bathymetry depth and burns the channel using that supplied geometry; it
-        does not rerun land-cover, INFLECT, flat-water, or width-to-depth bank
-        searches from the current profile. If the staged bank result is
-        missing, invalid, or yields an unrealistic depth, ARC skips the burn
-        for that stream cell instead of attempting a second bank-search pass
-        here. ``d_bathy_target_width`` remains in the signature only for API
-        compatibility with existing callers.
+        This method performs no bank search and no hydraulic-depth solve.
+        ``bathymetry_depth`` must already be present in ``bank_search_result``.
         """
-        del d_bathy_target_width
-        using_target_depth = self._is_valid_bathymetry_target(d_bathy_target_depth)
-
-        if d_q_baseflow <= 0.0 and not using_target_depth:
-            i_bank_1_index = 0
-            i_bank_2_index = 0
-            i_total_bank_cells = 1
-            d_y_depth = 0.0
-            d_y_bathy = self.get_thalweg() - d_y_depth
-            return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
         (
-            function_used,
+            _function_used,
             i_bank_1_index,
             i_bank_2_index,
             i_total_bank_cells,
@@ -1106,84 +1084,72 @@ class CrossSection:
         ) = self._get_precomputed_bathymetry_bank_result(
             bank_search_result,
         )
+        if not isinstance(bank_search_result, dict):
+            return 0, 0, 1, 0.0, self.get_thalweg()
+        should_apply = bool(
+            bank_search_result.get(
+                "bathymetry_should_apply",
+                "bathymetry_depth" in bank_search_result,
+            )
+        )
+        if not should_apply:
+            return 0, 0, 1, 0.0, self.get_thalweg()
 
         d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
         d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-        d_y_depth = 0.0
+        d_y_depth = float(bank_search_result.get("bathymetry_depth", 0.0))
         d_y_bathy = self.get_thalweg()
 
-        if (d_q_baseflow > 0.0 or using_target_depth):
-            if i_total_bank_cells == 1:
-                if self.xs1_n <= 1 or self.xs2_n <= 1:
-                    return 0, 0, 1, 0.0, self.get_thalweg()
-                d_y_depth = float(d_bathy_target_depth) if using_target_depth else find_depth_of_bathymetry_triangle(
-                    d_q_baseflow,
-                    self.d_ordinate_dist,
-                    self.da_xs_profile1[0],
-                    self.da_xs_profile1[1],
-                    self.da_xs_profile2[1],
-                    d_slope_use,
-                    0.03,
-                )
-                i_bank_1_index = 1
-                i_bank_2_index = 1
-                i_total_bank_cells = 1
-                d_total_bank_dist = self.d_ordinate_dist
-                d_h_dist = 0.0
-                d_trap_base = 0.0
-            else:
-                d_y_depth = float(d_bathy_target_depth) if using_target_depth else find_depth_of_bathymetry(
-                    d_q_baseflow,
-                    d_trap_base,
-                    d_total_bank_dist,
-                    d_slope_use,
-                    0.03,
-                )
+        # Match the former combined solve/burn routine: non-finite and
+        # unrealistic depths were rejected, while an exact zero was allowed.
+        if not np.isfinite(d_y_depth) or d_y_depth >= 25.0:
+            return 0, 0, 1, 0.0, self.get_thalweg()
 
-            if not np.isfinite(d_y_depth) or d_y_depth >= 25.0:
+        if i_total_bank_cells > 1:
+            d_y_bathy = self.get_thalweg() - d_y_depth
+            _adjust_one_side_for_bathymetry(
+                i_bank_1_index,
+                d_total_bank_dist,
+                d_trap_base,
+                d_h_dist,
+                self.ia_xc_row1_index_main,
+                self.ia_xc_column1_index_main,
+                self.da_xs_profile1,
+                output_bathymetry,
+                0.0,
+                d_y_bathy,
+                d_y_depth,
+                self.d_ordinate_dist,
+                self.dm_elevation,
+                self.b_bathy_use_banks,
+            )
+            _adjust_one_side_for_bathymetry(
+                i_bank_2_index,
+                d_total_bank_dist,
+                d_trap_base,
+                d_h_dist,
+                self.ia_xc_row2_index_main,
+                self.ia_xc_column2_index_main,
+                self.da_xs_profile2,
+                output_bathymetry,
+                0.0,
+                d_y_bathy,
+                d_y_depth,
+                self.d_ordinate_dist,
+                self.dm_elevation,
+                self.b_bathy_use_banks,
+            )
+        elif i_total_bank_cells == 1:
+            if self.xs1_n <= 1 or self.xs2_n <= 1:
                 return 0, 0, 1, 0.0, self.get_thalweg()
-
-            if i_total_bank_cells > 1:
-                d_y_bathy = self.get_thalweg() - d_y_depth
-                _adjust_one_side_for_bathymetry(
-                    i_bank_1_index,
-                    d_total_bank_dist,
-                    d_trap_base,
-                    d_h_dist,
-                    self.ia_xc_row1_index_main,
-                    self.ia_xc_column1_index_main,
-                    self.da_xs_profile1,
-                    output_bathymetry,
-                    0.0,
-                    d_y_bathy,
-                    d_y_depth,
-                    self.d_ordinate_dist,
-                    self.dm_elevation,
-                    self.b_bathy_use_banks,
-                )
-                _adjust_one_side_for_bathymetry(
-                    i_bank_2_index,
-                    d_total_bank_dist,
-                    d_trap_base,
-                    d_h_dist,
-                    self.ia_xc_row2_index_main,
-                    self.ia_xc_column2_index_main,
-                    self.da_xs_profile2,
-                    output_bathymetry,
-                    0.0,
-                    d_y_bathy,
-                    d_y_depth,
-                    self.d_ordinate_dist,
-                    self.dm_elevation,
-                    self.b_bathy_use_banks,
-                )
-            elif i_total_bank_cells == 1:
-                d_y_bathy = self.get_thalweg() - d_y_depth
-                self.da_xs_profile1[0] = d_y_bathy
-                output_bathymetry[self.ia_xc_row1_index_main[0], self.ia_xc_column1_index_main[0]] = self.da_xs_profile1[0]
-                self.da_xs_profile2[0] = d_y_bathy
-                output_bathymetry[self.ia_xc_row2_index_main[0], self.ia_xc_column2_index_main[0]] = self.da_xs_profile2[0]
+            i_bank_1_index = 1
+            i_bank_2_index = 1
+            d_y_bathy = self.get_thalweg() - d_y_depth
+            self.da_xs_profile1[0] = d_y_bathy
+            output_bathymetry[self.ia_xc_row1_index_main[0], self.ia_xc_column1_index_main[0]] = self.da_xs_profile1[0]
+            self.da_xs_profile2[0] = d_y_bathy
+            output_bathymetry[self.ia_xc_row2_index_main[0], self.ia_xc_column2_index_main[0]] = self.da_xs_profile2[0]
 
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
     
@@ -1223,7 +1189,7 @@ class CrossSection:
     def _get_precomputed_bathymetry_bank_result(
         self,
         bank_search_result: dict | None,
-    ) -> tuple[str | None, int, int, int, float, float, float, bool]:
+    ) -> tuple[str | None, int, int, int, float, float, float]:
         """Normalize the staged bank result used by the bathymetry burn step.
 
         ARC now completes bank detection before either bathymetry routine
@@ -1232,7 +1198,7 @@ class CrossSection:
         hierarchy from the current cross-section profile.
         """
         if not isinstance(bank_search_result, dict):
-            return None, 0, 0, 1, float(self.da_xs_profile1[0]), float(self.da_xs_profile2[0]), float("nan"), False
+            return None, 0, 0, 1, float(self.da_xs_profile1[0]), float(self.da_xs_profile2[0]), float("nan")
 
         function_used = bank_search_result.get("function_used")
         i_bank_1_index = self._clamp_bank_index(int(bank_search_result.get("i_bank_1_index", 0)), self.xs1_n)
@@ -1266,67 +1232,112 @@ class CrossSection:
             smoothed_bank_elevation,
         )
     
-    def _compute_depth(
+    def _compute_bank_bathymetry_geometry(
         self,
         i_total_bank_cells,
         i_bank_1_index,
         i_bank_2_index,
         d_bankfull_elevation,
-        d_q_baseflow,
-        d_slope_use,
-        d_bathy_target_depth: float | None = None,
     ):
-        """Compute trapezoid dimensions and the corresponding water depth.
-
-        When ``d_bathy_target_depth`` is provided, ARC skips the discharge
-        solve and uses that externally estimated bankfull depth directly.
-        """
+        """Compute the trapezoid dimensions implied by the detected banks."""
         d_side1_dist = self._calc_side_distance(self.da_xs_profile1, i_bank_1_index, d_bankfull_elevation)
         d_side2_dist = self._calc_side_distance(self.da_xs_profile2, i_bank_2_index, d_bankfull_elevation)
         d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist + d_side1_dist + d_side2_dist
         d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
-        d_y_depth = float(d_bathy_target_depth) if self._is_valid_bathymetry_target(d_bathy_target_depth) else find_depth_of_bathymetry(
-            d_q_baseflow,
-            d_trap_base,
-            d_total_bank_dist,
-            d_slope_use,
-            0.03,
-        )
-        return d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base, d_y_depth
-    
-    def Calculate_Bathymetry_Based_on_RiverBank_Elevations(
+        return d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base
+
+    def calculate_hydraulic_bathymetry_depth(
         self,
         d_q_baseflow: float,
         d_slope_use: float,
+        bank_search_result: dict | None,
+    ) -> float:
+        """Solve hydraulic depth from baseflow after bank detection is complete.
+
+        The method reads only the cached cross section and its staged bank
+        result. It does not alter either cross-section profile or the output
+        bathymetry raster, allowing every depth to be computed before any
+        neighboring stream cell is burned.
+        """
+        if d_q_baseflow <= 0.0:
+            return 0.0
+
+        (
+            _function_used,
+            i_bank_1_index,
+            i_bank_2_index,
+            i_total_bank_cells,
+            _bank_elev_1,
+            _bank_elev_2,
+            smoothed_bank_elevation,
+        ) = self._get_precomputed_bathymetry_bank_result(bank_search_result)
+
+        if i_total_bank_cells == 1:
+            if self.xs1_n <= 1 or self.xs2_n <= 1:
+                return 0.0
+            if self.b_bathy_use_banks:
+                # The bank-elevation method uses its smoothed elevation as the
+                # triangular section's center and both edge elevations.
+                stream_elevation = smoothed_bank_elevation
+                left_bank_elevation = smoothed_bank_elevation
+                right_bank_elevation = smoothed_bank_elevation
+            else:
+                stream_elevation = self.da_xs_profile1[0]
+                left_bank_elevation = self.da_xs_profile1[1]
+                right_bank_elevation = self.da_xs_profile2[1]
+            d_y_depth = find_depth_of_bathymetry_triangle(
+                d_q_baseflow,
+                self.d_ordinate_dist,
+                stream_elevation,
+                left_bank_elevation,
+                right_bank_elevation,
+                d_slope_use,
+                0.03,
+            )
+        else:
+            if self.b_bathy_use_banks:
+                (
+                    _d_side1_dist,
+                    _d_side2_dist,
+                    d_total_bank_dist,
+                    _d_h_dist,
+                    d_trap_base,
+                ) = self._compute_bank_bathymetry_geometry(
+                    i_total_bank_cells,
+                    i_bank_1_index,
+                    i_bank_2_index,
+                    smoothed_bank_elevation,
+                )
+            else:
+                d_total_bank_dist = i_total_bank_cells * self.d_ordinate_dist
+                d_h_dist = self.d_bathymetry_trapzoid_height * d_total_bank_dist
+                d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
+
+            d_y_depth = find_depth_of_bathymetry(
+                d_q_baseflow,
+                d_trap_base,
+                d_total_bank_dist,
+                d_slope_use,
+                0.03,
+            )
+
+        # Do not filter the solver result here. The old combined routine
+        # performed these checks immediately before burning; leaving them to
+        # the burn method preserves those exact numerical acceptance rules.
+        return float(d_y_depth)
+
+    def Calculate_Bathymetry_Based_on_RiverBank_Elevations(
+        self,
         dm_output_bathymetry: np.ndarray,
-        d_bathy_target_depth: float | None = None,
-        d_bathy_target_width: float | None = None,
         bank_search_result: dict | None = None,
     ):
-        """Estimate bathymetry using bank elevations or drainage-area targets.
+        """Burn a staged depth below the smoothed bank elevation.
 
-        ARC now relies on the staged ``bank_search_result`` instead of
-        rerunning the bank hierarchy from the bathymetry-adjusted cross
-        section. When the staged reach smoother has written a
-        ``smoothed_bank_elevation`` into ``bank_search_result``, ARC keeps the
-        local bank indices and top width from that result and uses only the
-        smoothed elevation as the vertical bathymetry control. If the staged
-        bank result is missing, invalid, or yields an unrealistic depth, the
-        bathymetry burn is skipped for that stream cell. ``d_bathy_target_width``
-        remains in the signature only for API compatibility with existing
-        callers.
+        Hydraulic depth and bank detection are intentionally absent here.
+        This final geometry step consumes ``bathymetry_depth`` from the staged
+        bank result and writes the lowered profile to the output raster.
         """
-        del d_bathy_target_width
-        using_target_depth = self._is_valid_bathymetry_target(d_bathy_target_depth)
-
-        if d_q_baseflow <= 0.0 and not using_target_depth:
-            i_bank_1_index = 0
-            i_bank_2_index = 0
-            i_total_bank_cells = 1
-            d_y_depth = 0.0
-            d_y_bathy = 0.0
-            return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
 
         (
             function_used,
@@ -1339,47 +1350,52 @@ class CrossSection:
         ) = self._get_precomputed_bathymetry_bank_result(
             bank_search_result,
         )
-        d_y_depth = 0.0
+        if not isinstance(bank_search_result, dict):
+            return 0, 0, 1, 0.0, 0.0
+        should_apply = bool(
+            bank_search_result.get(
+                "bathymetry_should_apply",
+                "bathymetry_depth" in bank_search_result,
+            )
+        )
+        if not should_apply:
+            return 0, 0, 1, 0.0, 0.0
+
+        d_y_depth = float(bank_search_result.get("bathymetry_depth", 0.0))
         d_y_bathy = 0.0
 
         d_bankfull_elevation = smoothed_bank_elevation
+        if (
+            not np.isfinite(d_y_depth)
+            or d_y_depth >= 25.0
+            or d_y_depth < 0.0
+        ):
+            return 0, 0, 1, 0.0, 0.0
 
-        if (d_q_baseflow > 0.0 or using_target_depth):
-            if i_total_bank_cells == 1:
-                if self.xs1_n <= 1 or self.xs2_n <= 1:
-                    return 0, 0, 1, 0.0, 0.0
-                left_triangle_elevation = d_bankfull_elevation
-                right_triangle_elevation = d_bankfull_elevation
-                d_y_depth = float(d_bathy_target_depth) if using_target_depth else find_depth_of_bathymetry_triangle(
-                    d_q_baseflow,
-                    self.d_ordinate_dist,
-                    smoothed_bank_elevation,
-                    left_triangle_elevation,
-                    right_triangle_elevation,
-                    d_slope_use,
-                    0.03,
-                )
-                d_side1_dist = 0.0
-                d_side2_dist = 0.0
-                d_total_bank_dist = self.d_ordinate_dist
-                d_h_dist = 0.0
-                d_trap_base = 0.0
-                i_bank_1_index = 1 if self.xs1_n > 1 else 0
-                i_bank_2_index = 1 if self.xs2_n > 1 else 0
-            else:
-                (d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base, d_y_depth) = self._compute_depth(
-                    i_total_bank_cells,
-                    i_bank_1_index,
-                    i_bank_2_index,
-                    d_bankfull_elevation,
-                    d_q_baseflow,
-                    d_slope_use,
-                    d_bathy_target_depth=d_bathy_target_depth,
-                )
-            d_y_bathy = d_bankfull_elevation - d_y_depth
-
-            if not np.isfinite(d_y_depth) or d_y_depth >= 25.0 or d_y_bathy > d_bankfull_elevation:
+        if i_total_bank_cells == 1:
+            if self.xs1_n <= 1 or self.xs2_n <= 1:
                 return 0, 0, 1, 0.0, 0.0
+            d_side1_dist = 0.0
+            d_side2_dist = 0.0
+            d_total_bank_dist = self.d_ordinate_dist
+            d_h_dist = 0.0
+            d_trap_base = 0.0
+            i_bank_1_index = 1
+            i_bank_2_index = 1
+        else:
+            (
+                d_side1_dist,
+                d_side2_dist,
+                d_total_bank_dist,
+                d_h_dist,
+                d_trap_base,
+            ) = self._compute_bank_bathymetry_geometry(
+                i_total_bank_cells,
+                i_bank_1_index,
+                i_bank_2_index,
+                d_bankfull_elevation,
+            )
+        d_y_bathy = d_bankfull_elevation - d_y_depth
 
         if i_total_bank_cells > 1:
             _adjust_one_side_for_bathymetry(
