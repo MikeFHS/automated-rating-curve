@@ -2398,6 +2398,27 @@ def _compute_raw_bank_elevation_from_result(
     return bank_elevation
 
 
+def _exclude_thalweg_equal_bank_elevations(
+    bank_elevations: np.ndarray,
+    thalweg_elevations: np.ndarray,
+) -> np.ndarray:
+    """Replace bank elevations equal to their sampled thalweg with NaN."""
+    bank_elevations = np.asarray(bank_elevations, dtype=np.float64).copy()
+    thalweg_elevations = np.asarray(thalweg_elevations, dtype=np.float64)
+    if bank_elevations.shape != thalweg_elevations.shape:
+        raise ValueError(
+            "Bank-elevation and thalweg-elevation arrays must have the same shape."
+        )
+
+    equal_to_thalweg = (
+        np.isfinite(bank_elevations)
+        & np.isfinite(thalweg_elevations)
+        & np.isclose(bank_elevations, thalweg_elevations)
+    )
+    bank_elevations[equal_to_thalweg] = np.nan
+    return bank_elevations
+
+
 def _get_bank_search_result_for_smoothing(
     x_section: CrossSection,
     sampled_record: dict,
@@ -3571,6 +3592,7 @@ def _smooth_reach_bank_elevations(
         # contains one sampled section at a time. Extract the lower valid bank
         # after width filtering/filling and retain which search method found it.
         raw_bank_elevations = np.full(len(reach_entries), np.nan, dtype=np.float64)
+        thalweg_elevations = np.full(len(reach_entries), np.nan, dtype=np.float64)
         function_used_by_entry_index: dict[int, str | None] = {}
         for elevation_index, entry in enumerate(reach_entries):
             sampled_record = sampled_records[int(entry["entry_index"])]
@@ -3581,6 +3603,7 @@ def _smooth_reach_bank_elevations(
             if _CELL_REACH_INFLECT_BANK_INDEX is not None:
                 reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[int(entry["entry_index"])])
             _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
+            thalweg_elevations[elevation_index] = float(x_section.get_thalweg())
 
             bank_search_result = sampled_record.get("bank_search_result")
             bank_elevation_to_use = _compute_raw_bank_elevation_from_result(
@@ -3595,22 +3618,29 @@ def _smooth_reach_bank_elevations(
             else:
                 continue
 
-        # filter the raw bank elevations to keep outliers out
+        # Width filtering can rebuild a bank result after the earlier side-level
+        # validation. Exclude any rebuilt result that still resolves to the
+        # thalweg before q5/q95 or the reach minimum is calculated.
+        raw_bank_elevations = _exclude_thalweg_equal_bank_elevations(
+            raw_bank_elevations,
+            thalweg_elevations,
+        )
+
+        # Filter the remaining raw bank elevations to keep outliers out.
         finite_mask = np.isfinite(raw_bank_elevations)
         reach_bank_elevations = raw_bank_elevations[finite_mask]
 
         if reach_bank_elevations.size >= 4:
-            q10, q90 = np.percentile(reach_bank_elevations, [10, 90])
-            iqr = q90 - q10
-            lower_bound = q10 - 1.5 * iqr
-            upper_bound = q90 + 1.5 * iqr
+            q5, q95 = np.percentile(reach_bank_elevations, [5, 95])
+            lower_bound = q5
+            upper_bound = q95
 
             outlier_mask = finite_mask & (
                 (raw_bank_elevations < lower_bound)
                 | (raw_bank_elevations > upper_bound)
             )
             raw_bank_elevations[outlier_mask] = np.nan
-        
+
         # The mean-axis projection supplies only an isolated-reach fallback.
         # Normal reaches are ordered along their connected raster-cell paths and
         # oriented using the graph's explicit downstream successor.
@@ -3631,9 +3661,15 @@ def _smooth_reach_bank_elevations(
         ordered_coordinates = ordered_stream_stations
         ordered_raw_bank_elevations = raw_bank_elevations[order]
         finite_ordered_bank_elevations = ordered_raw_bank_elevations[np.isfinite(ordered_raw_bank_elevations)]
-        # This single conservative observation is what the network-level
-        # smoother uses to represent the reach vertically.
-        minimum_bank_elevation = float(np.nanmin(finite_ordered_bank_elevations))
+        if finite_ordered_bank_elevations.size == 0:
+            # This reach has no bank control above its thalweg. Leave it out of
+            # the observation dictionary, but retain its summary so the network
+            # can interpolate a control and apply it to the reach's sections.
+            minimum_bank_elevation = np.nan
+        else:
+            # This single conservative observation is what the network-level
+            # smoother uses to represent the reach vertically.
+            minimum_bank_elevation = float(np.nanmin(finite_ordered_bank_elevations))
 
         reach_summaries[int(reach_id)] = {
             'reach_entries': reach_entries,

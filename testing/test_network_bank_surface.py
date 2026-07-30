@@ -5,10 +5,24 @@ import numpy as np
 import pytest
 
 from arc.Automated_Rating_Curve_Generator import (
+    _exclude_thalweg_equal_bank_elevations,
     _estimate_network_smoothed_reach_min_bank_elevations,
     _interpolate_reach_bank_elevation_surface,
     _order_reach_stream_cells_from_network,
 )
+
+
+def test_excludes_thalweg_equal_banks_before_reach_statistics() -> None:
+    """Thalweg placeholders must not enter q10/q90 or the reach minimum."""
+    filtered = _exclude_thalweg_equal_bank_elevations(
+        np.asarray([100.0, 101.5, 99.00000001, np.nan]),
+        np.asarray([100.0, 100.0, 99.0, 98.0]),
+    )
+
+    assert np.isnan(filtered[0])
+    assert filtered[1] == pytest.approx(101.5)
+    assert np.isnan(filtered[2])
+    assert np.isnan(filtered[3])
 
 
 def test_interpolates_each_cross_section_between_connected_reaches() -> None:
