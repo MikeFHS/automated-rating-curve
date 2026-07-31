@@ -736,6 +736,60 @@ class CrossSection:
         result["reach_top_width_filter_target_top_width"] = float(target_width)
         return result
 
+    def build_one_cell_bank_search_result(
+        self,
+        existing_bank_search_result: dict | None,
+        function_used: str = "fallback_to_one_cell_channel",
+    ) -> dict:
+        """Build the minimum resolvable channel using bank indices ``(1, 1)``.
+
+        Reach-width reconstruction can fail when a requested physical width
+        cannot be represented by the sampled cross-section ordinates. This
+        method supplies a deterministic terminal fallback instead of returning
+        the original outlier geometry. Both profile sides must contain the
+        first ordinate adjacent to the stream cell; otherwise the returned
+        result remains invalid because a one-cell channel cannot be represented.
+        """
+        local_result = (
+            dict(existing_bank_search_result)
+            if isinstance(existing_bank_search_result, dict)
+            else {}
+        )
+        original_top_width = self.get_top_width_from_bank_search_result(
+            local_result
+        )
+        if self.xs1_n <= 1 or self.xs2_n <= 1:
+            local_result["reach_top_width_filter_one_cell_fallback_applied"] = False
+            local_result["reach_top_width_filter_one_cell_fallback_reason"] = (
+                "cross_section_side_has_no_adjacent_ordinate"
+            )
+            return local_result
+
+        result = self._build_bank_search_result(
+            function_used,
+            1,
+            1,
+            allow_single_cell=True,
+        )
+        result["reach_top_width_filter_applied"] = True
+        result["reach_top_width_filter_one_cell_fallback_applied"] = True
+        result["reach_top_width_filter_original_function_used"] = (
+            local_result.get("function_used")
+        )
+        result["reach_top_width_filter_original_i_bank_1_index"] = int(
+            local_result.get("i_bank_1_index", 0)
+        )
+        result["reach_top_width_filter_original_i_bank_2_index"] = int(
+            local_result.get("i_bank_2_index", 0)
+        )
+        result["reach_top_width_filter_original_top_width"] = float(
+            original_top_width
+        )
+        result["reach_top_width_filter_target_top_width"] = float(
+            self.d_ordinate_dist
+        )
+        return result
+
     def get_wse_or_lc_bank_search_result(
         self,
         d_bathy_target_width: float | None = None,

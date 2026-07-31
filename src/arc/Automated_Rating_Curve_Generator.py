@@ -2665,6 +2665,99 @@ def _get_bank_search_result_for_smoothing(
     )
 
 
+def _reconstruct_reach_bank_width_with_fallback(
+    x_section: CrossSection,
+    bank_search_result: dict,
+    median_width: float,
+    q75: float,
+    maximum_width_increase_cells: int = 10,
+) -> dict:
+    """Rebuild an outlier width and validate the resulting bank geometry.
+
+    The median reach width is attempted first. If the sampled ordinate spacing
+    cannot represent that target with valid bank indices, each subsequent
+    attempt widens the target by one cross-section cell, through at most ten
+    cells. A reconstruction is accepted only when it is valid, was actually
+    rebuilt, and its resolved bank-to-bank width remains at or below the
+    original reach q75 cutoff. If no candidate passes, ARC replaces the outlier
+    with the minimum resolvable one-cell channel instead of retaining it.
+    """
+    cell_size = float(x_section.d_ordinate_dist)
+    maximum_width_increase_cells = max(int(maximum_width_increase_cells), 0)
+    attempted_target_widths: list[float] = []
+
+    for width_increase_cells in range(maximum_width_increase_cells + 1):
+        target_width = float(
+            median_width + width_increase_cells * cell_size
+        )
+        attempted_target_widths.append(target_width)
+        candidate_result = x_section.build_bank_search_result_from_target_width(
+            bank_search_result,
+            target_width,
+            "filter_bank_width_to_reach_median",
+        )
+        candidate_width = x_section.get_top_width_from_bank_search_result(
+            candidate_result
+        )
+        candidate_was_rebuilt = bool(
+            candidate_result.get("reach_top_width_filter_applied", False)
+        )
+        candidate_is_valid = bool(candidate_result.get("is_valid", False))
+        candidate_has_bank_indices = (
+            int(candidate_result.get("i_bank_1_index", 0)) > 0
+            and int(candidate_result.get("i_bank_2_index", 0)) > 0
+        )
+        candidate_within_q75 = (
+            np.isfinite(candidate_width)
+            and candidate_width <= q75 + np.finfo(np.float64).eps * max(abs(q75), 1.0)
+        )
+        if (
+            candidate_was_rebuilt
+            and candidate_is_valid
+            and candidate_has_bank_indices
+            and candidate_within_q75
+        ):
+            candidate_result["reach_top_width_filter_reconstruction_attempts"] = int(
+                width_increase_cells + 1
+            )
+            candidate_result["reach_top_width_filter_width_increase_cells"] = int(
+                width_increase_cells
+            )
+            candidate_result["reach_top_width_filter_selected_target_top_width"] = float(
+                target_width
+            )
+            candidate_result["reach_top_width_filter_attempted_target_widths"] = tuple(
+                attempted_target_widths
+            )
+            candidate_result["reach_top_width_filter_post_validation_passed"] = True
+            candidate_result["reach_top_width_filter_one_cell_fallback_applied"] = False
+            return candidate_result
+
+    # No median-based target produced usable banks within q75. Explicitly
+    # replace the original outlier with indices (1, 1), which represents the
+    # smallest channel available at the current raster/cross-section spacing.
+    fallback_result = x_section.build_one_cell_bank_search_result(
+        bank_search_result,
+        "fallback_to_one_cell_channel_after_width_reconstruction",
+    )
+    fallback_result["reach_top_width_filter_reconstruction_attempts"] = int(
+        len(attempted_target_widths)
+    )
+    fallback_result["reach_top_width_filter_width_increase_cells"] = int(
+        maximum_width_increase_cells
+    )
+    fallback_result["reach_top_width_filter_selected_target_top_width"] = float(
+        cell_size
+    )
+    fallback_result["reach_top_width_filter_attempted_target_widths"] = tuple(
+        attempted_target_widths
+    )
+    fallback_result["reach_top_width_filter_post_validation_passed"] = bool(
+        fallback_result.get("is_valid", False)
+    )
+    return fallback_result
+
+
 def _apply_reach_top_width_filter(
     x_section: CrossSection,
     sampled_records: list[dict | None],
@@ -2675,7 +2768,7 @@ def _apply_reach_top_width_filter(
 
     ARC groups sampled cross sections by reach before it smooths bank
     elevations. This helper uses those same grouped sections to evaluate local
-    bank-to-bank top width at each stream cell, compute the 30th, 50th, and
+    bank-to-bank top width at each stream cell, compute the 25th, 50th, and
     75th percentile widths for the reach, and replace any outlier bank result
     with bank indices that match the reach-median width as closely as the
     sampled cross-section spacing allows. The percentile summary is returned
@@ -2706,10 +2799,10 @@ def _apply_reach_top_width_filter(
     if len(reach_widths) == 0:
         return None
 
-    # The current lower cutoff is the 30th percentile (q25 is a legacy field
-    # name); the upper cutoff remains the 75th percentile.
+    # Retain the central interquartile band and use its median as the first
+    # reconstruction target for widths outside that band.
     reach_width_array = np.asarray(reach_widths, dtype=np.float64)
-    q25 = float(np.percentile(reach_width_array, 30))
+    q25 = float(np.percentile(reach_width_array, 25))
     median_width = float(np.percentile(reach_width_array, 50))
     q75 = float(np.percentile(reach_width_array, 75))
     if not np.isfinite(q25) or not np.isfinite(median_width) or not np.isfinite(q75):
@@ -2734,12 +2827,15 @@ def _apply_reach_top_width_filter(
                 reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[entry_index])
             _replay_precomputed_cross_section(x_section, sampled_record, reach_bank_index=reach_bank_index)
 
-            # Convert the median physical width back to the closest attainable
-            # pair of bank indices on this particular sampled profile.
-            updated_bank_result = x_section.build_bank_search_result_from_target_width(
+            # Convert the median physical width back to bank indices, then
+            # validate the resolved geometry. If the median is not representable,
+            # progressively widen it by one cell up to ten times before using
+            # the deterministic one-cell fallback.
+            updated_bank_result = _reconstruct_reach_bank_width_with_fallback(
+                x_section,
                 bank_search_result,
                 median_width,
-                "filter_bank_width_to_reach_median",
+                q75,
             )
             updated_bank_result["reach_top_width_filter_reach_id"] = int(reach_id)
             updated_bank_result["reach_top_width_filter_q25"] = float(q25)
@@ -3955,7 +4051,7 @@ def _smooth_reach_bank_elevations(
     reorders the sections within each reach from upstream to downstream using
     the directed reach topology and an 8-connected path through that reach's
     raster cells. ARC then evaluates local bank-to-bank
-    top width at each stream cell, replaces any width outside the 10th-90th
+    top width at each stream cell, replaces any width outside the 25th-75th
     percentile band with bank locations that match the reach-median width,
     uses that same reach-median width to fill sections whose local bank
     indices remained invalid, and treats the minimum detected bank elevation
