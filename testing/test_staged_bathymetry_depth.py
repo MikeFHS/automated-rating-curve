@@ -177,8 +177,18 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
 
     fake_cross_section = FakeCrossSection()
     sampled_records = [
-        {"bank_search_result": {"is_valid": True}},
-        {"bank_search_result": {"is_valid": True}},
+        {
+            "bank_search_result": {
+                "is_valid": True,
+                "network_reach_bank_elevation_grade": 0.004,
+            }
+        },
+        {
+            "bank_search_result": {
+                "is_valid": True,
+                "network_reach_bank_elevation_grade": 0.006,
+            }
+        },
     ]
     cell_inputs = [
         (3.0, 0.001, 2.5, 8.0),
@@ -225,6 +235,59 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
         == "baseflow_manning"
     )
     assert len(fake_cross_section.hydraulic_calls) == 1
+    assert fake_cross_section.hydraulic_calls[0][1] == 0.006
+    assert (
+        sampled_records[1]["bank_search_result"][
+            "bathymetry_depth_original_slope"
+        ]
+        == 0.002
+    )
+    assert (
+        sampled_records[1]["bank_search_result"][
+            "bathymetry_depth_smoothed_bank_slope"
+        ]
+        == 0.006
+    )
+
+
+def test_smoothed_bank_grade_replaces_existing_cell_slope() -> None:
+    """The network bank-surface grade should be the authoritative slope."""
+    replaced = generator._replace_slope_with_smoothed_bank_grade(
+        0.02,
+        {"network_reach_bank_elevation_grade": 0.003},
+    )
+
+    assert replaced == 0.003
+
+
+def test_flat_smoothed_bank_grade_uses_only_numerical_slope_floor() -> None:
+    """A flat reach should not reintroduce the former 0.001 minimum grade."""
+    replaced = generator._replace_slope_with_smoothed_bank_grade(
+        0.02,
+        {"network_reach_bank_elevation_grade": 0.0},
+    )
+
+    assert replaced == generator.MIN_SLOPE
+    assert replaced < 0.001
+
+
+def test_missing_or_invalid_smoothed_grade_retains_existing_slope() -> None:
+    """Slope replacement should wait until smoothing produced a valid grade."""
+    assert generator._replace_slope_with_smoothed_bank_grade(0.02, None) == 0.02
+    assert (
+        generator._replace_slope_with_smoothed_bank_grade(
+            0.02,
+            {"network_reach_bank_elevation_grade": np.nan},
+        )
+        == 0.02
+    )
+    assert (
+        generator._replace_slope_with_smoothed_bank_grade(
+            0.02,
+            {"network_reach_bank_elevation_grade": None},
+        )
+        == 0.02
+    )
 
 
 def test_filtered_reach_depth_uses_interquartile_median() -> None:

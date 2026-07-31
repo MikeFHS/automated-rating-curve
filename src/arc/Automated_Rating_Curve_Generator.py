@@ -1886,6 +1886,35 @@ def _get_cell_bathymetry_inputs(i_entry_cell: int, i_row_cell: int, i_column_cel
     return d_q_baseflow, d_slope_use, d_bathy_target_depth, d_bathy_target_width
 
 
+def _replace_slope_with_smoothed_bank_grade(
+    d_slope_use: float,
+    bank_search_result: dict | None,
+) -> float:
+    """Replace a cell slope with its network-smoothed bank-surface grade.
+
+    ``_smooth_reach_bank_elevations`` stores one longitudinal grade on every
+    staged bank result. Once that result exists, the grade is authoritative for
+    bathymetry and hydraulic calculations. A zero grade is raised only to
+    ARC's numerical ``MIN_SLOPE`` so square roots and Manning calculations
+    remain defined without reintroducing the former 0.001 minimum grade.
+    """
+    if not isinstance(bank_search_result, dict):
+        return float(d_slope_use)
+
+    try:
+        smoothed_grade = float(
+            bank_search_result.get(
+                "network_reach_bank_elevation_grade",
+                np.nan,
+            )
+        )
+    except (TypeError, ValueError):
+        return float(d_slope_use)
+    if not np.isfinite(smoothed_grade) or smoothed_grade < 0.0:
+        return float(d_slope_use)
+    return float(max(smoothed_grade, MIN_SLOPE))
+
+
 def _apply_bathymetry_to_cross_section(
     x_section: CrossSection,
     params: dict,
@@ -1963,6 +1992,17 @@ def _stage_cross_section_bathymetry_depths(
 
         existing_result = sampled_record.get("bank_search_result")
         staged_result = dict(existing_result) if isinstance(existing_result, dict) else {}
+        original_slope_use = float(d_slope_use)
+        d_slope_use = _replace_slope_with_smoothed_bank_grade(
+            d_slope_use,
+            staged_result,
+        )
+        # Retain both values so output diagnostics show when the smoothed bank
+        # surface replaced the raster/flowline-derived slope.
+        staged_result["bathymetry_depth_original_slope"] = original_slope_use
+        staged_result["bathymetry_depth_smoothed_bank_slope"] = float(
+            d_slope_use
+        )
         using_target_depth = x_section._is_valid_bathymetry_target(
             d_bathy_target_depth
         )
@@ -1993,6 +2033,167 @@ def _stage_cross_section_bathymetry_depths(
         staged_result["bathymetry_depth_baseflow"] = float(d_q_baseflow)
         staged_result["bathymetry_depth_slope"] = float(d_slope_use)
         sampled_record["bank_search_result"] = staged_result
+
+    _smooth_reach_bathymetry_depths(sampled_records, params)
+
+
+def _compute_filtered_reach_median_depths(
+    sampled_records: list[dict | None],
+    source_reach_ids: np.ndarray,
+) -> tuple[dict[int, float], dict[int, dict]]:
+    """Calculate an interquartile-filtered median depth for each reach."""
+    grouped_depths: dict[int, list[float]] = {}
+    for entry_index, sampled_record in enumerate(sampled_records):
+        if sampled_record is None:
+            continue
+        bank_result = sampled_record.get("bank_search_result")
+        if not isinstance(bank_result, dict):
+            continue
+
+        candidate_depth = float(bank_result.get("bathymetry_depth", np.nan))
+        if (
+            bool(bank_result.get("bathymetry_should_apply", False))
+            and np.isfinite(candidate_depth)
+            and 0.0 < candidate_depth < 25.0
+        ):
+            reach_id = int(source_reach_ids[entry_index])
+            grouped_depths.setdefault(reach_id, []).append(candidate_depth)
+
+    reach_medians: dict[int, float] = {}
+    reach_statistics: dict[int, dict] = {}
+    for reach_id, candidate_depths in grouped_depths.items():
+        candidate_array = np.asarray(candidate_depths, dtype=np.float64)
+        q25, q75 = np.percentile(candidate_array, [25.0, 75.0])
+        retained_depths = candidate_array[
+            (candidate_array >= q25) & (candidate_array <= q75)
+        ]
+        # Interpolated quartiles can exclude both observations on a two-cell
+        # reach. Use both valid values rather than reducing an empty array.
+        if retained_depths.size == 0:
+            retained_depths = candidate_array
+
+        median_depth = float(np.median(retained_depths))
+        reach_medians[reach_id] = median_depth
+        reach_statistics[reach_id] = {
+            "q25": float(q25),
+            "q75": float(q75),
+            "median": median_depth,
+            "candidate_count": int(candidate_array.size),
+            "retained_count": int(retained_depths.size),
+        }
+
+    return reach_medians, reach_statistics
+
+
+def _enforce_non_decreasing_downstream_reach_depths(
+    reach_network_graph: nx.DiGraph,
+    reach_median_depths: dict[int, float],
+) -> dict[int, float]:
+    """Ensure reach depth stays equal or increases moving downstream."""
+    if len(reach_median_depths) == 0:
+        return {}
+
+    graph = reach_network_graph.copy()
+    graph.add_nodes_from(int(reach_id) for reach_id in reach_median_depths)
+    condensed_graph = nx.condensation(graph)
+    node_to_component = condensed_graph.graph["mapping"]
+    component_depths: dict[int, float] = {}
+
+    for component_id in nx.topological_sort(condensed_graph):
+        members = condensed_graph.nodes[component_id]["members"]
+        local_depths = [
+            float(reach_median_depths[int(reach_id)])
+            for reach_id in members
+            if int(reach_id) in reach_median_depths
+            and np.isfinite(reach_median_depths[int(reach_id)])
+        ]
+        upstream_depths = [
+            component_depths[int(predecessor_id)]
+            for predecessor_id in condensed_graph.predecessors(component_id)
+            if int(predecessor_id) in component_depths
+        ]
+        available_depths = local_depths + upstream_depths
+        if available_depths:
+            # The deepest incoming branch controls a confluence. Taking the
+            # maximum also raises a shallower downstream local median.
+            component_depths[int(component_id)] = float(max(available_depths))
+
+    constrained_depths: dict[int, float] = {}
+    for reach_id in graph.nodes:
+        component_id = int(node_to_component[reach_id])
+        if component_id in component_depths:
+            constrained_depths[int(reach_id)] = component_depths[component_id]
+    return constrained_depths
+
+
+def _smooth_reach_bathymetry_depths(
+    sampled_records: list[dict | None],
+    params: dict,
+) -> None:
+    """Apply filtered reach medians and downstream-monotonic depth constraints."""
+    source_reach_ids = (
+        _CELL_SOURCE_STREAM_IDS
+        if _CELL_SOURCE_STREAM_IDS is not None
+        else _CELL_COMIDS
+    )
+    reach_medians, reach_statistics = _compute_filtered_reach_median_depths(
+        sampled_records,
+        source_reach_ids,
+    )
+    if len(reach_medians) == 0:
+        return
+
+    reach_network_graph, _ = _build_reach_network_graph(
+        params.get("s_strmshp_path", ""),
+        params.get("s_reach_id_field", ""),
+        params.get("s_downstream_reach_id_field", ""),
+    )
+    constrained_depths = _enforce_non_decreasing_downstream_reach_depths(
+        reach_network_graph,
+        reach_medians,
+    )
+
+    for entry_index, sampled_record in enumerate(sampled_records):
+        if sampled_record is None:
+            continue
+        reach_id = int(source_reach_ids[entry_index])
+        if reach_id not in constrained_depths:
+            continue
+
+        existing_result = sampled_record.get("bank_search_result")
+        bank_result = (
+            dict(existing_result) if isinstance(existing_result, dict) else {}
+        )
+        statistics = reach_statistics.get(reach_id)
+        bank_result["cross_section_bathymetry_depth"] = float(
+            bank_result.get("bathymetry_depth", np.nan)
+        )
+        bank_result["cross_section_bathymetry_depth_source"] = (
+            bank_result.get("bathymetry_depth_source")
+        )
+        if statistics is not None:
+            bank_result["bathymetry_depth_reach_q25"] = statistics["q25"]
+            bank_result["bathymetry_depth_reach_q75"] = statistics["q75"]
+            bank_result["bathymetry_depth_reach_median"] = statistics["median"]
+            bank_result["bathymetry_depth_reach_candidate_count"] = statistics[
+                "candidate_count"
+            ]
+            bank_result["bathymetry_depth_reach_retained_count"] = statistics[
+                "retained_count"
+            ]
+
+        constrained_depth = float(constrained_depths[reach_id])
+        bank_result["bathymetry_depth"] = constrained_depth
+        bank_result["bathymetry_should_apply"] = True
+        bank_result["bathymetry_depth_source"] = (
+            "downstream_monotonic_reach_median"
+        )
+        bank_result["bathymetry_depth_reach_id"] = reach_id
+        bank_result["bathymetry_depth_network_constrained"] = constrained_depth
+        bank_result["bathymetry_depth_monotonic_adjustment"] = float(
+            constrained_depth - reach_medians.get(reach_id, constrained_depth)
+        )
+        sampled_record["bank_search_result"] = bank_result
 
 
 
@@ -2402,7 +2603,12 @@ def _exclude_thalweg_equal_bank_elevations(
     bank_elevations: np.ndarray,
     thalweg_elevations: np.ndarray,
 ) -> np.ndarray:
-    """Replace bank elevations equal to their sampled thalweg with NaN."""
+    """Replace bank elevations at or below their sampled thalweg with NaN.
+
+    The function retains its original name for compatibility, but now rejects
+    below-thalweg values as well. Such a value cannot represent a physical bank
+    and must not become either a reach outlet minimum or a per-cell anchor.
+    """
     bank_elevations = np.asarray(bank_elevations, dtype=np.float64).copy()
     thalweg_elevations = np.asarray(thalweg_elevations, dtype=np.float64)
     if bank_elevations.shape != thalweg_elevations.shape:
@@ -2410,12 +2616,15 @@ def _exclude_thalweg_equal_bank_elevations(
             "Bank-elevation and thalweg-elevation arrays must have the same shape."
         )
 
-    equal_to_thalweg = (
+    at_or_below_thalweg = (
         np.isfinite(bank_elevations)
         & np.isfinite(thalweg_elevations)
-        & np.isclose(bank_elevations, thalweg_elevations)
+        & (
+            (bank_elevations < thalweg_elevations)
+            | np.isclose(bank_elevations, thalweg_elevations)
+        )
     )
-    bank_elevations[equal_to_thalweg] = np.nan
+    bank_elevations[at_or_below_thalweg] = np.nan
     return bank_elevations
 
 
@@ -2870,17 +3079,193 @@ def _fill_segment(
         else:
             path_smoothed[idx] = smoothed_elevation
 
+
+def _anchor_interpolated_bank_surface_to_cell_observations(
+    observed_cell_minimum_bank_elevations: np.ndarray,
+    interpolated_bank_elevations: np.ndarray,
+    reach_fractions: np.ndarray,
+    reach_length: float,
+    downstream_control_elevation: float,
+    minimum_grade: float = MIN_SLOPE,
+    upstream_control_ceiling: float | None = None,
+    thalweg_elevations: np.ndarray | None = None,
+    lower_bound: float = -np.inf,
+    upper_bound: float = np.inf,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build a downstream-monotonic surface using cell observations as anchors.
+
+    Cells must be ordered from upstream to downstream. At each cell, ARC first
+    predicts an elevation from the active upstream anchor and slope. Before an
+    observation can become an anchor, it must fall within the reach-level
+    ``lower_bound`` and ``upper_bound`` and, when a finite thalweg is available,
+    it must be detectably higher than that cell's thalweg. If the filtered
+    observation is lower than the prediction, the observation becomes a new
+    anchor and ARC recomputes the slope from that cell toward the reach outlet.
+    The monotonic cap remains in place as a defensive constraint, so every
+    accepted anchor and interpolated cell supplies ``minimum_grade`` from the
+    prior cell. Thus a valid lower observation can pull the channel surface
+    down and control all following downstream cells. For a non-headwater reach,
+    ``upstream_control_ceiling`` also prevents the first cell from rising above
+    the incoming network control.
+
+    Returns
+    -------
+    tuple
+        ``(surface, outgoing_grades, observation_anchor_mask)``. The outgoing
+        grade at a cell is the slope used to predict the next downstream cell.
+    """
+    observed = np.asarray(
+        observed_cell_minimum_bank_elevations,
+        dtype=np.float64,
+    )
+    interpolated = np.asarray(interpolated_bank_elevations, dtype=np.float64)
+    fractions = np.asarray(reach_fractions, dtype=np.float64)
+    if observed.shape != interpolated.shape or observed.shape != fractions.shape:
+        raise ValueError(
+            "Observed elevations, interpolated elevations, and reach fractions "
+            "must have the same shape."
+        )
+    thalwegs = None
+    if thalweg_elevations is not None:
+        thalwegs = np.asarray(thalweg_elevations, dtype=np.float64)
+        if thalwegs.shape != observed.shape:
+            raise ValueError(
+                "Thalweg elevations and observed bank elevations must have "
+                "the same shape."
+            )
+    lower_bound = float(lower_bound)
+    upper_bound = float(upper_bound)
+    if lower_bound > upper_bound:
+        raise ValueError("Bank-elevation lower_bound cannot exceed upper_bound.")
+    if observed.size == 0:
+        return (
+            interpolated.copy(),
+            np.empty_like(interpolated),
+            np.zeros(0, dtype=bool),
+        )
+
+    # Build the anchor-eligibility mask once so the first cell and all later
+    # cells use exactly the same reach outlier and thalweg tests. Non-finite
+    # thalwegs do not disqualify an otherwise valid bank observation because
+    # there is no local bed elevation against which it can be checked.
+    valid_observation_mask = (
+        np.isfinite(observed)
+        & (observed >= lower_bound)
+        & (observed <= upper_bound)
+    )
+    if thalwegs is not None:
+        finite_thalweg_mask = np.isfinite(thalwegs)
+        valid_observation_mask &= (
+            ~finite_thalweg_mask
+            | (
+                (observed > thalwegs)
+                & ~np.isclose(observed, thalwegs)
+            )
+        )
+
+    reach_length = float(reach_length)
+    if not np.isfinite(reach_length) or reach_length <= 0.0:
+        reach_length = 1.0
+    minimum_grade = float(max(minimum_grade, 0.0))
+    stations = np.maximum.accumulate(
+        np.clip(fractions, 0.0, 1.0) * reach_length
+    )
+
+    surface = np.empty_like(interpolated)
+    outgoing_grades = np.full_like(interpolated, minimum_grade)
+    anchor_mask = np.zeros(observed.size, dtype=bool)
+
+    def _grade_to_outlet(anchor_station: float, anchor_elevation: float) -> float:
+        remaining_distance = reach_length - anchor_station
+        if remaining_distance <= 0.0:
+            return minimum_grade
+        return float(
+            max(
+                (anchor_elevation - downstream_control_elevation)
+                / remaining_distance,
+                minimum_grade,
+            )
+        )
+
+    anchor_station = float(stations[0])
+    anchor_elevation = float(interpolated[0])
+    if valid_observation_mask[0] and float(observed[0]) < anchor_elevation:
+        anchor_elevation = float(observed[0])
+        anchor_mask[0] = True
+    if (
+        upstream_control_ceiling is not None
+        and np.isfinite(upstream_control_ceiling)
+        and anchor_elevation > float(upstream_control_ceiling)
+    ):
+        anchor_elevation = float(upstream_control_ceiling)
+        # A fully capped observation did not alter the interpolation and is not
+        # treated as an active anchor in the output diagnostics.
+        anchor_mask[0] = not np.isclose(
+            anchor_elevation,
+            float(interpolated[0]),
+        )
+    surface[0] = anchor_elevation
+    active_grade = _grade_to_outlet(anchor_station, anchor_elevation)
+    outgoing_grades[0] = active_grade
+
+    for cell_index in range(1, observed.size):
+        station = float(stations[cell_index])
+        distance_from_anchor = max(station - anchor_station, 0.0)
+        predicted_elevation = (
+            anchor_elevation - active_grade * distance_from_anchor
+        )
+
+        # An observation below the current interpolation becomes the next
+        # anchor only after it passes the reach bounds and thalweg filter. The
+        # accepted anchor remains subject to the mandatory fall from the prior
+        # cell.
+        observation_used = (
+            valid_observation_mask[cell_index]
+            and float(observed[cell_index]) < predicted_elevation
+        )
+        candidate_elevation = (
+            float(observed[cell_index])
+            if observation_used
+            else predicted_elevation
+        )
+        cell_distance = max(
+            station - float(stations[cell_index - 1]),
+            0.0,
+        )
+        maximum_monotonic_elevation = (
+            float(surface[cell_index - 1])
+            - minimum_grade * cell_distance
+        )
+        surface[cell_index] = min(
+            candidate_elevation,
+            maximum_monotonic_elevation,
+        )
+
+        if observation_used:
+            anchor_station = station
+            anchor_elevation = float(surface[cell_index])
+            anchor_mask[cell_index] = True
+            active_grade = _grade_to_outlet(
+                anchor_station,
+                anchor_elevation,
+            )
+        outgoing_grades[cell_index] = active_grade
+
+    return surface, outgoing_grades, anchor_mask
+
 def _estimate_network_smoothed_reach_min_bank_elevations(
     reach_network_graph: nx.DiGraph,
     reach_min_bank_elevation_dict: dict[int, float],
+    reach_cell_bank_observations: dict[int, dict] | None = None,
 ) -> dict[int, float]:
     """Place each reach minimum at its outlet and assign connected grades.
 
     Each value in ``reach_min_bank_elevation_dict`` is treated as an observation
     at the downstream endpoint of that reach. Missing outlet observations are
     interpolated along headwater-to-outlet paths. Outlet controls are lowered
-    only where necessary to prevent elevation from increasing downstream.
-    Flat reaches are valid.
+    where necessary so every connected reach falls downstream by at least
+    ``MIN_SLOPE``. Equal observed minima therefore receive a very small
+    numerical decline instead of a zero grade.
 
     A reach with both upstream and downstream network context obtains its grade
     from the difference between the lowest incoming outlet and its own outlet.
@@ -2890,6 +3275,15 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
     outlet elevation is extrapolated from the shared upstream boundary. The
     selected grade is stored on the graph node as ``bank_elevation_grade`` for
     :func:`_interpolate_reach_bank_elevation_surface`.
+
+    When ``reach_cell_bank_observations`` is supplied, the function also
+    interpolates each reach to its ordered cells and walks those cells from
+    upstream to downstream. An observed minimum below the current interpolation
+    becomes a new anchor, the remaining slope toward the outlet is recomputed,
+    and every consecutive cell is constrained to fall by at least
+    ``MIN_SLOPE``. The anchored surface, anchor mask, and per-cell outgoing
+    grades are stored on the corresponding graph node for the final mapping
+    pass in :func:`_smooth_reach_bank_elevations`.
 
     Returns
     -------
@@ -2904,9 +3298,8 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             'could not be performed.'
         )
 
-    # A zero floor enforces non-increasing elevations without manufacturing an
-    # artificial slope where neighboring outlet controls are equal.
-    minimum_grade = 0.0
+    # Use ARC's numerical slope floor when two observed reach minima are equal.
+    minimum_grade = MIN_SLOPE
 
     def _reach_length(reach_id: int) -> float:
         reach_length = float(
@@ -3142,7 +3535,7 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
 
     # Headwaters have no incoming elevation from which to calculate a grade.
     # Copy the immediate downstream reach's final grade; isolated reaches use
-    # a zero grade, preserving monotonicity without forcing a decline.
+    # the same numerical minimum grade.
     for headwater_reach_id in headwaters:
         successors = [
             int(successor_id)
@@ -3182,6 +3575,79 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             + ('...' if len(missing_reaches) > 10 else '')
             + '.'
         )
+
+    # Cell observations are optional so direct reach-control callers retain
+    # the original API behavior. The production smoothing workflow supplies
+    # them after ordering every sampled reach upstream-to-downstream.
+    if reach_cell_bank_observations:
+        for reach_id, cell_observations in reach_cell_bank_observations.items():
+            reach_id = int(reach_id)
+            if (
+                reach_id not in reach_network_graph
+                or reach_id not in smoothed_reach_outlet_elevations
+            ):
+                continue
+            ordered_coordinates = np.asarray(
+                cell_observations.get("ordered_coordinates", []),
+                dtype=np.float64,
+            )
+            observed_elevations = np.asarray(
+                cell_observations.get("observed_elevations", []),
+                dtype=np.float64,
+            )
+            thalweg_elevations = np.asarray(
+                cell_observations.get(
+                    "thalweg_elevations",
+                    np.full(observed_elevations.shape, np.nan),
+                ),
+                dtype=np.float64,
+            )
+            (
+                baseline_surface,
+                reach_fractions,
+                _downstream_reach_id,
+                downstream_control,
+            ) = _interpolate_reach_bank_elevation_surface(
+                reach_network_graph,
+                reach_id,
+                ordered_coordinates,
+                smoothed_reach_outlet_elevations,
+            )
+            reach_length = _reach_length(reach_id)
+            predecessor_controls = [
+                smoothed_reach_outlet_elevations[int(predecessor_id)]
+                for predecessor_id in reach_network_graph.predecessors(reach_id)
+                if int(predecessor_id) in smoothed_reach_outlet_elevations
+            ]
+            upstream_control_ceiling = (
+                float(np.nanmin(predecessor_controls))
+                if predecessor_controls
+                else None
+            )
+            anchored_surface, outgoing_grades, anchor_mask = (
+                _anchor_interpolated_bank_surface_to_cell_observations(
+                    observed_elevations,
+                    baseline_surface,
+                    reach_fractions,
+                    reach_length,
+                    downstream_control,
+                    minimum_grade,
+                    upstream_control_ceiling,
+                    thalweg_elevations,
+                    float(cell_observations.get("lower_bound", -np.inf)),
+                    float(cell_observations.get("upper_bound", np.inf)),
+                )
+            )
+            node_data = reach_network_graph.nodes[reach_id]
+            node_data["baseline_cell_bank_elevation_surface"] = baseline_surface
+            node_data["observed_anchored_cell_bank_elevation_surface"] = (
+                anchored_surface
+            )
+            node_data["cell_bank_elevation_reach_fractions"] = reach_fractions
+            node_data["cell_bank_elevation_outgoing_grades"] = outgoing_grades
+            node_data["cell_bank_elevation_observation_anchor_mask"] = (
+                anchor_mask
+            )
 
     return smoothed_reach_outlet_elevations
 
@@ -3307,6 +3773,7 @@ def _interpolate_reach_bank_elevation_surface(
         downstream_reach_id,
         float(downstream_control_elevation),
     )
+
 
 def _nearest_current_cell(reference_entries: list[dict], rows: np.array, cols: np.array) -> int | None:
     """
@@ -3629,11 +4096,13 @@ def _smooth_reach_bank_elevations(
         # Filter the remaining raw bank elevations to keep outliers out.
         finite_mask = np.isfinite(raw_bank_elevations)
         reach_bank_elevations = raw_bank_elevations[finite_mask]
+        lower_bound = -np.inf
+        upper_bound = np.inf
 
         if reach_bank_elevations.size >= 4:
             q5, q95 = np.percentile(reach_bank_elevations, [5, 95])
-            lower_bound = q5
-            upper_bound = q95
+            lower_bound = float(q5)
+            upper_bound = float(q95)
 
             outlier_mask = finite_mask & (
                 (raw_bank_elevations < lower_bound)
@@ -3660,6 +4129,7 @@ def _smooth_reach_bank_elevations(
         # distance along the graph-oriented raster path
         ordered_coordinates = ordered_stream_stations
         ordered_raw_bank_elevations = raw_bank_elevations[order]
+        ordered_thalweg_elevations = thalweg_elevations[order]
         finite_ordered_bank_elevations = ordered_raw_bank_elevations[np.isfinite(ordered_raw_bank_elevations)]
         if finite_ordered_bank_elevations.size == 0:
             # This reach has no bank control above its thalweg. Leave it out of
@@ -3676,6 +4146,9 @@ def _smooth_reach_bank_elevations(
             'order': order.copy(),
             'ordered_coordinates': ordered_coordinates.copy(),
             'ordered_raw_bank_elevations': ordered_raw_bank_elevations.copy(),
+            'ordered_thalweg_elevations': ordered_thalweg_elevations.copy(),
+            'bank_elevation_lower_bound': lower_bound,
+            'bank_elevation_upper_bound': upper_bound,
             'function_used_by_entry_index': dict(function_used_by_entry_index),
             'mean_direction': float(mean_direction),
             'minimum_bank_elevation': minimum_bank_elevation,
@@ -3695,10 +4168,37 @@ def _smooth_reach_bank_elevations(
         )
     # Treat each reach minimum as an observation at that reach's outlet. The
     # graph pass fills missing outlet controls, enforces a downstream fall, and
-    # stores the slope assigned to every reach on its graph node.
+    # stores the slope assigned to every reach on its graph node. Ordered cell
+    # observations are passed into the same estimator so they can become new
+    # upstream-to-downstream interpolation anchors rather than being overlaid
+    # after interpolation.
+    reach_cell_bank_observations = {
+        int(reach_id): {
+            "ordered_coordinates": np.asarray(
+                summary["ordered_coordinates"],
+                dtype=np.float64,
+            ),
+            "observed_elevations": np.asarray(
+                summary["ordered_raw_bank_elevations"],
+                dtype=np.float64,
+            ),
+            # Pass the same reach-level outlier thresholds and cell thalwegs
+            # into the anchor routine. This keeps anchor eligibility explicit
+            # even though the prepass has already replaced known outliers and
+            # thalweg-equal observations with NaN.
+            "thalweg_elevations": np.asarray(
+                summary["ordered_thalweg_elevations"],
+                dtype=np.float64,
+            ),
+            "lower_bound": float(summary["bank_elevation_lower_bound"]),
+            "upper_bound": float(summary["bank_elevation_upper_bound"]),
+        }
+        for reach_id, summary in reach_summaries.items()
+    }
     network_smoothed_reach_min_bank_elevations = _estimate_network_smoothed_reach_min_bank_elevations(
         reach_network_graph,
         reach_min_bank_elevation_dict,
+        reach_cell_bank_observations,
     )
 
     # Final pass: interpolate the graph-smoothed controls to every cross section
@@ -3724,7 +4224,7 @@ def _smooth_reach_bank_elevations(
             network_smoothed_reach_min_bank_elevations[reach_id]
         )
         (
-            interpolated_bank_elevation_surface,
+            network_interpolated_bank_elevation_surface,
             reach_interpolation_fractions,
             graph_downstream_reach_id,
             downstream_surface_control_elevation,
@@ -3733,6 +4233,39 @@ def _smooth_reach_bank_elevations(
             int(reach_id),
             ordered_coordinates,
             network_smoothed_reach_min_bank_elevations,
+        )
+        # The estimator already walked these cells upstream-to-downstream and
+        # stored its observation-anchored result on the graph node. Reuse that
+        # exact surface and its piecewise outgoing grades here so bank elevation
+        # and hydraulic slope remain consistent.
+        reach_node_data = reach_network_graph.nodes[int(reach_id)]
+        interpolated_bank_elevation_surface = np.asarray(
+            reach_node_data.get(
+                "observed_anchored_cell_bank_elevation_surface",
+                network_interpolated_bank_elevation_surface,
+            ),
+            dtype=np.float64,
+        )
+        cell_outgoing_grades = np.asarray(
+            reach_node_data.get(
+                "cell_bank_elevation_outgoing_grades",
+                np.full(
+                    network_interpolated_bank_elevation_surface.size,
+                    reach_node_data.get("bank_elevation_grade", MIN_SLOPE),
+                    dtype=np.float64,
+                ),
+            ),
+            dtype=np.float64,
+        )
+        observation_anchor_mask = np.asarray(
+            reach_node_data.get(
+                "cell_bank_elevation_observation_anchor_mask",
+                np.zeros(
+                    network_interpolated_bank_elevation_surface.size,
+                    dtype=bool,
+                ),
+            ),
+            dtype=bool,
         )
         # Preserve a downstream ID from the source table even when that reach
         # was outside the graph; graph topology is authoritative when present.
@@ -3778,12 +4311,21 @@ def _smooth_reach_bank_elevations(
             updated_bank_result["raw_bank_elevation"] = float(
                 ordered_raw_bank_elevations[reach_order]
             )
+            updated_bank_result["observed_cell_minimum_bank_elevation"] = float(
+                ordered_raw_bank_elevations[reach_order]
+            )
             updated_bank_result["locally_smoothed_bank_elevation"] = float(
                 interpolated_bank_elevation_surface[reach_order]
             )
             updated_bank_result["smoothed_bank_elevation"] = float(target_bank_elevation)
             updated_bank_result["network_interpolated_bank_elevation"] = float(
+                network_interpolated_bank_elevation_surface[reach_order]
+            )
+            updated_bank_result["observed_anchored_bank_elevation"] = float(
                 target_bank_elevation
+            )
+            updated_bank_result["observed_bank_elevation_used_as_anchor"] = (
+                bool(observation_anchor_mask[reach_order])
             )
             updated_bank_result["network_reach_interpolation_fraction"] = float(
                 reach_interpolation_fractions[reach_order]
@@ -3796,13 +4338,13 @@ def _smooth_reach_bank_elevations(
                 reach_outlet_network_elevation
             )
             updated_bank_result["network_reach_upstream_bank_elevation"] = float(
-                interpolated_bank_elevation_surface[0]
+                network_interpolated_bank_elevation_surface[0]
             )
             updated_bank_result["network_reach_bank_elevation_grade"] = float(
-                reach_network_graph.nodes[int(reach_id)].get(
-                    'bank_elevation_grade',
-                    0.0,
-                )
+                cell_outgoing_grades[reach_order]
+            )
+            updated_bank_result["network_reach_base_bank_elevation_grade"] = float(
+                reach_node_data.get('bank_elevation_grade', MIN_SLOPE)
             )
             updated_bank_result["downstream_reach_id"] = (
                 int(downstream_reach_id) if downstream_reach_id is not None else -1
@@ -3867,6 +4409,10 @@ def _finalize_cross_section_records(
             i_row_cell,
             i_column_cell,
             params,
+        )
+        d_slope_use = _replace_slope_with_smoothed_bank_grade(
+            d_slope_use,
+            sampled_record.get("bank_search_result"),
         )
 
         bathymetry_applied = False
@@ -3954,6 +4500,14 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         i_row_cell,
         i_column_cell,
         _PARAMS,
+    )
+    d_slope_use = _replace_slope_with_smoothed_bank_grade(
+        d_slope_use,
+        (
+            precomputed_record.get("bank_search_result")
+            if isinstance(precomputed_record, dict)
+            else None
+        ),
     )
 
     x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _STREAMS, _PARAMS)

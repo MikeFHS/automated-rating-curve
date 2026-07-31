@@ -18,8 +18,10 @@ Before any bathymetry is burned into the DEM-derived section, ARC now performs a
     - If a sampled section still does not have a valid local bank result after the local bank-search hierarchy runs, ARC now also uses that same reach-median top width to assign replacement bank indices on the sampled profile.
 6. After the width screen, ARC tracks the minimum sampled bank elevation found within each reach and then builds a downstream reach network from `StrmShp_File` using the required `reach_id` and `downstream_reach_id` fields.
     - ARC uses that `networkx` digraph to propagate a monotone downstream bank-elevation trend reach by reach.
-    - When more than one observed reach minimum exists on a headwater-to-outlet path, ARC now smooths each upstream segment toward the lowest observed downstream reach minimum that remains on that same path before falling back to the synthetic `-0.001` downstream slope.
-    - Within each reach, ARC now assigns the network-smoothed minimum bank elevation directly to every sampled cross section in that reach.
+    - Equal reach controls and flat segments use the numerical `MIN_SLOPE` grade (`1e-8`) instead of the former synthetic `0.001` grade.
+    - After establishing each reach's outlet control and initial grade, ARC walks its sampled stream cells from upstream to downstream. If the observed cell minimum bank elevation is below the current interpolation, that observation becomes a new interpolation anchor and ARC recalculates the remaining slope toward the reach outlet.
+    - An observed anchor is capped when necessary so it cannot create a downstream rise. The first cell of a connected reach also cannot exceed the incoming upstream control. Every consecutive pair of cells must fall by at least `MIN_SLOPE` times their along-reach distance.
+    - The piecewise outgoing grade calculated at each cell replaces the raster- or flowline-derived slope in the later bathymetry-depth and hydraulic calculations.
     - A `downstream_reach_id` that points outside the available reach set is treated as an external outlet connection rather than an internal smoothing error.
     - ARC keeps the filtered or reach-filled bank indices and top widths from the DEM-based bank-search hierarchy. The network-smoothed reach-scale profile is used only to define the vertical bathymetry elevation target.
     - ARC no longer falls back to local reach minima when the reach graph or its smoothed elevations cannot be built; it now stops with an error instead.
@@ -50,7 +52,8 @@ Once banks are found:
 1. ARC evaluates the locally detected bank-to-bank top widths within each reach and replaces any cross section whose width falls outside the reach 25th-75th percentile band with bank indices matching the reach-median top width.
 2. If a cross section still does not have a valid bank result after that screen, ARC uses the same reach-median top width to assign bank indices directly from the sampled profile spacing.
 3. ARC converts the resulting bank elevations into reach-scale controls by ordering the sections from upstream to downstream, tracking each reach's minimum bank elevation, and using the `reach_id` and `downstream_reach_id` fields from `StrmShp_File` to build a directed reach network with `networkx`.
-    - Along each headwater-to-outlet path, ARC now uses the lowest observed downstream reach minimum as the preferred interpolation anchor for each upstream segment.
+    - Along each headwater-to-outlet path, ARC uses reach minima to establish outlet controls and an initial grade no smaller than `MIN_SLOPE`.
+    - Within a reach, a cell observation below the current interpolated elevation becomes a new anchor for the next downstream cells. ARC recomputes the grade toward the outlet and retains the required downstream fall.
 4. ARC keeps the filtered or reach-filled bank indices and the corresponding bank-to-bank top width on each sampled cross section.
     - The smoothed reach-scale elevation is retained for staged diagnostics and for workflows that use bank elevation as the vertical bathymetry control; it does not replace the locally detected width geometry.
 5. A trapezoidal channel is constructed:
@@ -81,7 +84,9 @@ Once banks are found, ARC:
 
 1. Evaluates the locally detected bank-to-bank top widths within each reach and replaces any cross section whose width falls outside the reach 25th-75th percentile band with bank indices matching the reach-median top width.
 2. If a cross section still lacks a valid bank result, uses that same reach-median top width to assign replacement bank indices on the sampled profile.
-3. Orders the cross sections from upstream to downstream within each reach, tracks each reach's minimum bank elevation, and uses the optional downstream reach network to estimate one smoothed bank elevation for the reach that is then applied to each sampled cross section in that reach.
+3. Orders the cross sections from upstream to downstream within each reach, tracks each reach's minimum bank elevation, and uses the downstream reach network to establish outlet controls and initial reach grades.
+    - ARC then interpolates through the ordered cells, promotes an observed cell minimum to a new anchor whenever that observation is lower than the current interpolation, and recomputes the remaining slope toward the outlet.
+    - Every cell-to-cell segment retains at least `MIN_SLOPE`; an observation that would create a rise is capped by that monotonic constraint.
 4. Keeps the filtered or reach-filled bank indices and bank-to-bank top width for each sampled cross section.
 5. Uses the smoothed bank elevation as the vertical bathymetry control to compute bankfull elevation while preserving the local width geometry.
 6. Estimates depth using one of two paths:
