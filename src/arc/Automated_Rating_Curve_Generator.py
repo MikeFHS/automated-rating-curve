@@ -34,6 +34,7 @@ import pandas as pd
 import networkx as nx
 from datetime import datetime
 import geopandas as gpd
+from scipy.ndimage import convolve
 from scipy.optimize import OptimizeWarning, brentq
 from scipy.signal import find_peaks
 from shapely.geometry import LineString, MultiLineString
@@ -448,6 +449,65 @@ def write_output_raster(s_output_filename: str, dm_raster_data: np.ndarray, i_nu
     
     # Once we're done, close properly the dataset
     o_output_file = None
+
+
+def _fill_bathymetry_nan_cells(
+    bathymetry: np.ndarray,
+) -> np.ndarray:
+    """Fill supported NaN bathymetry gaps in one synchronous pass.
+
+    The function examines the eight cells around every NaN once. A NaN is
+    filled only when at least four surrounding cells are non-NaN, in which
+    case it receives the arithmetic mean of only those non-NaN neighbors. All
+    eligible cells are updated
+    synchronously, so values filled during this pass cannot support another
+    fill. The supplied array is updated in place and returned.
+
+    Parameters
+    ----------
+    bathymetry : numpy.ndarray
+        Two-dimensional floating-point bathymetry array to update.
+    Returns
+    -------
+    numpy.ndarray
+        The same array after all supported NaN cells have been filled.
+    """
+    bathymetry = np.asarray(bathymetry)
+    if bathymetry.ndim != 2:
+        raise ValueError("Bathymetry NaN filling requires a 2-D array.")
+    if not np.issubdtype(bathymetry.dtype, np.floating):
+        raise TypeError("Bathymetry NaN filling requires a floating array.")
+
+    # The zero-valued center excludes the target cell itself. The eight ones
+    # select its immediately adjacent horizontal, vertical, and diagonal cells.
+    neighbor_kernel = np.ones((3, 3), dtype=np.float64)
+    neighbor_kernel[1, 1] = 0.0
+
+    valid_mask = ~np.isnan(bathymetry)
+    neighbor_counts = convolve(
+        valid_mask.astype(np.int16),
+        neighbor_kernel,
+        mode="constant",
+        cval=0,
+    )
+    fill_mask = ~valid_mask & (neighbor_counts >= 4)
+    if not np.any(fill_mask):
+        return bathymetry
+
+    # Divide each eligible cell's surrounding sum by its own valid-neighbor
+    # count. NaNs contribute zero to the sum and are excluded from the count,
+    # so the result is the mean of only the original non-NaN neighbors.
+    neighbor_sums = convolve(
+        np.nan_to_num(bathymetry, nan=0.0).astype(np.float64),
+        neighbor_kernel,
+        mode="constant",
+        cval=0.0,
+    )
+    bathymetry[fill_mask] = (
+        neighbor_sums[fill_mask] / neighbor_counts[fill_mask]
+    )
+
+    return bathymetry
 
 def read_and_pad_and_maybe_make_shared(s_input_filename: str, processes: int, pad_distance: int, dtype: np.dtype, array_name: str):
     """
@@ -5949,6 +6009,9 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         hydraulic_data.add_cross_section_data(precomputed_cross_section_data)
         hydraulic_data.save_cross_section_outputs_only()
 
+
+
+
     # Write the output rasters
     if len(s_output_bathymetry_path) > 1:
         #Make sure all the bathymetry points are above the DEM elevation
@@ -5958,6 +6021,11 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         if b_modified_dem:
             # Subtract 100 only for cells that are not NaN
             _BATHYMETRY[~np.isnan(_BATHYMETRY)] -= 100
+        # Perform one synchronous gap-fill pass. A NaN supported by at least
+        # four existing neighboring bathymetry cells receives the mean of only
+        # those non-NaN neighbors; newly filled cells do not support more fills.
+        _BATHYMETRY = _fill_bathymetry_nan_cells(_BATHYMETRY)
+
         write_output_raster(s_output_bathymetry_path, _BATHYMETRY[i_boundary_number:nrows + i_boundary_number, i_boundary_number:ncols + i_boundary_number], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     if len(_PARAMS['s_output_flood']) > 1:

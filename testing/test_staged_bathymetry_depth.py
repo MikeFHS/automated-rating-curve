@@ -9,6 +9,58 @@ import arc.Automated_Rating_Curve_Generator as generator
 from arc.cross_section import CrossSection
 
 
+def test_bathymetry_nan_fill_averages_non_nan_neighbors() -> None:
+    """An eligible NaN should receive the mean of its non-NaN neighbors."""
+    bathymetry = np.asarray(
+        [
+            [1.0, 2.0, 3.0],
+            [4.0, np.nan, 5.0],
+            [6.0, 7.0, 8.0],
+        ],
+        dtype=np.float32,
+    )
+
+    returned = generator._fill_bathymetry_nan_cells(bathymetry)
+
+    assert returned is bathymetry
+    assert bathymetry[1, 1] == 4.5
+
+
+def test_bathymetry_nan_fill_accepts_four_neighbors_without_propagating() -> None:
+    """Four original neighbors fill a cell without enabling another fill."""
+    bathymetry = np.asarray(
+        [
+            [4.0, 1.0, 2.0, np.nan],
+            [np.nan, np.nan, np.nan, np.nan],
+            [np.nan, 3.0, np.nan, np.nan],
+        ],
+        dtype=np.float32,
+    )
+
+    generator._fill_bathymetry_nan_cells(bathymetry)
+
+    assert bathymetry[1, 1] == 2.5
+    # Cell [1, 2] originally has three valid neighbors. The newly filled
+    # [1, 1] would be its fourth, but a synchronous one-pass fill cannot use it.
+    assert np.isnan(bathymetry[1, 2])
+
+
+def test_bathymetry_nan_fill_rejects_three_neighbors() -> None:
+    """A NaN supported by fewer than four values must remain NaN."""
+    bathymetry = np.asarray(
+        [
+            [1.0, 2.0, np.nan],
+            [3.0, np.nan, np.nan],
+            [np.nan, np.nan, np.nan],
+        ],
+        dtype=np.float32,
+    )
+
+    generator._fill_bathymetry_nan_cells(bathymetry)
+
+    assert np.isnan(bathymetry[1, 1])
+
+
 def _build_cross_section(*, use_bank_elevations: bool) -> CrossSection:
     """Create a small cross section with explicit profiles and raster indices."""
     params = {

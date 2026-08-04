@@ -26,6 +26,7 @@ Before any bathymetry is burned into the DEM-derived section, ARC now performs a
     - ARC keeps the filtered or reach-filled bank indices and top widths from the DEM-based bank-search hierarchy. The network-smoothed reach-scale profile is used only to define the vertical bathymetry elevation target.
     - ARC no longer falls back to local reach minima when the reach graph or its smoothed elevations cannot be built; it now stops with an error instead.
 7. Only after those filtered and smoothed bank controls are known does ARC estimate and burn bathymetry.
+8. Before writing the bathymetry GeoTIFF, ARC performs one synchronous gap-fill pass. A NaN cell is filled when at least four of its eight surrounding cells contain bathymetry, and it receives the arithmetic mean of only those non-NaN values. Newly filled values are not used to fill any other cell.
 
 # **Bank or Water Surface Elevation**
 
