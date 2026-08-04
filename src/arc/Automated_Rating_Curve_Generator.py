@@ -3024,6 +3024,59 @@ def _coerce_optional_reach_identifier(value) -> int | None:
             return None
 
 
+def _measure_reach_geometry_length(
+    geometry,
+    source_crs,
+) -> float:
+    """Measure a reach geometry in meters using its declared CRS.
+
+    Shapely's ``geometry.length`` is expressed in native coordinate units. For
+    a geographic stream layer that value is degrees and is therefore not a
+    usable distance for the bank-surface slope calculations, whose raster-cell
+    stations are measured in meters. Geographic geometries are measured on
+    their CRS ellipsoid; projected geometries are converted from their declared
+    linear unit to meters. A missing/unparseable CRS retains the native length
+    as a compatibility fallback because its physical unit is unknowable.
+    """
+    if geometry is None:
+        return np.nan
+    try:
+        if geometry.is_empty:
+            return np.nan
+        native_length = float(geometry.length)
+    except Exception:
+        return np.nan
+    if not np.isfinite(native_length) or native_length <= 0.0:
+        return np.nan
+
+    try:
+        parsed_crs = CRS.from_user_input(source_crs)
+    except Exception:
+        return native_length
+
+    if parsed_crs.is_geographic:
+        try:
+            geodesic_length = abs(
+                float(parsed_crs.get_geod().geometry_length(geometry))
+            )
+            if np.isfinite(geodesic_length) and geodesic_length > 0.0:
+                return geodesic_length
+        except Exception:
+            return native_length
+
+    # Projected CRS axis metadata reports the conversion from its native unit
+    # (meters, international feet, US survey feet, etc.) to SI meters.
+    try:
+        axis_info = parsed_crs.axis_info
+        unit_to_meters = float(axis_info[0].unit_conversion_factor)
+        length_meters = native_length * unit_to_meters
+        if np.isfinite(length_meters) and length_meters > 0.0:
+            return length_meters
+    except Exception:
+        pass
+    return native_length
+
+
 def _build_reach_network_graph(
     s_strmshp_path: str,
     reach_id_field: str,
@@ -3080,6 +3133,9 @@ def _build_reach_network_graph(
 
     # Collapse duplicate feature rows to one topology record per reach. The
     # first occurrence supplies its downstream link and its distance weight.
+    # Resolve the layer CRS once so every graph-node length uses meters rather
+    # than blindly accepting degrees or another native coordinate unit.
+    stream_crs = gdf_stream.crs
     reach_records: dict[int, tuple[int | None, float]] = {}
     for _, row in gdf_stream.iterrows():
         reach_id = _coerce_optional_reach_identifier(row[reach_id_field])
@@ -3091,18 +3147,19 @@ def _build_reach_network_graph(
         if downstream_reach_id == reach_id:
             downstream_reach_id = None
 
-        # Geometry length is the interpolation distance assigned to the edge
-        # leaving this reach. Unit distance keeps topology usable when geometry
-        # is missing, empty, or has a non-finite/zero length.
+        # Geometry length is the interpolation distance assigned to both the
+        # reach node and its downstream edge. Convert it to meters so it has the
+        # same unit as ordered raster-cell stations. This is essential for
+        # geographic flowlines, where ``geometry.length`` alone returns degrees
+        # and can shorten a multi-kilometer reach to a small decimal value.
         reach_length = 1.0
         geometry = row.geometry
-        if geometry is not None:
-            try:
-                geometry_length = float(geometry.length)
-                if np.isfinite(geometry_length) and geometry_length > 0.0:
-                    reach_length = geometry_length
-            except Exception:
-                pass
+        geometry_length = _measure_reach_geometry_length(
+            geometry,
+            stream_crs,
+        )
+        if np.isfinite(geometry_length) and geometry_length > 0.0:
+            reach_length = geometry_length
 
         if reach_id not in reach_records:
             reach_records[reach_id] = (downstream_reach_id, reach_length)
@@ -3196,13 +3253,19 @@ def _anchor_interpolated_bank_surface_to_cell_observations(
     ``lower_bound`` and ``upper_bound`` and, when a finite thalweg is available,
     it must be detectably higher than that cell's thalweg. If the filtered
     observation is lower than the prediction, the observation becomes a new
-    anchor and ARC recomputes the slope from that cell toward the reach outlet.
-    The monotonic cap remains in place as a defensive constraint, so every
-    accepted anchor and interpolated cell supplies ``minimum_grade`` from the
-    prior cell. Thus a valid lower observation can pull the channel surface
-    down and control all following downstream cells. For a non-headwater reach,
-    ``upstream_control_ceiling`` also prevents the first cell from rising above
-    the incoming network control.
+    anchor. ARC recalculates the grade between the nearest upstream anchor and
+    that new low point and rewrites every cell in that interval using the
+    fitted grade. At the new anchor, ARC then resets the outgoing grade toward
+    the fixed reach-outlet control. A later lower observation repeats the
+    process from the most recently accepted anchor. The monotonic cap remains
+    in place as a defensive constraint, so every accepted anchor and
+    interpolated cell supplies ``minimum_grade`` from the prior cell. An
+    outlet-feasibility floor also prevents an observation from pulling the
+    extrapolated surface below the network outlet. Thus a valid lower
+    observation adjusts its approaching segment instead of creating an
+    immediate drop or propagating an unbounded steep grade downstream. For a
+    non-headwater reach, ``upstream_control_ceiling`` also prevents the first
+    cell from rising above the incoming network control.
 
     Returns
     -------
@@ -3283,6 +3346,14 @@ def _anchor_interpolated_bank_surface_to_cell_observations(
             )
         )
 
+    def _minimum_outlet_feasible_elevation(station: float) -> float:
+        """Return the lowest anchor that can still reach the outlet safely."""
+        remaining_distance = max(reach_length - station, 0.0)
+        return float(
+            downstream_control_elevation
+            + minimum_grade * remaining_distance
+        )
+
     anchor_station = float(stations[0])
     anchor_elevation = float(interpolated[0])
     if valid_observation_mask[0] and float(observed[0]) < anchor_elevation:
@@ -3300,7 +3371,14 @@ def _anchor_interpolated_bank_surface_to_cell_observations(
             anchor_elevation,
             float(interpolated[0]),
         )
+    # A first-cell observation cannot be used below the elevation required to
+    # reach the fixed outlet while retaining the minimum downstream grade.
+    anchor_elevation = max(
+        anchor_elevation,
+        _minimum_outlet_feasible_elevation(anchor_station),
+    )
     surface[0] = anchor_elevation
+    anchor_index = 0
     active_grade = _grade_to_outlet(anchor_station, anchor_elevation)
     outgoing_grades[0] = active_grade
 
@@ -3311,19 +3389,10 @@ def _anchor_interpolated_bank_surface_to_cell_observations(
             anchor_elevation - active_grade * distance_from_anchor
         )
 
-        # An observation below the current interpolation becomes the next
-        # anchor only after it passes the reach bounds and thalweg filter. The
-        # accepted anchor remains subject to the mandatory fall from the prior
-        # cell.
-        observation_used = (
-            valid_observation_mask[cell_index]
-            and float(observed[cell_index]) < predicted_elevation
-        )
-        candidate_elevation = (
-            float(observed[cell_index])
-            if observation_used
-            else predicted_elevation
-        )
+        # An observation below the active line becomes the next anchor only
+        # after it passes the reach bounds and thalweg filter. Comparing with
+        # the active line (rather than the original baseline) ensures each new
+        # anchor is evaluated against the grade established by the prior one.
         cell_distance = max(
             station - float(stations[cell_index - 1]),
             0.0,
@@ -3332,12 +3401,65 @@ def _anchor_interpolated_bank_surface_to_cell_observations(
             float(surface[cell_index - 1])
             - minimum_grade * cell_distance
         )
-        surface[cell_index] = min(
-            candidate_elevation,
-            maximum_monotonic_elevation,
+
+        # Do not accept a low anchor beneath the elevation from which the
+        # fixed outlet can still be reached at ``minimum_grade``. Clipping an
+        # extreme observation to this floor preserves its lowering influence
+        # without allowing the downstream interpolation to run below zero or
+        # below the network-estimated outlet merely through extrapolation.
+        feasible_observation_elevation = max(
+            float(observed[cell_index]),
+            _minimum_outlet_feasible_elevation(station),
+        ) if valid_observation_mask[cell_index] else np.nan
+        observation_used = (
+            valid_observation_mask[cell_index]
+            and feasible_observation_elevation < predicted_elevation
         )
 
         if observation_used:
+            new_anchor_elevation = min(
+                feasible_observation_elevation,
+                maximum_monotonic_elevation,
+            )
+            anchor_distance = station - anchor_station
+
+            if anchor_distance > 0.0:
+                # Fit the full interval to the newly discovered low point.
+                # Rewriting this interval distributes the elevation change
+                # between anchors instead of preserving a sharp one-cell step.
+                active_grade = max(
+                    (anchor_elevation - new_anchor_elevation)
+                    / anchor_distance,
+                    minimum_grade,
+                )
+                segment_slice = slice(anchor_index, cell_index + 1)
+                distances_from_upstream_anchor = np.maximum(
+                    stations[segment_slice] - anchor_station,
+                    0.0,
+                )
+                # Rewrite the complete segment as one vectorized operation;
+                # accepted-anchor intervals do not overlap except at their
+                # endpoint, so the complete pass remains linear in cell count.
+                surface[segment_slice] = (
+                    anchor_elevation
+                    - active_grade * distances_from_upstream_anchor
+                )
+                # The approaching grade applies through the cell immediately
+                # upstream of the new anchor. The new anchor receives a fresh
+                # outgoing grade toward the reach outlet below.
+                outgoing_grades[anchor_index:cell_index] = active_grade
+            else:
+                # Repeated station values provide no distance over which to
+                # calculate a new grade. Retain the active grade while still
+                # accepting the lower elevation as the local anchor.
+                surface[cell_index] = new_anchor_elevation
+
+            # Make the accepted low point the nearest upstream anchor for the
+            # next segment, but do not extrapolate its steep approaching grade.
+            # Reset the active grade toward the fixed outlet so the surface is
+            # bounded. A later low observation will back-fit only the interval
+            # beginning here and will then perform the same outlet reset.
+            anchor_index = cell_index
             anchor_station = station
             anchor_elevation = float(surface[cell_index])
             anchor_mask[cell_index] = True
@@ -3345,13 +3467,28 @@ def _anchor_interpolated_bank_surface_to_cell_observations(
                 anchor_station,
                 anchor_elevation,
             )
+        else:
+            surface[cell_index] = min(
+                predicted_elevation,
+                maximum_monotonic_elevation,
+            )
         outgoing_grades[cell_index] = active_grade
 
     return surface, outgoing_grades, anchor_mask
 
+def _reach_length(reach_id: int,
+                  reach_network_graph: nx.DiGraph,) -> float:
+    reach_length = float(
+        reach_network_graph.nodes[reach_id].get('length', 1.0)
+    )
+    if not np.isfinite(reach_length) or reach_length <= 0.0:
+        return 1.0
+    return reach_length
+
 def _estimate_network_smoothed_reach_min_bank_elevations(
     reach_network_graph: nx.DiGraph,
     reach_min_bank_elevation_dict: dict[int, float],
+    reach_max_bank_elevation_dict: dict[int, float],
     reach_cell_bank_observations: dict[int, dict] | None = None,
 ) -> dict[int, float]:
     """Place each reach minimum at its outlet and assign connected grades.
@@ -3365,21 +3502,34 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
 
     A reach with both upstream and downstream network context obtains its grade
     from the difference between the lowest incoming outlet and its own outlet.
-    A headwater has no incoming outlet, so it inherits the grade of its
-    immediate downstream neighbor. An outlet has no downstream neighbor, so it
-    inherits the median grade of its immediate upstream neighbors and its
-    outlet elevation is extrapolated from the shared upstream boundary. The
+    Headwaters use a separate upstream-to-downstream initialization because
+    they have no incoming network control. The highest filtered raw bank is
+    assigned to the upstream endpoint, the headwater's minimum bank remains at
+    its outlet, and their difference over graph reach length defines the
+    initial grade. A headwater without usable observations falls back to its
+    immediate downstream neighbor's grade. An isolated reach, with neither a
+    predecessor nor successor, is oriented from its filtered maximum toward
+    its filtered minimum and uses those endpoints over graph reach length to
+    define both its flow direction and initial grade. An outlet uses the lowest incoming
+    predecessor minimum as its upstream endpoint and its own lowest filtered
+    bank as its downstream endpoint. Their difference over graph reach length
+    supplies the outlet grade. If those controls would rise downstream, the
+    local outlet minimum is lowered only enough to preserve ``MIN_SLOPE``. The
     selected grade is stored on the graph node as ``bank_elevation_grade`` for
     :func:`_interpolate_reach_bank_elevation_surface`.
 
     When ``reach_cell_bank_observations`` is supplied, the function also
     interpolates each reach to its ordered cells and walks those cells from
-    upstream to downstream. An observed minimum below the current interpolation
-    becomes a new anchor, the remaining slope toward the outlet is recomputed,
-    and every consecutive cell is constrained to fall by at least
-    ``MIN_SLOPE``. The anchored surface, anchor mask, and per-cell outgoing
-    grades are stored on the corresponding graph node for the final mapping
-    pass in :func:`_smooth_reach_bank_elevations`.
+    upstream to downstream. An observed minimum below the active interpolation
+    becomes a new anchor. The slope from the nearest upstream anchor to the new
+    low point is recalculated and applied across that interval. From the new
+    anchor, the outgoing slope is reset toward the fixed reach outlet until
+    another lower observation establishes the next segment. Every consecutive
+    cell is constrained to fall by at least ``MIN_SLOPE``, and accepted anchors
+    are kept high enough to reach the outlet without crossing beneath it. The
+    anchored surface, anchor mask, and per-cell outgoing grades are stored on
+    the corresponding graph node for the final mapping pass in
+    :func:`_smooth_reach_bank_elevations`.
 
     Returns
     -------
@@ -3397,14 +3547,6 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
     # Use ARC's numerical slope floor when two observed reach minima are equal.
     minimum_grade = MIN_SLOPE
 
-    def _reach_length(reach_id: int) -> float:
-        reach_length = float(
-            reach_network_graph.nodes[reach_id].get('length', 1.0)
-        )
-        if not np.isfinite(reach_length) or reach_length <= 0.0:
-            return 1.0
-        return reach_length
-
     # Start with every finite observed minimum at the outlet of its reach.
     outlet_elevation_candidates: dict[int, list[float]] = {}
     for reach_id, elevation in reach_min_bank_elevation_dict.items():
@@ -3420,6 +3562,14 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
     ]
     if len(headwaters) == 0:
         headwaters = [int(node) for node in reach_network_graph.nodes]
+    isolated_reaches = {
+        int(node)
+        for node in reach_network_graph.nodes
+        if (
+            reach_network_graph.in_degree(node) == 0
+            and reach_network_graph.out_degree(node) == 0
+        )
+    }
 
     # Fill graph reaches without a local observation by interpolating outlet
     # elevations along every downstream path. Endpoint extrapolation uses the
@@ -3441,7 +3591,7 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             path.append(current_node)
 
         path_stations = np.cumsum(
-            np.asarray([_reach_length(node) for node in path], dtype=np.float64)
+            np.asarray([_reach_length(node, reach_network_graph) for node in path], dtype=np.float64)
         )
         path_observed = np.asarray(
             [
@@ -3551,7 +3701,7 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             incoming_outlet_elevation = float(np.nanmin(predecessor_elevations))
             maximum_outlet_elevation = (
                 incoming_outlet_elevation
-                - minimum_grade * _reach_length(downstream_reach_id)
+                - minimum_grade * _reach_length(downstream_reach_id, reach_network_graph)
             )
             if downstream_elevation > maximum_outlet_elevation:
                 smoothed_reach_outlet_elevations[downstream_reach_id] = float(
@@ -3562,8 +3712,8 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             break
 
     # Calculate a grade for every non-headwater reach from its lowest incoming
-    # outlet to its own outlet. These are the directly constrained interior
-    # grades from which terminal reaches inherit their slopes.
+    # outlet to its own outlet. Interior reaches retain these direct grades;
+    # outlet reaches are handled explicitly below using their filtered minima.
     reach_grades: dict[int, float] = {}
     for reach_id, outlet_elevation in smoothed_reach_outlet_elevations.items():
         predecessor_elevations = [
@@ -3576,19 +3726,27 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
         incoming_outlet_elevation = float(np.nanmin(predecessor_elevations))
         reach_grades[reach_id] = max(
             (incoming_outlet_elevation - outlet_elevation)
-            / _reach_length(reach_id),
+            / _reach_length(reach_id, reach_network_graph),
             minimum_grade,
         )
 
-    # Outlet reaches copy the typical grade of their immediate upstream
-    # neighbors. Keep the shared upstream junction fixed and extrapolate the
-    # outlet control, which preserves both continuity and the inherited slope.
+    # Outlet reaches have an upstream endpoint supplied by their immediate
+    # predecessor but no downstream-neighbor control. Use the outlet reach's
+    # own lowest filtered bank as the missing downstream endpoint and calculate
+    # a unique linear grade between those two elevations. The shared cell pass
+    # later walks this line upstream-to-downstream and promotes any lower
+    # intermediate filtered banks to anchors, matching headwater processing.
     outlets = [
         int(node)
         for node in reach_network_graph.nodes
         if reach_network_graph.out_degree(node) == 0
     ]
     for outlet_reach_id in outlets:
+        # Isolated nodes also satisfy the graph definition of an outlet, but
+        # they have neither incoming nor outgoing controls and receive their
+        # own maximum-to-minimum processing below.
+        if outlet_reach_id in isolated_reaches:
+            continue
         predecessor_ids = [
             int(predecessor_id)
             for predecessor_id in reach_network_graph.predecessors(
@@ -3600,21 +3758,6 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             reach_grades[outlet_reach_id] = minimum_grade
             continue
 
-        inherited_grades = [
-            reach_grades[predecessor_id]
-            for predecessor_id in predecessor_ids
-            if predecessor_id in reach_grades
-        ]
-        if len(inherited_grades) > 0:
-            outlet_grade = max(
-                float(np.nanmedian(inherited_grades)),
-                minimum_grade,
-            )
-        else:
-            outlet_grade = max(
-                float(reach_grades.get(outlet_reach_id, minimum_grade)),
-                minimum_grade,
-            )
         incoming_outlet_elevation = float(
             np.nanmin(
                 [
@@ -3623,16 +3766,187 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
                 ]
             )
         )
+        filtered_outlet_minimum = reach_min_bank_elevation_dict.get(
+            outlet_reach_id
+        )
+        if (
+            filtered_outlet_minimum is not None
+            and np.isfinite(filtered_outlet_minimum)
+        ):
+            reach_length = _reach_length(
+                outlet_reach_id,
+                reach_network_graph,
+            )
+            # A local minimum above the incoming control would create a rise.
+            # Lower only that infeasible endpoint enough to retain the required
+            # numerical downstream fall; otherwise use the filtered value
+            # directly as requested.
+            maximum_monotonic_outlet = (
+                incoming_outlet_elevation - minimum_grade * reach_length
+            )
+            outlet_minimum_to_use = min(
+                float(filtered_outlet_minimum),
+                maximum_monotonic_outlet,
+            )
+            outlet_grade = max(
+                (
+                    incoming_outlet_elevation
+                    - outlet_minimum_to_use
+                )
+                / reach_length,
+                minimum_grade,
+            )
+            reach_grades[outlet_reach_id] = outlet_grade
+            smoothed_reach_outlet_elevations[outlet_reach_id] = (
+                outlet_minimum_to_use
+            )
+            node_data = reach_network_graph.nodes[outlet_reach_id]
+            node_data["outlet_upstream_bank_elevation"] = (
+                incoming_outlet_elevation
+            )
+            node_data["outlet_filtered_minimum_bank_elevation"] = float(
+                filtered_outlet_minimum
+            )
+            node_data["outlet_bank_elevation_to_use"] = (
+                outlet_minimum_to_use
+            )
+            node_data["bank_elevation_grade_source"] = (
+                "outlet_upstream_minimum_to_filtered_minimum"
+            )
+            continue
+
+        # If an outlet has no usable filtered bank, retain the former slope
+        # inheritance so a direct caller or unsampled terminal reach still
+        # receives a deterministic downstream endpoint.
+        inherited_grades = [
+            reach_grades[predecessor_id]
+            for predecessor_id in predecessor_ids
+            if predecessor_id in reach_grades
+        ]
+        outlet_grade = (
+            max(float(np.nanmedian(inherited_grades)), minimum_grade)
+            if inherited_grades
+            else minimum_grade
+        )
         reach_grades[outlet_reach_id] = outlet_grade
         smoothed_reach_outlet_elevations[outlet_reach_id] = (
-            incoming_outlet_elevation
-            - outlet_grade * _reach_length(outlet_reach_id)
+            incoming_outlet_elevation - outlet_grade
+            * _reach_length(outlet_reach_id, reach_network_graph)
+        )
+        reach_network_graph.nodes[outlet_reach_id][
+            "bank_elevation_grade_source"
+        ] = "upstream_neighbor_fallback"
+
+    # A graph-isolated stream is simultaneously a headwater and an outlet in
+    # degree terms, but processing it through both branches obscures which
+    # endpoint controls its surface. Handle it exactly once: the filtered
+    # maximum is the upstream endpoint, the filtered minimum is the downstream
+    # endpoint, and the graph length converts their drop into a positive grade.
+    # The shared per-cell pass below then performs all normal low-bank anchoring.
+    for isolated_reach_id in isolated_reaches:
+        maximum_bank_elevation = reach_max_bank_elevation_dict.get(
+            isolated_reach_id
+        )
+        minimum_bank_elevation = reach_min_bank_elevation_dict.get(
+            isolated_reach_id
+        )
+        if (
+            maximum_bank_elevation is None
+            or minimum_bank_elevation is None
+            or not np.isfinite(maximum_bank_elevation)
+            or not np.isfinite(minimum_bank_elevation)
+        ):
+            # Without both endpoints the flow direction cannot be inferred.
+            # Retain a finite minimum-grade fallback when a local minimum is
+            # available; the existing missing-control checks handle no-minimum
+            # reaches consistently with the rest of the network.
+            if (
+                minimum_bank_elevation is not None
+                and np.isfinite(minimum_bank_elevation)
+            ):
+                reach_grades[isolated_reach_id] = minimum_grade
+                smoothed_reach_outlet_elevations[isolated_reach_id] = float(
+                    minimum_bank_elevation
+                )
+                reach_network_graph.nodes[isolated_reach_id][
+                    "bank_elevation_grade_source"
+                ] = "isolated_minimum_grade_fallback"
+            continue
+
+        maximum_bank_elevation = float(maximum_bank_elevation)
+        minimum_bank_elevation = float(minimum_bank_elevation)
+        isolated_grade = max(
+            (
+                maximum_bank_elevation
+                - minimum_bank_elevation
+            )
+            / _reach_length(isolated_reach_id, reach_network_graph),
+            minimum_grade,
+        )
+        reach_grades[isolated_reach_id] = isolated_grade
+        smoothed_reach_outlet_elevations[isolated_reach_id] = (
+            minimum_bank_elevation
+        )
+        node_data = reach_network_graph.nodes[isolated_reach_id]
+        node_data["isolated_upstream_bank_elevation"] = (
+            maximum_bank_elevation
+        )
+        node_data["isolated_downstream_bank_elevation"] = (
+            minimum_bank_elevation
+        )
+        node_data["bank_elevation_flow_direction"] = (
+            "ordered_filtered_maximum_to_minimum"
+        )
+        node_data["bank_elevation_grade_source"] = (
+            "isolated_filtered_maximum_to_minimum"
         )
 
-    # Headwaters have no incoming elevation from which to calculate a grade.
-    # Copy the immediate downstream reach's final grade; isolated reaches use
-    # the same numerical minimum grade.
+    # Headwaters receive a unique upstream-to-downstream initialization. Their
+    # filtered maximum is treated as the upstream endpoint, while the minimum
+    # observation already assigned to the reach outlet remains the downstream
+    # endpoint. Setting this grade before cell interpolation creates the linear,
+    # monotonically decreasing baseline that the shared anchor routine will
+    # subsequently lower wherever an eligible raw bank falls beneath it.
     for headwater_reach_id in headwaters:
+        # Isolated reaches were completely initialized above and must not be
+        # overwritten by the ordinary headwater branch.
+        if headwater_reach_id in isolated_reaches:
+            continue
+        maximum_bank_elevation = reach_max_bank_elevation_dict.get(
+            headwater_reach_id
+        )
+        minimum_bank_elevation = reach_min_bank_elevation_dict.get(
+            headwater_reach_id
+        )
+        if (
+            maximum_bank_elevation is not None
+            and minimum_bank_elevation is not None
+            and np.isfinite(minimum_bank_elevation)
+        ):
+            minimum_bank_elevation = float(minimum_bank_elevation)
+            headwater_grade = max(
+                (
+                    maximum_bank_elevation
+                    - minimum_bank_elevation
+                )
+                / _reach_length(headwater_reach_id, reach_network_graph),
+                minimum_grade,
+            )
+            reach_grades[headwater_reach_id] = headwater_grade
+            node_data = reach_network_graph.nodes[headwater_reach_id]
+            node_data["headwater_upstream_bank_elevation"] = float(
+                maximum_bank_elevation
+            )
+            node_data["headwater_outlet_bank_elevation"] = (
+                minimum_bank_elevation
+            )
+            node_data["bank_elevation_grade_source"] = (
+                "headwater_filtered_maximum_to_minimum"
+            )
+            continue
+
+        # Preserve downstream-grade inheritance only as a fallback for a
+        # headwater with no finite filtered raw bank observations.
         successors = [
             int(successor_id)
             for successor_id in reach_network_graph.successors(
@@ -3649,6 +3963,9 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
             if len(downstream_grades) > 0
             else minimum_grade
         )
+        reach_network_graph.nodes[headwater_reach_id][
+            "bank_elevation_grade_source"
+        ] = "downstream_neighbor_fallback"
 
     for reach_id, grade in reach_grades.items():
         reach_network_graph.nodes[reach_id]['bank_elevation_grade'] = float(
@@ -3709,7 +4026,7 @@ def _estimate_network_smoothed_reach_min_bank_elevations(
                 ordered_coordinates,
                 smoothed_reach_outlet_elevations,
             )
-            reach_length = _reach_length(reach_id)
+            reach_length = _reach_length(reach_id, reach_network_graph)
             predecessor_controls = [
                 smoothed_reach_outlet_elevations[int(predecessor_id)]
                 for predecessor_id in reach_network_graph.predecessors(reach_id)
@@ -3761,7 +4078,11 @@ def _interpolate_reach_bank_elevation_surface(
     This helper reconstructs the upstream endpoint by adding
     ``grade * reach_length`` to the outlet control, then evaluates that line at
     every ordered cross section. Headwater and outlet grades have already been
-    inherited from their downstream or upstream neighbors, respectively.
+    initialized from their filtered maximum and reach minimum, or inherited
+    from downstream when filtered observations are unavailable. Outlet grades
+    have already been calculated from their incoming minimum and their own
+    filtered downstream minimum. Isolated grades have been calculated directly
+    between their filtered maximum and minimum.
 
     Returns
     -------
@@ -3801,7 +4122,7 @@ def _interpolate_reach_bank_elevation_surface(
     )
 
     reach_length = float(
-        reach_network_graph.nodes[reach_id].get('length', 1.0)
+        _reach_length(reach_id, reach_network_graph)
     )
     if not np.isfinite(reach_length) or reach_length <= 0.0:
         reach_length = 1.0
@@ -3996,15 +4317,46 @@ def _order_reach_stream_cells_from_network(
                 )
 
     if downstream_anchor is None:
-        # A disconnected or isolated reach has no topological endpoint reference.
-        # Retain the prior projection order and orient it by endpoint elevations.
+        # A disconnected or isolated reach has no topological endpoint
+        # reference. Start with the stable projection order. For a truly
+        # isolated reach, explicitly put the filtered maximum before the
+        # filtered minimum so its order records the inferred downhill flow
+        # direction used by the network estimator.
         order = np.asarray(fallback_order, dtype=np.int64).copy()
+        is_isolated_reach = (
+            reach_network_graph.in_degree(reach_id) == 0
+            and reach_network_graph.out_degree(reach_id) == 0
+        )
+        ordered_bank_elevations = raw_bank_elevations[order]
+        finite_positions = np.flatnonzero(
+            np.isfinite(ordered_bank_elevations)
+        )
+        direction_was_resolved = False
+        if is_isolated_reach and finite_positions.size >= 2:
+            finite_elevations = ordered_bank_elevations[finite_positions]
+            maximum_position = int(
+                finite_positions[int(np.nanargmax(finite_elevations))]
+            )
+            minimum_position = int(
+                finite_positions[int(np.nanargmin(finite_elevations))]
+            )
+            if maximum_position != minimum_position:
+                if maximum_position > minimum_position:
+                    order = order[::-1]
+                direction_was_resolved = True
+
+        # If extrema cannot resolve direction (flat/insufficient observations),
+        # retain the prior robust endpoint-mean orientation fallback.
         sample_size = min(10, order.size)
         upstream_slice = raw_bank_elevations[order[:sample_size]]
         downstream_slice = raw_bank_elevations[order[-sample_size:]]
         upstream_finite = upstream_slice[np.isfinite(upstream_slice)]
         downstream_finite = downstream_slice[np.isfinite(downstream_slice)]
-        if upstream_finite.size > 0 and downstream_finite.size > 0:
+        if (
+            not direction_was_resolved
+            and upstream_finite.size > 0
+            and downstream_finite.size > 0
+        ):
             if float(np.nanmean(upstream_finite)) < float(np.nanmean(downstream_finite)):
                 order = order[::-1]
         return order, np.arange(order.size, dtype=np.float64)
@@ -4055,12 +4407,17 @@ def _smooth_reach_bank_elevations(
     percentile band with bank locations that match the reach-median width,
     uses that same reach-median width to fill sections whose local bank
     indices remained invalid, and treats the minimum detected bank elevation
-    as the downstream endpoint of that reach. The network assigns a connected
-    reach grade, with headwaters inheriting downstream-neighbor slope and
-    outlets inheriting upstream-neighbor slope, before interpolating back
-    upstream from the outlet minimum. The interpolated elevation remains only
-    the vertical bathymetry control while the filtered local bank indices and
-    top width are preserved for each sampled cross section.
+    as the downstream endpoint of that reach. The network assigns connected
+    reach grades, while each headwater constructs its initial grade between its
+    highest filtered raw bank and its outlet minimum. Each outlet constructs
+    its grade between the lowest incoming predecessor minimum and its own
+    lowest filtered bank. An isolated reach uses its filtered maximum and
+    minimum to infer flow direction and construct its initial grade. ARC then
+    walks the cells upstream-to-downstream, using lower filtered banks as
+    anchors for refitted monotonic segments. The
+    interpolated elevation remains only the vertical bathymetry control while
+    the filtered local bank indices and top width are preserved for each
+    sampled cross section.
     """
     # Source-stream IDs preserve the original reach grouping when processing
     # has reassigned cell COMIDs; otherwise the cell COMID is the reach key.
@@ -4183,7 +4540,7 @@ def _smooth_reach_bank_elevations(
 
         # Width filtering can rebuild a bank result after the earlier side-level
         # validation. Exclude any rebuilt result that still resolves to the
-        # thalweg before q5/q95 or the reach minimum is calculated.
+        # thalweg before q2/q97 or the reach minimum is calculated.
         raw_bank_elevations = _exclude_thalweg_equal_bank_elevations(
             raw_bank_elevations,
             thalweg_elevations,
@@ -4196,9 +4553,9 @@ def _smooth_reach_bank_elevations(
         upper_bound = np.inf
 
         if reach_bank_elevations.size >= 4:
-            q5, q95 = np.percentile(reach_bank_elevations, [5, 95])
-            lower_bound = float(q5)
-            upper_bound = float(q95)
+            q2, q97 = np.percentile(reach_bank_elevations, [2, 97])
+            lower_bound = float(q2)
+            upper_bound = float(q97)
 
             outlier_mask = finite_mask & (
                 (raw_bank_elevations < lower_bound)
@@ -4232,10 +4589,19 @@ def _smooth_reach_bank_elevations(
             # the observation dictionary, but retain its summary so the network
             # can interpolate a control and apply it to the reach's sections.
             minimum_bank_elevation = np.nan
+            maximum_bank_elevation = np.nan
         else:
-            # This single conservative observation is what the network-level
-            # smoother uses to represent the reach vertically.
-            minimum_bank_elevation = float(np.nanmin(finite_ordered_bank_elevations))
+            # The minimum supplies the outlet control used throughout the
+            # network. Headwaters also use the maximum below as their unique
+            # upstream endpoint before the per-cell anchoring pass.
+            minimum_bank_elevation = float(
+                np.nanmin(finite_ordered_bank_elevations)
+            )
+            # Headwaters use the opposite endpoint of this same filtered range
+            # to reconstruct their upstream control without rescanning cells.
+            maximum_bank_elevation = float(
+                np.nanmax(finite_ordered_bank_elevations)
+            )
 
         reach_summaries[int(reach_id)] = {
             'reach_entries': reach_entries,
@@ -4248,6 +4614,7 @@ def _smooth_reach_bank_elevations(
             'function_used_by_entry_index': dict(function_used_by_entry_index),
             'mean_direction': float(mean_direction),
             'minimum_bank_elevation': minimum_bank_elevation,
+            'maximum_bank_elevation': maximum_bank_elevation,
         }
 
     # Omit reaches without a finite local observation; graph interpolation may
@@ -4261,6 +4628,17 @@ def _smooth_reach_bank_elevations(
         raise ValueError(
             'Network bank-elevation smoothing could not proceed because no '
             'finite minimum bank elevations were found for any reach.'
+        )
+    # produce the reach_max_bank_elevation_dict for headwater initialization
+    reach_max_bank_elevation_dict = {
+        int(reach_id): float(summary['maximum_bank_elevation'])
+        for reach_id, summary in reach_summaries.items()
+        if np.isfinite(summary['maximum_bank_elevation'])
+    }
+    if len(reach_summaries) > 0 and len(reach_max_bank_elevation_dict) == 0:
+        raise ValueError(
+            'Network bank-elevation smoothing could not proceed because no '
+            'finite maximum bank elevations were found for any reach.'
         )
     # Treat each reach minimum as an observation at that reach's outlet. The
     # graph pass fills missing outlet controls, enforces a downstream fall, and
@@ -4278,6 +4656,12 @@ def _smooth_reach_bank_elevations(
                 summary["ordered_raw_bank_elevations"],
                 dtype=np.float64,
             ),
+            # This value is calculated directly from ``raw_bank_elevations``
+            # after percentile and thalweg filtering. The network estimator
+            # uses it only to initialize headwater upstream endpoints.
+            "filtered_maximum_elevation": float(
+                summary["maximum_bank_elevation"]
+            ),
             # Pass the same reach-level outlier thresholds and cell thalwegs
             # into the anchor routine. This keeps anchor eligibility explicit
             # even though the prepass has already replaced known outliers and
@@ -4294,6 +4678,7 @@ def _smooth_reach_bank_elevations(
     network_smoothed_reach_min_bank_elevations = _estimate_network_smoothed_reach_min_bank_elevations(
         reach_network_graph,
         reach_min_bank_elevation_dict,
+        reach_max_bank_elevation_dict,
         reach_cell_bank_observations,
     )
 
