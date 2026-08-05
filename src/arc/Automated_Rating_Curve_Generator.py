@@ -2024,6 +2024,7 @@ def _solve_non_uniform_network_depths(
         ds_edges = list(reach_graph.successors(node_id))
 
         Q = float(node['baseflow'])
+
         n = float(node['manning_n'])
         bed_z = float(node['bed_elev'])
 
@@ -2142,10 +2143,16 @@ def _stage_cross_section_bathymetry_depths(
         params.get("s_downstream_reach_id_field", ""),
     )
 
-    # Keep the downstream-most Manning normal-depth estimate for every outlet.
-    # The interpolation fraction is already assigned by bank smoothing and is
-    # preferable to raster scan order for identifying the outlet cross section.
-    outlet_tailwater_candidates: dict[int, tuple[float, float, float, float]] = {}
+    # Calculate a downstream boundary candidate for every represented reach.
+    # If an invalid downstream node is pruned below, its upstream neighbor
+    # becomes a new hydraulic outlet and still needs a Manning boundary.
+    reach_tailwater_candidates: dict[int, tuple[float, float, float, float]] = {}
+    eligible_non_uniform_entries: set[int] = set()
+    network_reach_ids = (
+        _CELL_SOURCE_STREAM_IDS
+        if _CELL_SOURCE_STREAM_IDS is not None
+        else _CELL_COMIDS
+    )
 
     # 2. Extract scalar geometry for each stream cell and attach to graph
     for i_entry_cell in range(_CELL_COMIDS.size):
@@ -2162,83 +2169,140 @@ def _stage_cross_section_bathymetry_depths(
             d_slope_use,
             staged_result,
         )
+
+        # Non-uniform hydraulics require a real discharge and two usable bank
+        # indices. Do not attach partial node data: leaving such reaches in the
+        # graph is what allowed the solver to encounter nodes without baseflow
+        # or geometry attributes.
+        try:
+            bank_index_1 = int(staged_result.get('i_bank_1_index', 0))
+            bank_index_2 = int(staged_result.get('i_bank_2_index', 0))
+            total_bank_cells = int(
+                staged_result.get(
+                    'i_total_bank_cells',
+                    bank_index_1 + bank_index_2 - 1,
+                )
+            )
+        except (TypeError, ValueError):
+            bank_index_1 = 0
+            bank_index_2 = 0
+            total_bank_cells = 0
+        has_non_uniform_inputs = bool(
+            np.isfinite(d_q_baseflow)
+            and float(d_q_baseflow) > 0.0
+            and bool(staged_result.get('is_valid', False))
+            and bank_index_1 > 0
+            and bank_index_2 > 0
+            and total_bank_cells >= 1
+        )
+        if not has_non_uniform_inputs:
+            continue
         
         # Extract scalar dict
         scalar_geom = x_section.extract_scalar_hydraulic_geometry(d_q_baseflow, staged_result)
         
-        cell_id = int(_CELL_COMIDS[i_entry_cell])
-        if cell_id in reach_network_graph:
-            reach_network_graph.nodes[cell_id].update(scalar_geom)
+        reach_id = int(network_reach_ids[i_entry_cell])
+        if reach_id not in reach_network_graph:
+            continue
+        eligible_non_uniform_entries.add(i_entry_cell)
+        reach_network_graph.nodes[reach_id].update(scalar_geom)
 
-            if reach_network_graph.out_degree(cell_id) == 0:
-                # Reuse the former bathymetry Manning solve to establish the
-                # normal depth at the downstream boundary. Subtracting that
-                # depth from the lower of the two banks produces the requested
-                # tailwater elevation for the non-uniform energy solver.
-                manning_depth = x_section.calculate_hydraulic_bathymetry_depth(
-                    d_q_baseflow,
-                    d_slope_use,
-                    staged_result,
-                )
-                bank_elevations = np.asarray(
-                    [
-                        staged_result.get('bank_elev_1', np.nan),
-                        staged_result.get('bank_elev_2', np.nan),
-                    ],
-                    dtype=np.float64,
-                )
-                finite_bank_elevations = bank_elevations[
-                    np.isfinite(bank_elevations)
-                ]
-                lowest_bank_elevation = (
-                    float(np.min(finite_bank_elevations))
-                    if finite_bank_elevations.size > 0
-                    else np.nan
-                )
-                reach_fraction = float(
-                    staged_result.get(
-                        "network_reach_interpolation_fraction",
-                        staged_result.get("reach_order_index", 0.0),
-                    )
-                )
-                if not np.isfinite(reach_fraction):
-                    reach_fraction = float(
-                        staged_result.get("reach_order_index", 0.0)
-                    )
-                if (
-                    np.isfinite(manning_depth)
-                    and 0.0 < float(manning_depth) < 25.0
-                    and np.isfinite(lowest_bank_elevation)
-                    and (
-                        cell_id not in outlet_tailwater_candidates
-                        or reach_fraction
-                        >= outlet_tailwater_candidates[cell_id][0]
-                    )
-                ):
-                    outlet_tailwater_candidates[cell_id] = (
-                        reach_fraction,
-                        lowest_bank_elevation - float(manning_depth),
-                        float(manning_depth),
-                        lowest_bank_elevation,
-                    )
+        # Reuse the former bathymetry Manning solve to establish a potential
+        # downstream boundary at this reach. The downstream-most valid cell is
+        # retained, and only candidates belonging to new outlets after graph
+        # pruning are ultimately passed to the network solver.
+        manning_depth = x_section.calculate_hydraulic_bathymetry_depth(
+            d_q_baseflow,
+            d_slope_use,
+            staged_result,
+        )
+        bank_elevations = np.asarray(
+            [
+                staged_result.get('bank_elev_1', np.nan),
+                staged_result.get('bank_elev_2', np.nan),
+            ],
+            dtype=np.float64,
+        )
+        finite_bank_elevations = bank_elevations[np.isfinite(bank_elevations)]
+        lowest_bank_elevation = (
+            float(np.min(finite_bank_elevations))
+            if finite_bank_elevations.size > 0
+            else np.nan
+        )
+        reach_fraction = float(
+            staged_result.get(
+                "network_reach_interpolation_fraction",
+                staged_result.get("reach_order_index", 0.0),
+            )
+        )
+        if not np.isfinite(reach_fraction):
+            reach_fraction = float(staged_result.get("reach_order_index", 0.0))
+        if (
+            np.isfinite(manning_depth)
+            and 0.0 < float(manning_depth) < 25.0
+            and np.isfinite(lowest_bank_elevation)
+            and (
+                reach_id not in reach_tailwater_candidates
+                or reach_fraction >= reach_tailwater_candidates[reach_id][0]
+            )
+        ):
+            reach_tailwater_candidates[reach_id] = (
+                reach_fraction,
+                lowest_bank_elevation - float(manning_depth),
+                float(manning_depth),
+                lowest_bank_elevation,
+            )
 
     # 3. Solve non-uniform depths downstream-to-upstream for hydraulic cells
+    # Use an induced subgraph so every node presented to the solver has the
+    # complete scalar geometry attached above. Removing an invalid interior or
+    # outlet reach safely splits the remaining network into solvable pieces.
+    hydraulic_node_ids = [
+        int(node_id)
+        for node_id, node_data in reach_network_graph.nodes(data=True)
+        if (
+            'baseflow' in node_data
+            and np.isfinite(node_data['baseflow'])
+            and float(node_data['baseflow']) > 0.0
+            and 'bed_elev' in node_data
+            and 'manning_n' in node_data
+            and 'geom_type' in node_data
+            and 'top_width' in node_data
+            and (
+                node_data['geom_type'] == 'triangle'
+                or (
+                    'base_width' in node_data
+                    and 'd_h' in node_data
+                )
+            )
+        )
+    ]
+    hydraulic_graph = reach_network_graph.subgraph(hydraulic_node_ids).copy()
+    hydraulic_outlet_ids = [
+        int(node_id)
+        for node_id in hydraulic_graph.nodes
+        if hydraulic_graph.out_degree(node_id) == 0
+    ]
     default_tailwater_wse = {
-        outlet_id: candidate[1]
-        for outlet_id, candidate in outlet_tailwater_candidates.items()
+        outlet_id: reach_tailwater_candidates[outlet_id][1]
+        for outlet_id in hydraulic_outlet_ids
+        if outlet_id in reach_tailwater_candidates
     }
-    for outlet_id, candidate in outlet_tailwater_candidates.items():
+    for outlet_id in hydraulic_outlet_ids:
+        candidate = reach_tailwater_candidates.get(outlet_id)
+        if candidate is None:
+            continue
         # Preserve the two values used to construct the boundary elevation so
         # the solver can use positive Manning depth for area, velocity, and
         # friction even when the requested elevation lies below the DEM bed.
-        reach_network_graph.nodes[outlet_id][
+        hydraulic_graph.nodes[outlet_id][
             'default_tailwater_manning_depth'
         ] = candidate[2]
-        reach_network_graph.nodes[outlet_id][
+        hydraulic_graph.nodes[outlet_id][
             'default_tailwater_lowest_bank_elevation'
         ] = candidate[3]
     non_uniform_results = _solve_non_uniform_network_depths(
-        reach_network_graph,
+        hydraulic_graph,
         default_tailwater_wse=default_tailwater_wse,
     )
 
@@ -2248,7 +2312,7 @@ def _stage_cross_section_bathymetry_depths(
         if sampled_record is None:
             continue
 
-        cell_id = int(_CELL_COMIDS[i_entry_cell])
+        reach_id = int(network_reach_ids[i_entry_cell])
         staged_result = dict(sampled_record.get("bank_search_result", {}))
 
         d_q_baseflow, d_slope_use, d_bathy_target_depth, _ = _get_cell_bathymetry_inputs(
@@ -2270,12 +2334,15 @@ def _stage_cross_section_bathymetry_depths(
         if using_target_depth:
             bathymetry_depth = float(d_bathy_target_depth)
             depth_source = "drainage_area_power_law"
-        elif cell_id in non_uniform_results:
-            bathymetry_depth = non_uniform_results[cell_id]['depth']
+        elif (
+            i_entry_cell in eligible_non_uniform_entries
+            and reach_id in non_uniform_results
+        ):
+            bathymetry_depth = non_uniform_results[reach_id]['depth']
             depth_source = "network_non_uniform_energy"
         else:
             bathymetry_depth = 0.0
-            depth_source = "baseflow_manning"
+            depth_source = "non_uniform_inputs_unavailable"
 
         staged_result["bathymetry_depth"] = float(bathymetry_depth)
         staged_result["bathymetry_should_apply"] = bool(
@@ -2342,11 +2409,20 @@ def _enforce_non_decreasing_downstream_reach_depths(
     reach_network_graph: nx.DiGraph,
     reach_median_depths: dict[int, float],
 ) -> dict[int, float]:
-    """Ensure reach depth stays equal or increases moving downstream."""
+    """Ensure valid reach depths stay equal or increase downstream.
+
+    Reaches without a valid depth are deliberately excluded from the induced
+    graph. This prevents the monotonic pass from propagating an upstream depth
+    back onto a reach that was removed from the non-uniform solve because its
+    baseflow or bank indices were unavailable.
+    """
     if len(reach_median_depths) == 0:
         return {}
 
-    graph = reach_network_graph.copy()
+    valid_reach_ids = {int(reach_id) for reach_id in reach_median_depths}
+    graph = reach_network_graph.subgraph(valid_reach_ids).copy()
+    # Retain valid depth IDs that were not present in the vector topology as
+    # isolated nodes so their local medians can still be assigned.
     graph.add_nodes_from(int(reach_id) for reach_id in reach_median_depths)
     condensed_graph = nx.condensation(graph)
     node_to_component = condensed_graph.graph["mapping"]

@@ -213,7 +213,7 @@ def test_bathymetry_burn_skips_missing_staged_depth() -> None:
 def test_staging_pass_supplies_manning_tailwater_to_network_solver(
     monkeypatch,
 ) -> None:
-    """The outlet Manning depth should initialize the network boundary WSE."""
+    """Invalid hydraulic reaches are pruned before the network solve."""
 
     class FakeCrossSection:
         def __init__(self):
@@ -245,6 +245,9 @@ def test_staging_pass_supplies_manning_tailwater_to_network_solver(
                 "network_reach_bank_elevation_grade": 0.004,
                 "bank_elev_1": 110.0,
                 "bank_elev_2": 109.0,
+                "i_bank_1_index": 2,
+                "i_bank_2_index": 2,
+                "i_total_bank_cells": 3,
             }
         },
         {
@@ -253,25 +256,37 @@ def test_staging_pass_supplies_manning_tailwater_to_network_solver(
                 "network_reach_bank_elevation_grade": 0.006,
                 "bank_elev_1": 109.0,
                 "bank_elev_2": 108.0,
+                "i_bank_1_index": 2,
+                "i_bank_2_index": 2,
+                "i_total_bank_cells": 3,
+            }
+        },
+        {
+            "bank_search_result": {
+                "is_valid": False,
+                "network_reach_bank_elevation_grade": 0.007,
             }
         },
     ]
     cell_inputs = [
         (3.0, 0.001, 2.5, 8.0),
         (4.0, 0.002, None, None),
+        (5.0, 0.003, None, None),
     ]
 
-    monkeypatch.setattr(generator, "_CELL_COMIDS", np.array([10, 20]))
-    monkeypatch.setattr(generator, "_CELL_ROWS", np.array([1, 2]))
-    monkeypatch.setattr(generator, "_CELL_COLS", np.array([3, 4]))
+    monkeypatch.setattr(generator, "_CELL_COMIDS", np.array([10, 20, 30]))
+    monkeypatch.setattr(generator, "_CELL_SOURCE_STREAM_IDS", None)
+    monkeypatch.setattr(generator, "_CELL_ROWS", np.array([1, 2, 3]))
+    monkeypatch.setattr(generator, "_CELL_COLS", np.array([3, 4, 5]))
     monkeypatch.setattr(generator, "_CELL_REACH_INFLECT_BANK_INDEX", None)
     monkeypatch.setattr(generator, "get_cross_section", lambda *_args: fake_cross_section)
     graph = generator.nx.DiGraph()
     graph.add_edge(10, 20, length=100.0)
+    graph.add_edge(20, 30, length=100.0)
     monkeypatch.setattr(
         generator,
         "_build_reach_network_graph",
-        lambda *_args, **_kwargs: (graph, {10: 20, 20: None}),
+        lambda *_args, **_kwargs: (graph, {10: 20, 20: 30, 30: None}),
     )
     monkeypatch.setattr(
         generator,
@@ -294,6 +309,8 @@ def test_staging_pass_supplies_manning_tailwater_to_network_solver(
 
     def fake_network_solver(_graph, default_tailwater_wse=None):
         solver_arguments["default_tailwater_wse"] = default_tailwater_wse
+        solver_arguments["nodes"] = set(_graph.nodes)
+        solver_arguments["edges"] = set(_graph.edges)
         return {
             10: {"depth": 1.75},
             20: {"depth": 1.25},
@@ -321,10 +338,17 @@ def test_staging_pass_supplies_manning_tailwater_to_network_solver(
         sampled_records[1]["bank_search_result"]["bathymetry_depth_source"]
         == "network_non_uniform_energy"
     )
+    assert sampled_records[2]["bank_search_result"]["bathymetry_depth"] == 0.0
+    assert (
+        sampled_records[2]["bank_search_result"]["bathymetry_depth_source"]
+        == "non_uniform_inputs_unavailable"
+    )
+    assert solver_arguments["nodes"] == {10, 20}
+    assert solver_arguments["edges"] == {(10, 20)}
     # Outlet 20 has a lowest bank of 108 and a Manning depth of 1.25.
     assert solver_arguments["default_tailwater_wse"] == {20: 106.75}
-    assert len(fake_cross_section.hydraulic_calls) == 1
-    assert fake_cross_section.hydraulic_calls[0][1] == 0.006
+    assert len(fake_cross_section.hydraulic_calls) == 2
+    assert fake_cross_section.hydraulic_calls[1][1] == 0.006
     assert (
         sampled_records[1]["bank_search_result"][
             "bathymetry_depth_original_slope"
@@ -492,3 +516,17 @@ def test_reach_depth_smoothing_assigns_network_depth_to_every_section(
         ]
         == 2.0
     )
+
+
+def test_depth_constraint_does_not_repopulate_invalid_graph_reaches() -> None:
+    """A reach without a valid median must remain outside depth propagation."""
+    graph = generator.nx.DiGraph()
+    graph.add_edges_from([(10, 20), (20, 30)])
+
+    constrained = generator._enforce_non_decreasing_downstream_reach_depths(
+        graph,
+        {10: 2.0, 30: 3.0},
+    )
+
+    assert constrained == {10: 2.0, 30: 3.0}
+    assert 20 not in constrained
