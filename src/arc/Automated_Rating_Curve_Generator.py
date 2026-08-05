@@ -2007,19 +2007,24 @@ def _solve_non_uniform_network_depths(
     reach_network_graph: nx.DiGraph,
     default_tailwater_wse: float | None = None,
 ) -> dict[int, dict]:
-    """Estimate reach depths with a downstream-to-upstream energy march.
+    """Solve network depths by matching friction and effective energy slopes.
 
-    Each graph node is expected to contain the scalar geometry returned by
-    :meth:`CrossSection.extract_scalar_hydraulic_geometry`.  The node's
-    smoothed bank elevation is the local water-surface reference, while trial
-    depth controls area, velocity, hydraulic radius, and friction slope in the
-    standard-step residual.
+    Nodes are processed from downstream to upstream. For an interior node,
+    ARC calculates the available energy gradient from its smoothed bank
+    elevation and the downstream velocity head. The effective slope is the
+    larger of that gradient and the node's bank-slope control, with ``0.001``
+    used when no node slope is stored and ``1e-4`` used as the numerical
+    floor. Brent's method then finds the depth from 0.001 to 25 m at which the
+    Manning friction slope, less the velocity-head gradient, matches that
+    effective slope.
 
-    Outlet nodes, and nodes without positive baseflow, are initialized with a
-    0.5 m depth, zero velocity, and a friction slope of ``1e-4``.  Their WSE is
-    ``default_tailwater_wse`` when supplied and otherwise their smoothed bank
-    elevation.  Interior depths are solved on ``[0.001, 25]`` m with Brent's
-    method; an unbracketed residual falls back to 0.5 m.
+    A positive-flow outlet is initialized with Manning normal depth using its
+    slope control. A node without positive flow receives 0.5 m. If the
+    interior friction-slope residual cannot be bracketed, ARC retries with
+    Manning normal depth at the effective slope; if that solve also cannot be
+    bracketed, it returns 0.5 m. Outlet WSE uses
+    ``default_tailwater_wse`` when supplied and otherwise the node's smoothed
+    bank elevation.
     """
     upstream_march = list(reversed(list(nx.topological_sort(reach_network_graph))))
     node_results = {}
@@ -2028,29 +2033,12 @@ def _solve_non_uniform_network_depths(
         node = reach_network_graph.nodes[node_id]
         ds_edges = list(reach_network_graph.successors(node_id))
 
-        bank_z = node.get('bank_elev', 0.0)
-        Q = node.get('baseflow', 0.0)
-        n = node.get('manning_n', 0.03)
+        bank_z = float(node.get('bank_elev', 0.0))
+        Q = float(node.get('baseflow', 0.0))
+        n = float(node.get('manning_n', 0.03))
 
-        if not ds_edges or Q <= 0.0:
-            # Outlet Boundary Condition
-            ds_wse = default_tailwater_wse if default_tailwater_wse is not None else bank_z
-            node_results[node_id] = {
-                'wse': ds_wse,
-                'depth': 0.5,
-                'v': 0.0,
-                'sf': 1e-4
-            }
-            continue
-
-        # Interior Nodes
-        ds_id = ds_edges[0]
-        ds_state = node_results[ds_id]
-        dx = reach_network_graph.edges[node_id, ds_id].get('length', 1.0)
-
-        # Downstream Energy Head
-        h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
-
+        # Evaluate the simplified triangular or trapezoidal section while
+        # retaining small positive numerical floors for later divisions.
         def calculate_area_perimeter(y):
             if node.get('geom_type') == 'triangle':
                 w_top = node.get('top_width', 2.0)
@@ -2062,32 +2050,68 @@ def _solve_non_uniform_network_depths(
                 w_top = node.get('top_width', 2.0)
                 area = (w_base + w_top) / 2.0 * y
                 perim = w_base + 2.0 * np.sqrt(y ** 2 + d_h ** 2)
-            return area, perim
+            return max(area, 1e-5), max(perim, 1e-4)
 
-        def energy_residual(y):
-            if y <= 0.001:
-                return -1e5
+        # Solve Manning normal depth for outlet initialization and as the
+        # physical fallback when the interior residual is not bracketed.
+        def solve_normal_depth(s_slope):
+            s_use = max(s_slope, 0.0001)
+            def manning_res(y):
+                a, p = calculate_area_perimeter(y)
+                r = a / p
+                return (1.0 / n) * a * (r ** (2.0 / 3.0)) * np.sqrt(s_use) - Q
+            try:
+                return float(brentq(manning_res, a=0.001, b=25.0, xtol=1e-4))
+            except ValueError:
+                return 0.5
+
+        if not ds_edges or Q <= 0.0:
+            # Boundary Outlet / Zero-Flow Condition
+            s_fallback = float(node.get('slope', 0.001))
+            y_init = solve_normal_depth(s_fallback) if Q > 0.0 else 0.5
+            ds_wse = default_tailwater_wse if default_tailwater_wse is not None else bank_z
+            node_results[node_id] = {
+                'wse': ds_wse,
+                'depth': y_init,
+                'v': 0.0,
+                'sf': 1e-4
+            }
+            continue
+
+        # Interior Node Processing
+        ds_id = ds_edges[0]
+        ds_state = node_results[ds_id]
+        dx = max(float(reach_network_graph.edges[node_id, ds_id].get('length', 1.0)), 1.0)
+
+        # Downstream Energy Head
+        h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
+
+        # Slope Floor (Bank Slope)
+        s_bank = max(float(node.get('slope', 0.001)), 0.0001)
+
+        # Available Energy Gradient
+        s_energy_raw = (bank_z - h_ds) / dx
+        s_eff = max(s_energy_raw, s_bank)
+
+        # Friction-Slope Residual: Positive at y -> 0, Negative at y -> 25
+        def slope_residual(y):
             area, perim = calculate_area_perimeter(y)
-            r_hyd = area / max(perim, 1e-4)
+            r_hyd = area / perim
             v = Q / area
             sf_local = (n * Q / (area * (r_hyd ** (2.0 / 3.0)))) ** 2
-            sf_avg = 0.5 * (sf_local + ds_state['sf'])
-
-            # The smoothed bank surface supplies the local WSE reference. The
-            # trial depth affects the energy balance through velocity and
-            # friction rather than by raising this reference elevation.
-            wse_local = bank_z
-            h_local = wse_local + (v ** 2) / (2.0 * 9.81)
-            return h_local - (h_ds + sf_avg * dx)
+            kinetic_slope = (v ** 2) / (2.0 * 9.81 * dx)
+            return (sf_local - kinetic_slope) - s_eff
 
         try:
-            y_sol = brentq(energy_residual, a=0.001, b=25.0, xtol=1e-4)
+            # Attempt the friction-slope match within ARC's valid depth range.
+            y_sol = float(brentq(slope_residual, a=0.001, b=25.0, xtol=1e-4))
         except ValueError:
-            y_sol = 0.5
+            # Physics-based fallback using Manning normal depth on s_eff
+            y_sol = solve_normal_depth(s_eff)
 
         area_final, perim_final = calculate_area_perimeter(y_sol)
         v_final = Q / area_final
-        r_final = area_final / max(perim_final, 1e-4)
+        r_final = area_final / perim_final
         sf_final = (n * Q / (area_final * (r_final ** (2.0 / 3.0)))) ** 2
 
         node_results[node_id] = {

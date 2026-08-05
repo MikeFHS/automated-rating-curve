@@ -1,6 +1,6 @@
 ARC estimates channel bathymetry at each stream cell by fitting a triangular or trapezoidal cross section whose geometry is constrained by detected bank locations and a target depth. ARC can obtain the initial target depth in one of two ways:
 
-1. From `Flow_File_BF`, by solving a downstream-to-upstream non-uniform energy balance over the directed reach network.
+1. From `Flow_File_BF`, by marching downstream-to-upstream through the directed reach network and matching the local friction slope to an effective energy slope.
 2. From a drainage-area power law, by combining `drainage_area_field`, `coefficient_depth`, and `exponent_depth`.
 
 After either initial estimate, ARC filters and aggregates the depths by reach and enforces a downstream non-decreasing depth constraint. Consequently, the depth finally burned into a stream cell can differ from its initial network or power-law estimate.
@@ -29,8 +29,10 @@ Before any bathymetry is burned into the DEM-derived section, ARC now performs a
     - ARC no longer falls back to local reach minima when the reach graph or its smoothed elevations cannot be built; it now stops with an error instead.
 7. Only after those filtered and smoothed bank controls are known does ARC estimate and burn bathymetry.
     - `CrossSection.extract_scalar_hydraulic_geometry()` reduces each staged section to a triangle or trapezoid and uses `smoothed_bank_elevation` as its vertical energy reference. If that elevation is unavailable, the sampled center ordinate is used. The scalar record also contains the cell baseflow and a fixed bathymetry Manning roughness of `0.03`.
-    - For baseflow-driven bathymetry, ARC marches through the reach graph from downstream to upstream. At an interior node, trial depth controls cross-sectional area, velocity, hydraulic radius, and friction slope; the smoothed bank elevation supplies the local WSE reference in the energy residual. Brent's method searches depths from `0.001` to `25` m.
-    - A graph outlet, or any node whose baseflow is not positive, receives the current boundary initialization: depth `0.5` m, velocity `0.0`, friction slope `1e-4`, and WSE equal to the smoothed bank elevation unless a scalar `default_tailwater_wse` is explicitly supplied by a caller. An interior solve that cannot bracket a root also falls back to `0.5` m.
+    - For baseflow-driven bathymetry, ARC marches through the reach graph from downstream to upstream. At an interior node, it calculates the raw energy gradient as `(smoothed_bank_elevation - downstream_energy_head) / connection_length`; connection lengths shorter than `1` m are treated as `1` m. The effective slope is the larger of that energy gradient and the node's slope control. A missing slope defaults to `0.001`, and the slope control cannot be less than `1e-4`.
+    - Trial depth determines cross-sectional area, velocity, hydraulic radius, Manning friction slope, and the velocity-head gradient. Brent's method searches from `0.001` to `25` m for the depth where `friction_slope - velocity_head_gradient` equals the effective slope.
+    - A positive-flow outlet is initialized with Manning normal depth using its slope control. A node whose baseflow is zero or negative receives the fixed `0.5` m depth. Outlet velocity remains `0.0`, its initialized friction slope is `1e-4`, and its WSE equals the smoothed bank elevation unless a scalar `default_tailwater_wse` is explicitly supplied by a caller.
+    - If an interior friction-slope solve cannot bracket a root, ARC solves Manning normal depth using the effective slope. If that normal-depth solve also cannot bracket a root between `0.001` and `25` m, the final fallback is `0.5` m.
     - A valid drainage-area power-law depth takes precedence over the network result for that stream cell.
     - ARC then groups every staged depth that is marked for application, finite, positive, and below `25` m by source reach. It retains values within the inclusive 25th-75th percentile interval and calculates their median; if interpolation of the quartiles leaves a small sample empty, all valid values for that reach are retained for the median.
     - Finally, ARC moves downstream through the reach graph and raises a downstream reach median when necessary so depth stays equal or increases downstream. At a confluence, the deepest valid incoming branch controls. The constrained reach median replaces the initial depth on every sampled cross section in that reach, including sections whose initial value came from the drainage-area power law.
@@ -70,7 +72,7 @@ Once banks are found:
     - Bottom width = top width minus side slopes
     - Side-slope width approximately equals `Bathy_Trap_H * total_width`
 6. An initial depth is assigned in one of two ways:
-    - If `Flow_File_BF` is provided, the supplied discharge drives the downstream-to-upstream reach-network energy solution described above.
+    - If `Flow_File_BF` is provided, the supplied discharge drives the downstream-to-upstream reach-network friction-slope solution described above.
     - If the drainage-area power-law parameters provide a valid target, that target takes precedence and is calculated as `coefficient_depth * drainage_area ^ exponent_depth`.
 7. ARC replaces the initial cell values with inclusive interquartile-filtered reach medians, then raises downstream medians as needed to prevent depth from decreasing downstream.
 
@@ -100,7 +102,7 @@ Once banks are found, ARC:
 4. Keeps the filtered or reach-filled bank indices and bank-to-bank top width for each sampled cross section.
 5. Uses the smoothed bank elevation as the vertical bathymetry control to compute bankfull elevation while preserving the local width geometry.
 6. Estimates depth using one of two paths:
-    - Use `Flow_File_BF` in the downstream-to-upstream reach-network energy solve
+    - Use `Flow_File_BF` in the downstream-to-upstream reach-network friction-slope solve
     - Or, when the drainage-area parameters provide a valid target, use `coefficient_depth * drainage_area ^ exponent_depth` with precedence over the network result
 7. Filters the initial depths marked for application that are finite, positive, and below `25` m to the inclusive 25th-75th percentile interval within each reach, assigns the retained median to the reach, and enforces equal-or-increasing depth downstream.
 8. Constrains that depth relative to the bankfull elevation before burning the bathymetry into the cross section.
@@ -145,7 +147,7 @@ To use the bank-elevation workflow, set `Bathy_Use_Banks = True` in your ARC inp
 
 For bathymetry depth, you now have two supported options:
 
-1. Provide `Flow_File_BF` and let ARC solve the reach-network energy balance for an initial depth.
+1. Provide `Flow_File_BF` and let ARC match friction and effective energy slopes over the reach network to obtain an initial depth.
 2. Omit `Flow_File_BF` and instead provide `drainage_area_field`, `coefficient_depth`, `exponent_depth`, `coefficient_width`, and `exponent_width` together.
 
 Both paths feed the same reach-median filtering and downstream non-decreasing depth constraint before bathymetry is applied.
