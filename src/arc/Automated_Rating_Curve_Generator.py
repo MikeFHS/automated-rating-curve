@@ -2004,99 +2004,65 @@ def _apply_bathymetry_to_cross_section(
         )
 
 def _solve_non_uniform_network_depths(
-    reach_graph: nx.DiGraph,
-    default_tailwater_wse: float | Mapping[int, float] | None = None,
+    reach_network_graph: nx.DiGraph,
+    default_tailwater_wse: float | None = None,
 ) -> dict[int, dict]:
-    """Solve non-uniform depths from downstream boundary conditions.
+    """Estimate reach depths with a downstream-to-upstream energy march.
 
-    ``default_tailwater_wse`` may be a single elevation for a one-outlet
-    network or an outlet-ID-to-elevation mapping for disconnected or
-    multi-outlet networks. The staging pass supplies elevations calculated by
-    subtracting Manning normal depth from each outlet's lowest bank. The former
-    0.5 m boundary depth remains only as a fallback when an outlet lacks a
-    finite bank or Manning estimate.
+    Each graph node is expected to contain the scalar geometry returned by
+    :meth:`CrossSection.extract_scalar_hydraulic_geometry`.  The node's
+    smoothed bank elevation is the local water-surface reference, while trial
+    depth controls area, velocity, hydraulic radius, and friction slope in the
+    standard-step residual.
+
+    Outlet nodes, and nodes without positive baseflow, are initialized with a
+    0.5 m depth, zero velocity, and a friction slope of ``1e-4``.  Their WSE is
+    ``default_tailwater_wse`` when supplied and otherwise their smoothed bank
+    elevation.  Interior depths are solved on ``[0.001, 25]`` m with Brent's
+    method; an unbracketed residual falls back to 0.5 m.
     """
-    upstream_march = list(reversed(list(nx.topological_sort(reach_graph))))
+    upstream_march = list(reversed(list(nx.topological_sort(reach_network_graph))))
     node_results = {}
 
     for node_id in upstream_march:
-        node = reach_graph.nodes[node_id]
-        ds_edges = list(reach_graph.successors(node_id))
+        node = reach_network_graph.nodes[node_id]
+        ds_edges = list(reach_network_graph.successors(node_id))
 
-        Q = float(node['baseflow'])
+        bank_z = node.get('bank_elev', 0.0)
+        Q = node.get('baseflow', 0.0)
+        n = node.get('manning_n', 0.03)
 
-        n = float(node['manning_n'])
-        bed_z = float(node['bed_elev'])
-
-        def calculate_area_perimeter(y):
-            if node['geom_type'] == 'triangle':
-                w_top = node['top_width']
-                area = 0.5 * w_top * y
-                perim = 2.0 * np.sqrt(y ** 2 + (w_top / 2.0) ** 2)
-            else:
-                w_base, d_h, w_top = node['base_width'], node['d_h'], node['top_width']
-                area = (w_base + w_top) / 2.0 * y
-                perim = w_base + 2.0 * np.sqrt(y ** 2 + d_h ** 2)
-            return area, perim
-
-        if not ds_edges:
-            # Use the Manning normal-depth WSE calculated for this particular
-            # outlet. A scalar remains supported for callers with one outlet.
-            if isinstance(default_tailwater_wse, Mapping):
-                ds_wse = default_tailwater_wse.get(node_id)
-            else:
-                ds_wse = default_tailwater_wse
-            if ds_wse is None or not np.isfinite(ds_wse):
-                ds_wse = bed_z + 0.5
-                outlet_depth = 0.5
-                tailwater_source = 'fixed_0.5m_fallback'
-            else:
-                ds_wse = float(ds_wse)
-                # The staged boundary elevation is below the lowest bank, so
-                # its hydraulic depth cannot be recovered as WSE minus the
-                # original DEM thalweg. Retain the Manning depth that produced
-                # the boundary elevation and use it for outlet hydraulics.
-                outlet_depth = float(
-                    node.get(
-                        'default_tailwater_manning_depth',
-                        ds_wse - bed_z,
-                    )
-                )
-                if not np.isfinite(outlet_depth) or outlet_depth <= 0.0:
-                    ds_wse = bed_z + 0.5
-                    outlet_depth = 0.5
-                    tailwater_source = 'fixed_0.5m_fallback'
-                else:
-                    tailwater_source = 'manning_normal_depth_below_lowest_bank'
-
-            # Initialize the outlet energy state from the same geometry used
-            # by the upstream standard-step march. Previously the outlet used
-            # zero velocity and an unrelated fixed friction slope even when a
-            # caller supplied a physically derived tailwater elevation.
-            area, perim = calculate_area_perimeter(outlet_depth)
-            if Q > 0.0 and area > 0.0 and perim > 0.0:
-                hydraulic_radius = area / perim
-                outlet_velocity = Q / area
-                outlet_friction_slope = (
-                    n * Q / (area * hydraulic_radius ** (2.0 / 3.0))
-                ) ** 2
-            else:
-                outlet_velocity = 0.0
-                outlet_friction_slope = 0.0
+        if not ds_edges or Q <= 0.0:
+            # Outlet Boundary Condition
+            ds_wse = default_tailwater_wse if default_tailwater_wse is not None else bank_z
             node_results[node_id] = {
                 'wse': ds_wse,
-                'depth': outlet_depth,
-                'v': outlet_velocity,
-                'sf': outlet_friction_slope,
-                'tailwater_source': tailwater_source,
+                'depth': 0.5,
+                'v': 0.0,
+                'sf': 1e-4
             }
             continue
 
         # Interior Nodes
         ds_id = ds_edges[0]
         ds_state = node_results[ds_id]
-        dx = reach_graph.edges[node_id, ds_id].get('length', 1.0)
+        dx = reach_network_graph.edges[node_id, ds_id].get('length', 1.0)
+
+        # Downstream Energy Head
         h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
+
+        def calculate_area_perimeter(y):
+            if node.get('geom_type') == 'triangle':
+                w_top = node.get('top_width', 2.0)
+                area = 0.5 * w_top * y
+                perim = 2.0 * np.sqrt(y ** 2 + (w_top / 2.0) ** 2)
+            else:
+                w_base = node.get('base_width', 1.0)
+                d_h = node.get('d_h', 0.2)
+                w_top = node.get('top_width', 2.0)
+                area = (w_base + w_top) / 2.0 * y
+                perim = w_base + 2.0 * np.sqrt(y ** 2 + d_h ** 2)
+            return area, perim
 
         def energy_residual(y):
             if y <= 0.001:
@@ -2106,7 +2072,12 @@ def _solve_non_uniform_network_depths(
             v = Q / area
             sf_local = (n * Q / (area * (r_hyd ** (2.0 / 3.0)))) ** 2
             sf_avg = 0.5 * (sf_local + ds_state['sf'])
-            h_local = bed_z + y + (v ** 2) / (2.0 * 9.81)
+
+            # The smoothed bank surface supplies the local WSE reference. The
+            # trial depth affects the energy balance through velocity and
+            # friction rather than by raising this reference elevation.
+            wse_local = bank_z
+            h_local = wse_local + (v ** 2) / (2.0 * 9.81)
             return h_local - (h_ds + sf_avg * dx)
 
         try:
@@ -2120,7 +2091,7 @@ def _solve_non_uniform_network_depths(
         sf_final = (n * Q / (area_final * (r_final ** (2.0 / 3.0)))) ** 2
 
         node_results[node_id] = {
-            'wse': bed_z + y_sol,
+            'wse': bank_z,
             'depth': y_sol,
             'v': v_final,
             'sf': sf_final
@@ -2133,7 +2104,18 @@ def _stage_cross_section_bathymetry_depths(
     params: dict,
     quiet: bool,
 ) -> None:
-    """Estimate one bathymetry depth per cell after all banks have been found."""
+    """Stage network-derived bathymetry depths after bank smoothing.
+
+    The pass attaches scalar cross-section geometry and baseflow to the reach
+    graph, solves non-uniform depths from downstream to upstream, and gives a
+    valid drainage-area power-law depth precedence over the network result.
+    It then calls :func:`_smooth_reach_bathymetry_depths`, which replaces the
+    cell estimates with interquartile-filtered reach medians and forces those
+    medians to stay equal or increase in the downstream direction.
+
+    The burn into the cross-section profiles occurs later; this routine only
+    records the selected depth, its source, and slope diagnostics.
+    """
     x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
 
     # 1. Build NetworkX graph topology
@@ -2143,176 +2125,35 @@ def _stage_cross_section_bathymetry_depths(
         params.get("s_downstream_reach_id_field", ""),
     )
 
-    # Calculate a downstream boundary candidate for every represented reach.
-    # If an invalid downstream node is pruned below, its upstream neighbor
-    # becomes a new hydraulic outlet and still needs a Manning boundary.
-    reach_tailwater_candidates: dict[int, tuple[float, float, float, float]] = {}
-    eligible_non_uniform_entries: set[int] = set()
-    network_reach_ids = (
-        _CELL_SOURCE_STREAM_IDS
-        if _CELL_SOURCE_STREAM_IDS is not None
-        else _CELL_COMIDS
-    )
-
-    # 2. Extract scalar geometry for each stream cell and attach to graph
+    # 2. Extract scalar geometry referenced to smoothed bank elevations and attach to graph
     for i_entry_cell in range(_CELL_COMIDS.size):
         sampled_record = sampled_records[i_entry_cell]
         if sampled_record is None:
             continue
 
         _replay_precomputed_cross_section(x_section, sampled_record)
-        d_q_baseflow, d_slope_use, _, _ = _get_cell_bathymetry_inputs(
+        d_q_baseflow, _, _, _ = _get_cell_bathymetry_inputs(
             i_entry_cell, int(_CELL_ROWS[i_entry_cell]), int(_CELL_COLS[i_entry_cell]), params
         )
         staged_result = dict(sampled_record.get("bank_search_result", {}))
-        d_slope_use = _replace_slope_with_smoothed_bank_grade(
-            d_slope_use,
-            staged_result,
-        )
 
-        # Non-uniform hydraulics require a real discharge and two usable bank
-        # indices. Do not attach partial node data: leaving such reaches in the
-        # graph is what allowed the solver to encounter nodes without baseflow
-        # or geometry attributes.
-        try:
-            bank_index_1 = int(staged_result.get('i_bank_1_index', 0))
-            bank_index_2 = int(staged_result.get('i_bank_2_index', 0))
-            total_bank_cells = int(
-                staged_result.get(
-                    'i_total_bank_cells',
-                    bank_index_1 + bank_index_2 - 1,
-                )
-            )
-        except (TypeError, ValueError):
-            bank_index_1 = 0
-            bank_index_2 = 0
-            total_bank_cells = 0
-        has_non_uniform_inputs = bool(
-            np.isfinite(d_q_baseflow)
-            and float(d_q_baseflow) > 0.0
-            and bool(staged_result.get('is_valid', False))
-            and bank_index_1 > 0
-            and bank_index_2 > 0
-            and total_bank_cells >= 1
-        )
-        if not has_non_uniform_inputs:
-            continue
-        
-        # Extract scalar dict
+        # Extract scalar dict using smoothed_bank_elevation
         scalar_geom = x_section.extract_scalar_hydraulic_geometry(d_q_baseflow, staged_result)
-        
-        reach_id = int(network_reach_ids[i_entry_cell])
-        if reach_id not in reach_network_graph:
-            continue
-        eligible_non_uniform_entries.add(i_entry_cell)
-        reach_network_graph.nodes[reach_id].update(scalar_geom)
 
-        # Reuse the former bathymetry Manning solve to establish a potential
-        # downstream boundary at this reach. The downstream-most valid cell is
-        # retained, and only candidates belonging to new outlets after graph
-        # pruning are ultimately passed to the network solver.
-        manning_depth = x_section.calculate_hydraulic_bathymetry_depth(
-            d_q_baseflow,
-            d_slope_use,
-            staged_result,
-        )
-        bank_elevations = np.asarray(
-            [
-                staged_result.get('bank_elev_1', np.nan),
-                staged_result.get('bank_elev_2', np.nan),
-            ],
-            dtype=np.float64,
-        )
-        finite_bank_elevations = bank_elevations[np.isfinite(bank_elevations)]
-        lowest_bank_elevation = (
-            float(np.min(finite_bank_elevations))
-            if finite_bank_elevations.size > 0
-            else np.nan
-        )
-        reach_fraction = float(
-            staged_result.get(
-                "network_reach_interpolation_fraction",
-                staged_result.get("reach_order_index", 0.0),
-            )
-        )
-        if not np.isfinite(reach_fraction):
-            reach_fraction = float(staged_result.get("reach_order_index", 0.0))
-        if (
-            np.isfinite(manning_depth)
-            and 0.0 < float(manning_depth) < 25.0
-            and np.isfinite(lowest_bank_elevation)
-            and (
-                reach_id not in reach_tailwater_candidates
-                or reach_fraction >= reach_tailwater_candidates[reach_id][0]
-            )
-        ):
-            reach_tailwater_candidates[reach_id] = (
-                reach_fraction,
-                lowest_bank_elevation - float(manning_depth),
-                float(manning_depth),
-                lowest_bank_elevation,
-            )
+        cell_id = int(_CELL_COMIDS[i_entry_cell])
+        if cell_id in reach_network_graph:
+            reach_network_graph.nodes[cell_id].update(scalar_geom)
 
-    # 3. Solve non-uniform depths downstream-to-upstream for hydraulic cells
-    # Use an induced subgraph so every node presented to the solver has the
-    # complete scalar geometry attached above. Removing an invalid interior or
-    # outlet reach safely splits the remaining network into solvable pieces.
-    hydraulic_node_ids = [
-        int(node_id)
-        for node_id, node_data in reach_network_graph.nodes(data=True)
-        if (
-            'baseflow' in node_data
-            and np.isfinite(node_data['baseflow'])
-            and float(node_data['baseflow']) > 0.0
-            and 'bed_elev' in node_data
-            and 'manning_n' in node_data
-            and 'geom_type' in node_data
-            and 'top_width' in node_data
-            and (
-                node_data['geom_type'] == 'triangle'
-                or (
-                    'base_width' in node_data
-                    and 'd_h' in node_data
-                )
-            )
-        )
-    ]
-    hydraulic_graph = reach_network_graph.subgraph(hydraulic_node_ids).copy()
-    hydraulic_outlet_ids = [
-        int(node_id)
-        for node_id in hydraulic_graph.nodes
-        if hydraulic_graph.out_degree(node_id) == 0
-    ]
-    default_tailwater_wse = {
-        outlet_id: reach_tailwater_candidates[outlet_id][1]
-        for outlet_id in hydraulic_outlet_ids
-        if outlet_id in reach_tailwater_candidates
-    }
-    for outlet_id in hydraulic_outlet_ids:
-        candidate = reach_tailwater_candidates.get(outlet_id)
-        if candidate is None:
-            continue
-        # Preserve the two values used to construct the boundary elevation so
-        # the solver can use positive Manning depth for area, velocity, and
-        # friction even when the requested elevation lies below the DEM bed.
-        hydraulic_graph.nodes[outlet_id][
-            'default_tailwater_manning_depth'
-        ] = candidate[2]
-        hydraulic_graph.nodes[outlet_id][
-            'default_tailwater_lowest_bank_elevation'
-        ] = candidate[3]
-    non_uniform_results = _solve_non_uniform_network_depths(
-        hydraulic_graph,
-        default_tailwater_wse=default_tailwater_wse,
-    )
+    # 3. Solve non-uniform depths downstream-to-upstream using smoothed bank elevations
+    non_uniform_results = _solve_non_uniform_network_depths(reach_network_graph)
 
-    # 4. Assign calculated or power-law depths back to sampled_records for the burn pass
+    # 4. Assign calculated or power-law depths back to sampled_records
     for i_entry_cell in range(_CELL_COMIDS.size):
         sampled_record = sampled_records[i_entry_cell]
         if sampled_record is None:
             continue
 
-        reach_id = int(network_reach_ids[i_entry_cell])
+        cell_id = int(_CELL_COMIDS[i_entry_cell])
         staged_result = dict(sampled_record.get("bank_search_result", {}))
 
         d_q_baseflow, d_slope_use, d_bathy_target_depth, _ = _get_cell_bathymetry_inputs(
@@ -2328,21 +2169,17 @@ def _stage_cross_section_bathymetry_depths(
         staged_result["bathymetry_depth_original_slope"] = original_slope_use
         staged_result["bathymetry_depth_smoothed_bank_slope"] = float(d_slope_use)
 
-        # Priority 1: Check if power-law target depth is valid
         using_target_depth = x_section._is_valid_bathymetry_target(d_bathy_target_depth)
 
         if using_target_depth:
             bathymetry_depth = float(d_bathy_target_depth)
             depth_source = "drainage_area_power_law"
-        elif (
-            i_entry_cell in eligible_non_uniform_entries
-            and reach_id in non_uniform_results
-        ):
-            bathymetry_depth = non_uniform_results[reach_id]['depth']
+        elif cell_id in non_uniform_results:
+            bathymetry_depth = non_uniform_results[cell_id]['depth']
             depth_source = "network_non_uniform_energy"
         else:
             bathymetry_depth = 0.0
-            depth_source = "non_uniform_inputs_unavailable"
+            depth_source = "baseflow_manning"
 
         staged_result["bathymetry_depth"] = float(bathymetry_depth)
         staged_result["bathymetry_should_apply"] = bool(
@@ -2361,7 +2198,14 @@ def _compute_filtered_reach_median_depths(
     sampled_records: list[dict | None],
     source_reach_ids: np.ndarray,
 ) -> tuple[dict[int, float], dict[int, dict]]:
-    """Calculate an interquartile-filtered median depth for each reach."""
+    """Calculate an interquartile-filtered median depth for each reach.
+
+    Only depths marked for application that are finite, positive, and below
+    25 m participate. Values on the inclusive 25th-75th percentile interval
+    are retained. If interpolated quartiles exclude every member of a very
+    small sample, the unfiltered valid sample is used instead. The companion
+    statistics mapping preserves the limits and sample counts for diagnostics.
+    """
     grouped_depths: dict[int, list[float]] = {}
     for entry_index, sampled_record in enumerate(sampled_records):
         if sampled_record is None:
@@ -2411,10 +2255,11 @@ def _enforce_non_decreasing_downstream_reach_depths(
 ) -> dict[int, float]:
     """Ensure valid reach depths stay equal or increase downstream.
 
-    Reaches without a valid depth are deliberately excluded from the induced
-    graph. This prevents the monotonic pass from propagating an upstream depth
-    back onto a reach that was removed from the non-uniform solve because its
-    baseflow or bank indices were unavailable.
+    The induced graph contains only reaches with a valid median, while valid
+    IDs absent from the vector topology are retained as isolated nodes. Strong
+    components share one control value. In topological order, each component
+    takes the maximum of its local median and all upstream component depths, so
+    the deepest incoming branch controls a confluence.
     """
     if len(reach_median_depths) == 0:
         return {}
@@ -2459,7 +2304,13 @@ def _smooth_reach_bathymetry_depths(
     sampled_records: list[dict | None],
     params: dict,
 ) -> None:
-    """Apply filtered reach medians and downstream-monotonic depth constraints."""
+    """Replace staged cell depths with downstream-monotonic reach medians.
+
+    Grouping uses source-stream IDs when raster preparation preserved them and
+    otherwise uses cell COMIDs. The original cell depth and source are copied
+    into diagnostic fields before the constrained reach value is assigned to
+    every sampled record belonging to that reach.
+    """
     source_reach_ids = (
         _CELL_SOURCE_STREAM_IDS
         if _CELL_SOURCE_STREAM_IDS is not None

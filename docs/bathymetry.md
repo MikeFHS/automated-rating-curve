@@ -1,7 +1,9 @@
-ARC estimates channel bathymetry at each stream cell by fitting a trapezoidal cross section whose geometry is constrained by detected bank locations and a target depth. ARC can obtain that target depth in one of two ways:
+ARC estimates channel bathymetry at each stream cell by fitting a triangular or trapezoidal cross section whose geometry is constrained by detected bank locations and a target depth. ARC can obtain the initial target depth in one of two ways:
 
-1. From `Flow_File_BF`, by solving Manning's equation until the sampled section conveys the supplied baseflow or bankfull discharge.
+1. From `Flow_File_BF`, by solving a downstream-to-upstream non-uniform energy balance over the directed reach network.
 2. From a drainage-area power law, by combining `drainage_area_field`, `coefficient_depth`, and `exponent_depth`.
+
+After either initial estimate, ARC filters and aggregates the depths by reach and enforces a downstream non-decreasing depth constraint. Consequently, the depth finally burned into a stream cell can differ from its initial network or power-law estimate.
 
 `Flow_File_QMax` is still required either way because ARC still needs a maximum discharge to build the VDT database and curve outputs.
 
@@ -26,8 +28,12 @@ Before any bathymetry is burned into the DEM-derived section, ARC now performs a
     - ARC keeps the filtered or reach-filled bank indices and top widths from the DEM-based bank-search hierarchy. The network-smoothed reach-scale profile is used only to define the vertical bathymetry elevation target.
     - ARC no longer falls back to local reach minima when the reach graph or its smoothed elevations cannot be built; it now stops with an error instead.
 7. Only after those filtered and smoothed bank controls are known does ARC estimate and burn bathymetry.
-    - For baseflow-driven bathymetry, ARC estimates Manning normal depth at the downstream-most sampled cross section of each network outlet. The lower of that cross section's two bank elevations minus the Manning depth supplies the default tailwater elevation for the downstream-to-upstream non-uniform energy solve. Outlet velocity and friction slope are initialized from the same positive Manning depth, discharge, roughness, and cross-section geometry. The former 0.5 m boundary depth is retained only when no finite bank or Manning estimate is available.
-    - Before the non-uniform solve, ARC excludes any reach that lacks a finite positive baseflow or valid left and right bank indices. The solver operates on the induced graph of fully attributed reaches, so an unsampled or invalid vector reach cannot cause missing-attribute failures. If pruning exposes a new outlet, ARC uses that retained reach's downstream-most valid cross section to construct its Manning tailwater boundary. Cells without the required non-uniform inputs do not receive a network-solved depth.
+    - `CrossSection.extract_scalar_hydraulic_geometry()` reduces each staged section to a triangle or trapezoid and uses `smoothed_bank_elevation` as its vertical energy reference. If that elevation is unavailable, the sampled center ordinate is used. The scalar record also contains the cell baseflow and a fixed bathymetry Manning roughness of `0.03`.
+    - For baseflow-driven bathymetry, ARC marches through the reach graph from downstream to upstream. At an interior node, trial depth controls cross-sectional area, velocity, hydraulic radius, and friction slope; the smoothed bank elevation supplies the local WSE reference in the energy residual. Brent's method searches depths from `0.001` to `25` m.
+    - A graph outlet, or any node whose baseflow is not positive, receives the current boundary initialization: depth `0.5` m, velocity `0.0`, friction slope `1e-4`, and WSE equal to the smoothed bank elevation unless a scalar `default_tailwater_wse` is explicitly supplied by a caller. An interior solve that cannot bracket a root also falls back to `0.5` m.
+    - A valid drainage-area power-law depth takes precedence over the network result for that stream cell.
+    - ARC then groups every staged depth that is marked for application, finite, positive, and below `25` m by source reach. It retains values within the inclusive 25th-75th percentile interval and calculates their median; if interpolation of the quartiles leaves a small sample empty, all valid values for that reach are retained for the median.
+    - Finally, ARC moves downstream through the reach graph and raises a downstream reach median when necessary so depth stays equal or increases downstream. At a confluence, the deepest valid incoming branch controls. The constrained reach median replaces the initial depth on every sampled cross section in that reach, including sections whose initial value came from the drainage-area power law.
 8. Before writing the bathymetry GeoTIFF, ARC performs one synchronous gap-fill pass. A NaN cell is filled when at least four of its eight surrounding cells contain bathymetry, and it receives the arithmetic mean of only those non-NaN values. Newly filled values are not used to fill any other cell.
 
 # **Bank or Water Surface Elevation**
@@ -63,9 +69,10 @@ Once banks are found:
     - Top width = bank-to-bank distance
     - Bottom width = top width minus side slopes
     - Side-slope width approximately equals `Bathy_Trap_H * total_width`
-5. Depth is assigned in one of two ways:
-    - If `Flow_File_BF` is provided, depth is solved iteratively using Manning's equation to match the input discharge, local slope, and fixed roughness.
-    - If the drainage-area power-law parameters are provided instead, depth is taken directly from `coefficient_depth * drainage_area ^ exponent_depth`.
+6. An initial depth is assigned in one of two ways:
+    - If `Flow_File_BF` is provided, the supplied discharge drives the downstream-to-upstream reach-network energy solution described above.
+    - If the drainage-area power-law parameters provide a valid target, that target takes precedence and is calculated as `coefficient_depth * drainage_area ^ exponent_depth`.
+7. ARC replaces the initial cell values with inclusive interquartile-filtered reach medians, then raises downstream medians as needed to prevent depth from decreasing downstream.
 
 If the computed depth is unrealistic (greater than or equal to 25 m), ARC does not rerun bank finding during the bathymetry burn step. Instead, it skips bathymetry for that stream cell and retains the precomputed staged bank diagnostics.
 
@@ -93,9 +100,10 @@ Once banks are found, ARC:
 4. Keeps the filtered or reach-filled bank indices and bank-to-bank top width for each sampled cross section.
 5. Uses the smoothed bank elevation as the vertical bathymetry control to compute bankfull elevation while preserving the local width geometry.
 6. Estimates depth using one of two paths:
-    - Solve for depth using Manning's equation so flow matches `Flow_File_BF`
-    - Or, when the drainage-area parameters are supplied, use `coefficient_depth * drainage_area ^ exponent_depth`
-7. Constrains that depth relative to the bankfull elevation before burning the bathymetry into the cross section.
+    - Use `Flow_File_BF` in the downstream-to-upstream reach-network energy solve
+    - Or, when the drainage-area parameters provide a valid target, use `coefficient_depth * drainage_area ^ exponent_depth` with precedence over the network result
+7. Filters the initial depths marked for application that are finite, positive, and below `25` m to the inclusive 25th-75th percentile interval within each reach, assigns the retained median to the reach, and enforces equal-or-increasing depth downstream.
+8. Constrains that depth relative to the bankfull elevation before burning the bathymetry into the cross section.
     - If the smoothed bank width still collapses to a single cell, ARC now uses the existing triangular one-cell bathymetry formulation rather than skipping that sampled stream cell.
 
 The same quality control applies here: if the resulting depth is unrealistic, ARC does not rerun bank finding during the bathymetry burn step and instead skips bathymetry for that stream cell.
@@ -137,8 +145,10 @@ To use the bank-elevation workflow, set `Bathy_Use_Banks = True` in your ARC inp
 
 For bathymetry depth, you now have two supported options:
 
-1. Provide `Flow_File_BF` and let ARC solve Manning's equation for depth.
+1. Provide `Flow_File_BF` and let ARC solve the reach-network energy balance for an initial depth.
 2. Omit `Flow_File_BF` and instead provide `drainage_area_field`, `coefficient_depth`, `exponent_depth`, `coefficient_width`, and `exponent_width` together.
+
+Both paths feed the same reach-median filtering and downstream non-decreasing depth constraint before bathymetry is applied.
 
 In the current staged workflow, those drainage-area width parameters are used first to decide whether a sampled section is narrow enough to accept the explicit one-cell triangular fallback. If that gate does not pass, bank placement still comes from land cover, reach-scale INFLECT, and the local DEM fallback methods.
 

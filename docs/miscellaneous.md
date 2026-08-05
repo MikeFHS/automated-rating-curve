@@ -14,8 +14,9 @@ ARC is a Python tool that generates rating-curve-like hydraulic relationships fo
     3. ARC then applies the bank hierarchy for every cached section: land cover first if enabled, then reach-scale INFLECT, then the local DEM fallback methods.
     4. Once the local bank indices exist, ARC orders the cross sections from upstream to downstream within each reach, smooths the bank height above the thalweg, reconstructs a bank-elevation line that follows the exact reach thalweg slope, and converts that smoothed elevation back into a local top width for each section.
 3. Estimate bathymetry (optional).
-    1. If `Bathy_Use_Banks` is false, ARC uses the precomputed bank locations with the WSE-style bathymetry workflow and fits depth either from `Flow_File_BF` or from the drainage-area power-law depth estimate.
-    2. If `Bathy_Use_Banks` is true, ARC assumes that the baseflow value is a channel-forming discharge (bankfull flow), or that the optional drainage-area power-law depth represents bankfull conditions, and recreates the bathymetry using the same precomputed bank hierarchy.
+    1. If `Bathy_Use_Banks` is false, ARC uses the precomputed bank locations with the WSE-style bathymetry workflow. `Flow_File_BF` drives a downstream-to-upstream reach-network energy solve, while a valid drainage-area power-law depth takes precedence.
+    2. If `Bathy_Use_Banks` is true, ARC uses the smoothed bank elevation as the network energy reference and treats the baseflow as a channel-forming discharge, or uses the optional power-law depth as the initial bankfull depth.
+    3. In either mode, ARC filters initial depths marked for application that are finite, positive, and below 25 m to the inclusive 25th-75th percentile interval for each reach, assigns the retained median to every section on that reach, and raises downstream reach medians where needed so depth does not decrease downstream.
 4. Attempt to adjust the slope to achieve a more realistic maximum water surface elevation.
 5. Compute water-surface elevation (WSE), depth, velocity, and top width across discharge increments.
 6. Write one or more output datasets (VDT database, curve file, bathymetry raster, representative cross sections, etc.).

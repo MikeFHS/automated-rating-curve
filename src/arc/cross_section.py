@@ -1302,7 +1302,17 @@ class CrossSection:
         return d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base
 
     def extract_scalar_hydraulic_geometry(self, baseflow: float, bank_search_result: dict | None) -> dict:
-            """Extracts scalar hydraulic geometry for lightweight network depth solving."""
+            """Return compact geometry for the reach-network depth solver.
+
+            The staged smoothed bank elevation is used as the vertical energy
+            reference. If it is unavailable, the center ordinate of the first
+            half-profile is used instead. A one-cell bank result becomes a
+            triangular section two ordinate spacings wide; wider results use
+            a trapezoid derived from the detected banks when
+            ``Bathy_Use_Banks`` is enabled, or from the bank-cell count when it
+            is disabled. The returned mapping also carries baseflow and ARC's
+            fixed bathymetry roughness of 0.03.
+            """
             (
                 _func,
                 i_bank1,
@@ -1313,13 +1323,14 @@ class CrossSection:
                 smoothed_bank_elev,
             ) = self._get_precomputed_bathymetry_bank_result(bank_search_result)
 
-            bed_elev = float(self.da_xs_profile1[0])  # Local thalweg elevation
+            # Use smoothed bank elevation as the reference plane
+            bank_elev = float(smoothed_bank_elev) if (smoothed_bank_elev is not None and np.isfinite(smoothed_bank_elev)) else float(self.da_xs_profile1[0])
 
             if i_total_cells <= 1:
                 # Triangular channel approximation
                 return {
                     'geom_type': 'triangle',
-                    'bed_elev': bed_elev,
+                    'bank_elev': bank_elev,
                     'top_width': float(self.d_ordinate_dist * 2.0),
                     'baseflow': float(baseflow),
                     'manning_n': 0.03
@@ -1328,7 +1339,7 @@ class CrossSection:
                 # Trapezoidal channel approximation
                 if self.b_bathy_use_banks:
                     _, _, w_top, d_h, w_base = self._compute_bank_bathymetry_geometry(
-                        i_total_cells, i_bank1, i_bank2, smoothed_bank_elev
+                        i_total_cells, i_bank1, i_bank2, bank_elev
                     )
                 else:
                     w_top = i_total_cells * self.d_ordinate_dist
@@ -1337,13 +1348,13 @@ class CrossSection:
 
                 return {
                     'geom_type': 'trapezoid',
-                    'bed_elev': bed_elev,
+                    'bank_elev': bank_elev,
                     'top_width': float(w_top),
                     'base_width': float(w_base),
                     'd_h': float(d_h),
                     'baseflow': float(baseflow),
                     'manning_n': 0.03
-            }
+                }
 
     def calculate_hydraulic_bathymetry_depth(
         self,
