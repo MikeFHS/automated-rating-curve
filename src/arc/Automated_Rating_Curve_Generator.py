@@ -25,6 +25,7 @@ import sys
 import os
 import math
 import warnings
+from collections.abc import Mapping
 from typing import Literal
 
 import tqdm
@@ -2002,90 +2003,281 @@ def _apply_bathymetry_to_cross_section(
             bank_search_result=bank_search_result,
         )
 
+def _solve_non_uniform_network_depths(
+    reach_graph: nx.DiGraph,
+    default_tailwater_wse: float | Mapping[int, float] | None = None,
+) -> dict[int, dict]:
+    """Solve non-uniform depths from downstream boundary conditions.
+
+    ``default_tailwater_wse`` may be a single elevation for a one-outlet
+    network or an outlet-ID-to-elevation mapping for disconnected or
+    multi-outlet networks. The staging pass supplies elevations calculated by
+    subtracting Manning normal depth from each outlet's lowest bank. The former
+    0.5 m boundary depth remains only as a fallback when an outlet lacks a
+    finite bank or Manning estimate.
+    """
+    upstream_march = list(reversed(list(nx.topological_sort(reach_graph))))
+    node_results = {}
+
+    for node_id in upstream_march:
+        node = reach_graph.nodes[node_id]
+        ds_edges = list(reach_graph.successors(node_id))
+
+        Q = float(node['baseflow'])
+        n = float(node['manning_n'])
+        bed_z = float(node['bed_elev'])
+
+        def calculate_area_perimeter(y):
+            if node['geom_type'] == 'triangle':
+                w_top = node['top_width']
+                area = 0.5 * w_top * y
+                perim = 2.0 * np.sqrt(y ** 2 + (w_top / 2.0) ** 2)
+            else:
+                w_base, d_h, w_top = node['base_width'], node['d_h'], node['top_width']
+                area = (w_base + w_top) / 2.0 * y
+                perim = w_base + 2.0 * np.sqrt(y ** 2 + d_h ** 2)
+            return area, perim
+
+        if not ds_edges:
+            # Use the Manning normal-depth WSE calculated for this particular
+            # outlet. A scalar remains supported for callers with one outlet.
+            if isinstance(default_tailwater_wse, Mapping):
+                ds_wse = default_tailwater_wse.get(node_id)
+            else:
+                ds_wse = default_tailwater_wse
+            if ds_wse is None or not np.isfinite(ds_wse):
+                ds_wse = bed_z + 0.5
+                outlet_depth = 0.5
+                tailwater_source = 'fixed_0.5m_fallback'
+            else:
+                ds_wse = float(ds_wse)
+                # The staged boundary elevation is below the lowest bank, so
+                # its hydraulic depth cannot be recovered as WSE minus the
+                # original DEM thalweg. Retain the Manning depth that produced
+                # the boundary elevation and use it for outlet hydraulics.
+                outlet_depth = float(
+                    node.get(
+                        'default_tailwater_manning_depth',
+                        ds_wse - bed_z,
+                    )
+                )
+                if not np.isfinite(outlet_depth) or outlet_depth <= 0.0:
+                    ds_wse = bed_z + 0.5
+                    outlet_depth = 0.5
+                    tailwater_source = 'fixed_0.5m_fallback'
+                else:
+                    tailwater_source = 'manning_normal_depth_below_lowest_bank'
+
+            # Initialize the outlet energy state from the same geometry used
+            # by the upstream standard-step march. Previously the outlet used
+            # zero velocity and an unrelated fixed friction slope even when a
+            # caller supplied a physically derived tailwater elevation.
+            area, perim = calculate_area_perimeter(outlet_depth)
+            if Q > 0.0 and area > 0.0 and perim > 0.0:
+                hydraulic_radius = area / perim
+                outlet_velocity = Q / area
+                outlet_friction_slope = (
+                    n * Q / (area * hydraulic_radius ** (2.0 / 3.0))
+                ) ** 2
+            else:
+                outlet_velocity = 0.0
+                outlet_friction_slope = 0.0
+            node_results[node_id] = {
+                'wse': ds_wse,
+                'depth': outlet_depth,
+                'v': outlet_velocity,
+                'sf': outlet_friction_slope,
+                'tailwater_source': tailwater_source,
+            }
+            continue
+
+        # Interior Nodes
+        ds_id = ds_edges[0]
+        ds_state = node_results[ds_id]
+        dx = reach_graph.edges[node_id, ds_id].get('length', 1.0)
+        h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
+
+        def energy_residual(y):
+            if y <= 0.001:
+                return -1e5
+            area, perim = calculate_area_perimeter(y)
+            r_hyd = area / max(perim, 1e-4)
+            v = Q / area
+            sf_local = (n * Q / (area * (r_hyd ** (2.0 / 3.0)))) ** 2
+            sf_avg = 0.5 * (sf_local + ds_state['sf'])
+            h_local = bed_z + y + (v ** 2) / (2.0 * 9.81)
+            return h_local - (h_ds + sf_avg * dx)
+
+        try:
+            y_sol = brentq(energy_residual, a=0.001, b=25.0, xtol=1e-4)
+        except ValueError:
+            y_sol = 0.5
+
+        area_final, perim_final = calculate_area_perimeter(y_sol)
+        v_final = Q / area_final
+        r_final = area_final / max(perim_final, 1e-4)
+        sf_final = (n * Q / (area_final * (r_final ** (2.0 / 3.0)))) ** 2
+
+        node_results[node_id] = {
+            'wse': bed_z + y_sol,
+            'depth': y_sol,
+            'v': v_final,
+            'sf': sf_final
+        }
+
+    return node_results
 
 def _stage_cross_section_bathymetry_depths(
     sampled_records: list[dict | None],
     params: dict,
     quiet: bool,
 ) -> None:
-    """Estimate one bathymetry depth per cell after all banks have been found.
-
-    This is deliberately a separate pass over the cached, unmodified cross
-    sections. Drainage-area power-law depths are copied directly when present.
-    Otherwise, the baseflow and local/reach slope are passed to the hydraulic
-    depth solver using the already selected bank geometry. The resulting depth
-    is stored with the bank result for the later bathymetry-only burn pass.
-    """
+    """Estimate one bathymetry depth per cell after all banks have been found."""
     x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
 
-    for i_entry_cell in tqdm.tqdm(
-        range(_CELL_COMIDS.size),
-        total=_CELL_COMIDS.size,
-        disable=quiet,
-    ):
+    # 1. Build NetworkX graph topology
+    reach_network_graph, _ = _build_reach_network_graph(
+        params.get("s_strmshp_path", ""),
+        params.get("s_reach_id_field", ""),
+        params.get("s_downstream_reach_id_field", ""),
+    )
+
+    # Keep the downstream-most Manning normal-depth estimate for every outlet.
+    # The interpolation fraction is already assigned by bank smoothing and is
+    # preferable to raster scan order for identifying the outlet cross section.
+    outlet_tailwater_candidates: dict[int, tuple[float, float, float, float]] = {}
+
+    # 2. Extract scalar geometry for each stream cell and attach to graph
+    for i_entry_cell in range(_CELL_COMIDS.size):
         sampled_record = sampled_records[i_entry_cell]
         if sampled_record is None:
             continue
 
-        reach_bank_index = None
-        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
-            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
-        _replay_precomputed_cross_section(
-            x_section,
-            sampled_record,
-            reach_bank_index=reach_bank_index,
+        _replay_precomputed_cross_section(x_section, sampled_record)
+        d_q_baseflow, d_slope_use, _, _ = _get_cell_bathymetry_inputs(
+            i_entry_cell, int(_CELL_ROWS[i_entry_cell]), int(_CELL_COLS[i_entry_cell]), params
         )
-
-        i_row_cell = int(_CELL_ROWS[i_entry_cell])
-        i_column_cell = int(_CELL_COLS[i_entry_cell])
-        (
-            d_q_baseflow,
+        staged_result = dict(sampled_record.get("bank_search_result", {}))
+        d_slope_use = _replace_slope_with_smoothed_bank_grade(
             d_slope_use,
-            d_bathy_target_depth,
-            _d_bathy_target_width,
-        ) = _get_cell_bathymetry_inputs(
-            i_entry_cell,
-            i_row_cell,
-            i_column_cell,
-            params,
+            staged_result,
+        )
+        
+        # Extract scalar dict
+        scalar_geom = x_section.extract_scalar_hydraulic_geometry(d_q_baseflow, staged_result)
+        
+        cell_id = int(_CELL_COMIDS[i_entry_cell])
+        if cell_id in reach_network_graph:
+            reach_network_graph.nodes[cell_id].update(scalar_geom)
+
+            if reach_network_graph.out_degree(cell_id) == 0:
+                # Reuse the former bathymetry Manning solve to establish the
+                # normal depth at the downstream boundary. Subtracting that
+                # depth from the lower of the two banks produces the requested
+                # tailwater elevation for the non-uniform energy solver.
+                manning_depth = x_section.calculate_hydraulic_bathymetry_depth(
+                    d_q_baseflow,
+                    d_slope_use,
+                    staged_result,
+                )
+                bank_elevations = np.asarray(
+                    [
+                        staged_result.get('bank_elev_1', np.nan),
+                        staged_result.get('bank_elev_2', np.nan),
+                    ],
+                    dtype=np.float64,
+                )
+                finite_bank_elevations = bank_elevations[
+                    np.isfinite(bank_elevations)
+                ]
+                lowest_bank_elevation = (
+                    float(np.min(finite_bank_elevations))
+                    if finite_bank_elevations.size > 0
+                    else np.nan
+                )
+                reach_fraction = float(
+                    staged_result.get(
+                        "network_reach_interpolation_fraction",
+                        staged_result.get("reach_order_index", 0.0),
+                    )
+                )
+                if not np.isfinite(reach_fraction):
+                    reach_fraction = float(
+                        staged_result.get("reach_order_index", 0.0)
+                    )
+                if (
+                    np.isfinite(manning_depth)
+                    and 0.0 < float(manning_depth) < 25.0
+                    and np.isfinite(lowest_bank_elevation)
+                    and (
+                        cell_id not in outlet_tailwater_candidates
+                        or reach_fraction
+                        >= outlet_tailwater_candidates[cell_id][0]
+                    )
+                ):
+                    outlet_tailwater_candidates[cell_id] = (
+                        reach_fraction,
+                        lowest_bank_elevation - float(manning_depth),
+                        float(manning_depth),
+                        lowest_bank_elevation,
+                    )
+
+    # 3. Solve non-uniform depths downstream-to-upstream for hydraulic cells
+    default_tailwater_wse = {
+        outlet_id: candidate[1]
+        for outlet_id, candidate in outlet_tailwater_candidates.items()
+    }
+    for outlet_id, candidate in outlet_tailwater_candidates.items():
+        # Preserve the two values used to construct the boundary elevation so
+        # the solver can use positive Manning depth for area, velocity, and
+        # friction even when the requested elevation lies below the DEM bed.
+        reach_network_graph.nodes[outlet_id][
+            'default_tailwater_manning_depth'
+        ] = candidate[2]
+        reach_network_graph.nodes[outlet_id][
+            'default_tailwater_lowest_bank_elevation'
+        ] = candidate[3]
+    non_uniform_results = _solve_non_uniform_network_depths(
+        reach_network_graph,
+        default_tailwater_wse=default_tailwater_wse,
+    )
+
+    # 4. Assign calculated or power-law depths back to sampled_records for the burn pass
+    for i_entry_cell in range(_CELL_COMIDS.size):
+        sampled_record = sampled_records[i_entry_cell]
+        if sampled_record is None:
+            continue
+
+        cell_id = int(_CELL_COMIDS[i_entry_cell])
+        staged_result = dict(sampled_record.get("bank_search_result", {}))
+
+        d_q_baseflow, d_slope_use, d_bathy_target_depth, _ = _get_cell_bathymetry_inputs(
+            i_entry_cell, int(_CELL_ROWS[i_entry_cell]), int(_CELL_COLS[i_entry_cell]), params
         )
 
-        existing_result = sampled_record.get("bank_search_result")
-        staged_result = dict(existing_result) if isinstance(existing_result, dict) else {}
         original_slope_use = float(d_slope_use)
         d_slope_use = _replace_slope_with_smoothed_bank_grade(
             d_slope_use,
             staged_result,
         )
-        # Retain both values so output diagnostics show when the smoothed bank
-        # surface replaced the raster/flowline-derived slope.
+
         staged_result["bathymetry_depth_original_slope"] = original_slope_use
-        staged_result["bathymetry_depth_smoothed_bank_slope"] = float(
-            d_slope_use
-        )
-        using_target_depth = x_section._is_valid_bathymetry_target(
-            d_bathy_target_depth
-        )
+        staged_result["bathymetry_depth_smoothed_bank_slope"] = float(d_slope_use)
+
+        # Priority 1: Check if power-law target depth is valid
+        using_target_depth = x_section._is_valid_bathymetry_target(d_bathy_target_depth)
 
         if using_target_depth:
             bathymetry_depth = float(d_bathy_target_depth)
             depth_source = "drainage_area_power_law"
+        elif cell_id in non_uniform_results:
+            bathymetry_depth = non_uniform_results[cell_id]['depth']
+            depth_source = "network_non_uniform_energy"
         else:
-            bathymetry_depth = x_section.calculate_hydraulic_bathymetry_depth(
-                d_q_baseflow,
-                d_slope_use,
-                staged_result,
-            )
+            bathymetry_depth = 0.0
             depth_source = "baseflow_manning"
-            staged_result["hydraulic_bathymetry_depth"] = float(bathymetry_depth)
 
-        # These fields make the depth decision explicit and allow the burn pass
-        # to operate without receiving discharge, slope, or target parameters.
         staged_result["bathymetry_depth"] = float(bathymetry_depth)
-        # Preserve the former in-method gate exactly: a target depth can be
-        # applied without baseflow, while a hydraulically solved depth is only
-        # applied when baseflow is positive. This flag also distinguishes a
-        # legitimate computed zero from the no-baseflow early-return case.
         staged_result["bathymetry_should_apply"] = bool(
             using_target_depth or d_q_baseflow > 0.0
         )
@@ -2094,6 +2286,7 @@ def _stage_cross_section_bathymetry_depths(
         staged_result["bathymetry_depth_slope"] = float(d_slope_use)
         sampled_record["bank_search_result"] = staged_result
 
+    # 5. Apply reach depth smoothing / monotonicity checks
     _smooth_reach_bathymetry_depths(sampled_records, params)
 
 

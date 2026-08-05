@@ -1301,6 +1301,50 @@ class CrossSection:
         d_trap_base = d_total_bank_dist - 2.0 * d_h_dist
         return d_side1_dist, d_side2_dist, d_total_bank_dist, d_h_dist, d_trap_base
 
+    def extract_scalar_hydraulic_geometry(self, baseflow: float, bank_search_result: dict | None) -> dict:
+            """Extracts scalar hydraulic geometry for lightweight network depth solving."""
+            (
+                _func,
+                i_bank1,
+                i_bank2,
+                i_total_cells,
+                _b_elev1,
+                _b_elev2,
+                smoothed_bank_elev,
+            ) = self._get_precomputed_bathymetry_bank_result(bank_search_result)
+
+            bed_elev = float(self.da_xs_profile1[0])  # Local thalweg elevation
+
+            if i_total_cells <= 1:
+                # Triangular channel approximation
+                return {
+                    'geom_type': 'triangle',
+                    'bed_elev': bed_elev,
+                    'top_width': float(self.d_ordinate_dist * 2.0),
+                    'baseflow': float(baseflow),
+                    'manning_n': 0.03
+                }
+            else:
+                # Trapezoidal channel approximation
+                if self.b_bathy_use_banks:
+                    _, _, w_top, d_h, w_base = self._compute_bank_bathymetry_geometry(
+                        i_total_cells, i_bank1, i_bank2, smoothed_bank_elev
+                    )
+                else:
+                    w_top = i_total_cells * self.d_ordinate_dist
+                    d_h = self.d_bathymetry_trapzoid_height * w_top
+                    w_base = w_top - 2.0 * d_h
+
+                return {
+                    'geom_type': 'trapezoid',
+                    'bed_elev': bed_elev,
+                    'top_width': float(w_top),
+                    'base_width': float(w_base),
+                    'd_h': float(d_h),
+                    'baseflow': float(baseflow),
+                    'manning_n': 0.03
+            }
+
     def calculate_hydraulic_bathymetry_depth(
         self,
         d_q_baseflow: float,

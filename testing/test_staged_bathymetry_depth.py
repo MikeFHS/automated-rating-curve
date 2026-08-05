@@ -210,10 +210,10 @@ def test_bathymetry_burn_skips_missing_staged_depth() -> None:
     np.testing.assert_array_equal(output_bathymetry, 10.0)
 
 
-def test_staging_pass_solves_only_depths_without_power_law_targets(
+def test_staging_pass_supplies_manning_tailwater_to_network_solver(
     monkeypatch,
 ) -> None:
-    """Target depths are copied; only non-target cells use the hydraulic solve."""
+    """The outlet Manning depth should initialize the network boundary WSE."""
 
     class FakeCrossSection:
         def __init__(self):
@@ -227,18 +227,32 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
             self.hydraulic_calls.append((flow, slope, bank_result))
             return 1.25
 
+        @staticmethod
+        def extract_scalar_hydraulic_geometry(baseflow, _bank_result):
+            return {
+                "geom_type": "triangle",
+                "bed_elev": 100.0 + baseflow,
+                "top_width": 10.0,
+                "baseflow": baseflow,
+                "manning_n": 0.03,
+            }
+
     fake_cross_section = FakeCrossSection()
     sampled_records = [
         {
             "bank_search_result": {
                 "is_valid": True,
                 "network_reach_bank_elevation_grade": 0.004,
+                "bank_elev_1": 110.0,
+                "bank_elev_2": 109.0,
             }
         },
         {
             "bank_search_result": {
                 "is_valid": True,
                 "network_reach_bank_elevation_grade": 0.006,
+                "bank_elev_1": 109.0,
+                "bank_elev_2": 108.0,
             }
         },
     ]
@@ -252,6 +266,13 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
     monkeypatch.setattr(generator, "_CELL_COLS", np.array([3, 4]))
     monkeypatch.setattr(generator, "_CELL_REACH_INFLECT_BANK_INDEX", None)
     monkeypatch.setattr(generator, "get_cross_section", lambda *_args: fake_cross_section)
+    graph = generator.nx.DiGraph()
+    graph.add_edge(10, 20, length=100.0)
+    monkeypatch.setattr(
+        generator,
+        "_build_reach_network_graph",
+        lambda *_args, **_kwargs: (graph, {10: 20, 20: None}),
+    )
     monkeypatch.setattr(
         generator,
         "_replay_precomputed_cross_section",
@@ -269,6 +290,20 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
         "_smooth_reach_bathymetry_depths",
         lambda *_args, **_kwargs: None,
     )
+    solver_arguments = {}
+
+    def fake_network_solver(_graph, default_tailwater_wse=None):
+        solver_arguments["default_tailwater_wse"] = default_tailwater_wse
+        return {
+            10: {"depth": 1.75},
+            20: {"depth": 1.25},
+        }
+
+    monkeypatch.setattr(
+        generator,
+        "_solve_non_uniform_network_depths",
+        fake_network_solver,
+    )
 
     generator._stage_cross_section_bathymetry_depths(
         sampled_records,
@@ -284,8 +319,10 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
     assert sampled_records[1]["bank_search_result"]["bathymetry_depth"] == 1.25
     assert (
         sampled_records[1]["bank_search_result"]["bathymetry_depth_source"]
-        == "baseflow_manning"
+        == "network_non_uniform_energy"
     )
+    # Outlet 20 has a lowest bank of 108 and a Manning depth of 1.25.
+    assert solver_arguments["default_tailwater_wse"] == {20: 106.75}
     assert len(fake_cross_section.hydraulic_calls) == 1
     assert fake_cross_section.hydraulic_calls[0][1] == 0.006
     assert (
@@ -299,6 +336,35 @@ def test_staging_pass_solves_only_depths_without_power_law_targets(
             "bathymetry_depth_smoothed_bank_slope"
         ]
         == 0.006
+    )
+
+
+def test_non_uniform_solver_initializes_outlet_from_manning_tailwater() -> None:
+    """A supplied Manning WSE should set outlet depth, velocity, and friction."""
+    graph = generator.nx.DiGraph()
+    graph.add_node(
+        10,
+        geom_type="triangle",
+        bed_elev=100.0,
+        top_width=10.0,
+        baseflow=10.0,
+        manning_n=0.03,
+        default_tailwater_manning_depth=2.0,
+        default_tailwater_lowest_bank_elevation=99.0,
+    )
+
+    result = generator._solve_non_uniform_network_depths(
+        graph,
+        default_tailwater_wse={10: 97.0},
+    )[10]
+
+    assert result["wse"] == 97.0
+    assert result["depth"] == 2.0
+    assert result["v"] == 1.0
+    assert result["sf"] > 0.0
+    assert (
+        result["tailwater_source"]
+        == "manning_normal_depth_below_lowest_bank"
     )
 
 

@@ -26,6 +26,7 @@ Before any bathymetry is burned into the DEM-derived section, ARC now performs a
     - ARC keeps the filtered or reach-filled bank indices and top widths from the DEM-based bank-search hierarchy. The network-smoothed reach-scale profile is used only to define the vertical bathymetry elevation target.
     - ARC no longer falls back to local reach minima when the reach graph or its smoothed elevations cannot be built; it now stops with an error instead.
 7. Only after those filtered and smoothed bank controls are known does ARC estimate and burn bathymetry.
+    - For baseflow-driven bathymetry, ARC estimates Manning normal depth at the downstream-most sampled cross section of each network outlet. The lower of that cross section's two bank elevations minus the Manning depth supplies the default tailwater elevation for the downstream-to-upstream non-uniform energy solve. Outlet velocity and friction slope are initialized from the same positive Manning depth, discharge, roughness, and cross-section geometry. The former 0.5 m boundary depth is retained only when no finite bank or Manning estimate is available.
 8. Before writing the bathymetry GeoTIFF, ARC performs one synchronous gap-fill pass. A NaN cell is filled when at least four of its eight surrounding cells contain bathymetry, and it receives the arithmetic mean of only those non-NaN values. Newly filled values are not used to fill any other cell.
 
 # **Bank or Water Surface Elevation**
