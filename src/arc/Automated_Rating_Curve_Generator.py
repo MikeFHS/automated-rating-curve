@@ -2013,10 +2013,9 @@ def _solve_non_uniform_network_depths(
     ARC calculates the available energy gradient from its smoothed bank
     elevation and the downstream velocity head. The effective slope is the
     larger of that gradient and the node's bank-slope control, with ``0.001``
-    used when no node slope is stored and ``1e-4`` used as the numerical
-    floor. Brent's method then finds the depth from 0.001 to 25 m at which the
-    Manning friction slope, less the velocity-head gradient, matches that
-    effective slope.
+    used when no node slope is stored. Brent's method then finds the depth 
+    from 0.001 to 25 m at which the Manning friction slope, less the velocity-head 
+    gradient, matches that effective slope.
 
     A positive-flow outlet is initialized with Manning normal depth using its
     slope control. A node without positive flow receives 0.5 m. If the
@@ -2086,12 +2085,9 @@ def _solve_non_uniform_network_depths(
         # Downstream Energy Head
         h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
 
-        # Slope Floor (Bank Slope)
-        s_bank = max(float(node.get('slope', 0.001)), 0.0001)
-
         # Available Energy Gradient
         s_energy_raw = (bank_z - h_ds) / dx
-        s_eff = max(s_energy_raw, s_bank)
+        s_eff = s_energy_raw
 
         # Friction-Slope Residual: Positive at y -> 0, Negative at y -> 25
         def slope_residual(y):
@@ -2215,7 +2211,7 @@ def _stage_cross_section_bathymetry_depths(
         sampled_record["bank_search_result"] = staged_result
 
     # 5. Apply reach depth smoothing / monotonicity checks
-    _smooth_reach_bathymetry_depths(sampled_records, params)
+    # _smooth_reach_bathymetry_depths(sampled_records, params)
 
 
 def _compute_filtered_reach_median_depths(
