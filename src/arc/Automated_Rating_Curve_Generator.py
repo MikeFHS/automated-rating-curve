@@ -2181,10 +2181,10 @@ def _stage_cross_section_bathymetry_depths(
         )
 
         original_slope_use = float(d_slope_use)
-        d_slope_use = _replace_slope_with_smoothed_bank_grade(
-            d_slope_use,
-            staged_result,
-        )
+        # d_slope_use = _replace_slope_with_smoothed_bank_grade(
+        #     d_slope_use,
+        #     staged_result,
+        # )
 
         staged_result["bathymetry_depth_original_slope"] = original_slope_use
         staged_result["bathymetry_depth_smoothed_bank_slope"] = float(d_slope_use)
@@ -5091,10 +5091,10 @@ def _finalize_cross_section_records(
             i_column_cell,
             params,
         )
-        d_slope_use = _replace_slope_with_smoothed_bank_grade(
-            d_slope_use,
-            sampled_record.get("bank_search_result"),
-        )
+        # d_slope_use = _replace_slope_with_smoothed_bank_grade(
+        #     d_slope_use,
+        #     sampled_record.get("bank_search_result"),
+        # )
 
         bathymetry_applied = False
         if params['s_output_bathymetry_path']:
@@ -5182,14 +5182,14 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         i_column_cell,
         _PARAMS,
     )
-    d_slope_use = _replace_slope_with_smoothed_bank_grade(
-        d_slope_use,
-        (
-            precomputed_record.get("bank_search_result")
-            if isinstance(precomputed_record, dict)
-            else None
-        ),
-    )
+    # d_slope_use = _replace_slope_with_smoothed_bank_grade(
+    #     d_slope_use,
+    #     (
+    #         precomputed_record.get("bank_search_result")
+    #         if isinstance(precomputed_record, dict)
+    #         else None
+    #     ),
+    # )
 
     x_section = get_cross_section(dx, dy, _DEM, _LAND_COVER, _STREAMS, _PARAMS)
     if precomputed_record is not None:
