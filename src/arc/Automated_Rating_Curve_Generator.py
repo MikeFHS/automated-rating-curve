@@ -2211,7 +2211,7 @@ def _stage_cross_section_bathymetry_depths(
         sampled_record["bank_search_result"] = staged_result
 
     # 5. Apply reach depth smoothing / monotonicity checks
-    # _smooth_reach_bathymetry_depths(sampled_records, params)
+    _smooth_reach_bathymetry_depths(sampled_records, params)
 
 
 def _compute_filtered_reach_median_depths(
@@ -2324,77 +2324,95 @@ def _smooth_reach_bathymetry_depths(
     sampled_records: list[dict | None],
     params: dict,
 ) -> None:
-    """Replace staged cell depths with downstream-monotonic reach medians.
-
-    Grouping uses source-stream IDs when raster preparation preserved them and
-    otherwise uses cell COMIDs. The original cell depth and source are copied
-    into diagnostic fields before the constrained reach value is assigned to
-    every sampled record belonging to that reach.
+    """Smooth bathymetry depths by moving upstream-to-downstream and ensuring 
+    downstream depths do not exceed upstream depths.
     """
+    if not sampled_records:
+        return
+
+    # Identify reach IDs for each sampled cell
     source_reach_ids = (
         _CELL_SOURCE_STREAM_IDS
         if _CELL_SOURCE_STREAM_IDS is not None
         else _CELL_COMIDS
     )
-    reach_medians, reach_statistics = _compute_filtered_reach_median_depths(
-        sampled_records,
-        source_reach_ids,
-    )
-    if len(reach_medians) == 0:
-        return
 
+    # Build stream network graph
     reach_network_graph, _ = _build_reach_network_graph(
         params.get("s_strmshp_path", ""),
         params.get("s_reach_id_field", ""),
         params.get("s_downstream_reach_id_field", ""),
     )
-    constrained_depths = _enforce_non_decreasing_downstream_reach_depths(
-        reach_network_graph,
-        reach_medians,
-    )
 
+    # Group cell entry indices by reach ID
+    grouped_reach_entries: dict[int, list[dict]] = {}
     for entry_index, sampled_record in enumerate(sampled_records):
         if sampled_record is None:
             continue
         reach_id = int(source_reach_ids[entry_index])
-        if reach_id not in constrained_depths:
+        grouped_reach_entries.setdefault(reach_id, []).append({
+            "entry_index": entry_index,
+            "row": int(_CELL_ROWS[entry_index]),
+            "col": int(_CELL_COLS[entry_index]),
+        })
+
+    # Traverse network from upstream to downstream
+    upstream_to_downstream_reaches = list(nx.topological_sort(reach_network_graph))
+    reach_end_depths: dict[int, float] = {}
+
+    dx = float(params.get("dx", 1.0))
+    dy = float(params.get("dy", 1.0))
+
+    for reach_id in upstream_to_downstream_reaches:
+        reach_entries = grouped_reach_entries.get(reach_id, [])
+        if not reach_entries:
             continue
 
-        existing_result = sampled_record.get("bank_search_result")
-        bank_result = (
-            dict(existing_result) if isinstance(existing_result, dict) else {}
+        # Order cells within the reach from upstream to downstream
+        order, _ = _order_reach_stream_cells_from_network(
+            reach_network_graph,
+            reach_id,
+            reach_entries,
+            grouped_reach_entries,
+            np.arange(len(reach_entries)),
+            np.zeros(len(reach_entries)),
+            dx,
+            dy,
         )
-        statistics = reach_statistics.get(reach_id)
-        bank_result["cross_section_bathymetry_depth"] = float(
-            bank_result.get("bathymetry_depth", np.nan)
-        )
-        bank_result["cross_section_bathymetry_depth_source"] = (
-            bank_result.get("bathymetry_depth_source")
-        )
-        if statistics is not None:
-            bank_result["bathymetry_depth_reach_q25"] = statistics["q25"]
-            bank_result["bathymetry_depth_reach_q75"] = statistics["q75"]
-            bank_result["bathymetry_depth_reach_median"] = statistics["median"]
-            bank_result["bathymetry_depth_reach_candidate_count"] = statistics[
-                "candidate_count"
-            ]
-            bank_result["bathymetry_depth_reach_retained_count"] = statistics[
-                "retained_count"
-            ]
 
-        constrained_depth = float(constrained_depths[reach_id])
-        bank_result["bathymetry_depth"] = constrained_depth
-        bank_result["bathymetry_should_apply"] = True
-        bank_result["bathymetry_depth_source"] = (
-            "downstream_monotonic_reach_median"
-        )
-        bank_result["bathymetry_depth_reach_id"] = reach_id
-        bank_result["bathymetry_depth_network_constrained"] = constrained_depth
-        bank_result["bathymetry_depth_monotonic_adjustment"] = float(
-            constrained_depth - reach_medians.get(reach_id, constrained_depth)
-        )
-        sampled_record["bank_search_result"] = bank_result
+        # Inherit the maximum allowable depth from incoming upstream reaches (if any)
+        predecessors = list(reach_network_graph.predecessors(reach_id))
+        pred_depths = [
+            reach_end_depths[p]
+            for p in predecessors
+            if p in reach_end_depths and np.isfinite(reach_end_depths[p])
+        ]
+        prev_depth = min(pred_depths) if pred_depths else None
 
+        # Step upstream to downstream through cross-section cells
+        for pos in order:
+            entry_index = reach_entries[int(pos)]["entry_index"]
+            record = sampled_records[entry_index]
+            if record is None:
+                continue
+
+            bank_result = record.get("bank_search_result")
+            if not isinstance(bank_result, dict):
+                continue
+
+            current_depth = float(bank_result.get("bathymetry_depth", 0.0))
+
+            # If downstream depth > upstream depth, cap downstream depth to upstream depth
+            if prev_depth is not None and np.isfinite(prev_depth):
+                if current_depth > prev_depth:
+                    current_depth = prev_depth
+
+            bank_result["bathymetry_depth"] = current_depth
+            prev_depth = current_depth
+
+        # Save ending depth of this reach for downstream successors
+        if prev_depth is not None and np.isfinite(prev_depth):
+            reach_end_depths[reach_id] = prev_depth
 
 
 def _build_precomputed_cross_section_record(
