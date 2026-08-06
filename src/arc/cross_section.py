@@ -360,10 +360,7 @@ class CrossSection:
 
         The current implementation evaluates candidate angle offsets from
         ``self.l_angles_to_test`` and selects the angle that minimizes top width
-        at a small test depth above the thalweg. Candidate angles that pass
-        through stream cells away from the thalweg center are deprioritized so
-        ARC prefers cross sections that cut across the channel rather than
-        follow the stream network.
+        at a small test depth above the thalweg.
 
         Parameters
         ----------
@@ -378,35 +375,6 @@ class CrossSection:
         d_test_depth = 0.5
         d_shortest_tw_angle = 0.0
         d_t_test = np.inf
-        best_stream_hit_count = np.iinfo(np.int64).max
-        tested_indices: set[int] = set()
-
-        def _evaluate_angle(d_xs_angle_use: float, i_precompute_angle_closest: int) -> None:
-            nonlocal d_shortest_tw_angle
-            nonlocal d_t_test
-            nonlocal best_stream_hit_count
-
-            tested_indices.add(int(i_precompute_angle_closest))
-            self.set_cross_section(self.row, self.col, i_precompute_angle_closest, d_xs_angle_use)
-            if not self.is_valid():
-                return
-
-            stream_hit_count = self._count_offcenter_stream_cells()
-            d_wse = self.get_thalweg() + d_test_depth
-            top_width = self.calculate_top_width_of_wse(d_wse)
-            if not np.isfinite(top_width) or top_width <= 0.0:
-                top_width = np.inf
-
-            if (
-                stream_hit_count < best_stream_hit_count
-                or (
-                    stream_hit_count == best_stream_hit_count
-                    and top_width < d_t_test
-                )
-            ):
-                best_stream_hit_count = int(stream_hit_count)
-                d_t_test = top_width
-                d_shortest_tw_angle = d_xs_angle_use
 
         # Loop through the angles to test
         for d_entry_angle_adjustment in self.l_angles_to_test:
@@ -415,18 +383,15 @@ class CrossSection:
         
             #We now precompute the cross-section ordinates
             i_precompute_angle_closest = round(d_xs_angle_use / d_precompute_angles)
-            _evaluate_angle(d_xs_angle_use, i_precompute_angle_closest)
-            if best_stream_hit_count == 0:
-                break
 
-        if best_stream_hit_count > 0:
-            for i_precompute_angle_closest in range(self.i_precompute_angles + 1):
-                if i_precompute_angle_closest in tested_indices:
-                    continue
-                d_xs_angle_use = float(i_precompute_angle_closest) * float(d_precompute_angles)
-                _evaluate_angle(d_xs_angle_use, i_precompute_angle_closest)
-                if best_stream_hit_count == 0:
-                    break
+            # Pull the cross-section again
+            self.set_cross_section(self.row, self.col, i_precompute_angle_closest, self.d_xs_direction)
+            d_wse = self.get_thalweg() + d_test_depth
+            top_width = self.calculate_top_width_of_wse(d_wse)
+
+            if top_width < d_t_test:
+                d_t_test = top_width
+                d_shortest_tw_angle = d_xs_angle_use
 
         return d_shortest_tw_angle
 
