@@ -2086,16 +2086,24 @@ def _solve_non_uniform_network_depths(
         h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
 
         # Available Energy Gradient
-        s_energy_raw = (bank_z - h_ds) / dx
-        s_eff = s_energy_raw
+        s_eff = (bank_z - h_ds) / dx
 
         # Friction-Slope Residual: Positive at y -> 0, Negative at y -> 25
         def slope_residual(y):
+            # Retrieve downstream velocity from the already-calculated downstream state
+            v_ds = float(ds_state['v'])
+
             area, perim = calculate_area_perimeter(y)
             r_hyd = area / perim
-            v = Q / area
+            v_local = Q / area
+            
+            # Local friction slope
             sf_local = (n * Q / (area * (r_hyd ** (2.0 / 3.0)))) ** 2
-            kinetic_slope = (v ** 2) / (2.0 * 9.81 * dx)
+            
+            # True change in velocity head per unit distance
+            kinetic_slope = (v_local ** 2 - v_ds ** 2) / (2.0 * 9.81 * dx)
+            
+            # WSE slope = Friction slope - Kinetic gradient
             return (sf_local - kinetic_slope) - s_eff
 
         try:
@@ -2124,84 +2132,84 @@ def _stage_cross_section_bathymetry_depths(
     params: dict,
     quiet: bool,
 ) -> None:
-    """Stage network-derived bathymetry depths after bank smoothing.
+    """Estimate one bathymetry depth per cell after all banks have been found.
 
-    The pass attaches scalar cross-section geometry and baseflow to the reach
-    graph, solves non-uniform depths from downstream to upstream, and gives a
-    valid drainage-area power-law depth precedence over the network result.
-    It then calls :func:`_smooth_reach_bathymetry_depths`, which replaces the
-    cell estimates with interquartile-filtered reach medians and forces those
-    medians to stay equal or increase in the downstream direction.
-
-    The burn into the cross-section profiles occurs later; this routine only
-    records the selected depth, its source, and slope diagnostics.
+    This is deliberately a separate pass over the cached, unmodified cross
+    sections. Drainage-area power-law depths are copied directly when present.
+    Otherwise, the baseflow and local/reach slope are passed to the hydraulic
+    depth solver using the already selected bank geometry. The resulting depth
+    is stored with the bank result for the later bathymetry-only burn pass.
     """
     x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
 
-    # 1. Build NetworkX graph topology
-    reach_network_graph, _ = _build_reach_network_graph(
-        params.get("s_strmshp_path", ""),
-        params.get("s_reach_id_field", ""),
-        params.get("s_downstream_reach_id_field", ""),
-    )
-
-    # 2. Extract scalar geometry referenced to smoothed bank elevations and attach to graph
-    for i_entry_cell in range(_CELL_COMIDS.size):
+    for i_entry_cell in tqdm.tqdm(
+        range(_CELL_COMIDS.size),
+        total=_CELL_COMIDS.size,
+        disable=quiet,
+    ):
         sampled_record = sampled_records[i_entry_cell]
         if sampled_record is None:
             continue
 
-        _replay_precomputed_cross_section(x_section, sampled_record)
-        d_q_baseflow, _, _, _ = _get_cell_bathymetry_inputs(
-            i_entry_cell, int(_CELL_ROWS[i_entry_cell]), int(_CELL_COLS[i_entry_cell]), params
-        )
-        staged_result = dict(sampled_record.get("bank_search_result", {}))
-
-        # Extract scalar dict using smoothed_bank_elevation
-        scalar_geom = x_section.extract_scalar_hydraulic_geometry(d_q_baseflow, staged_result)
-
-        cell_id = int(_CELL_COMIDS[i_entry_cell])
-        if cell_id in reach_network_graph:
-            reach_network_graph.nodes[cell_id].update(scalar_geom)
-
-    # 3. Solve non-uniform depths downstream-to-upstream using smoothed bank elevations
-    non_uniform_results = _solve_non_uniform_network_depths(reach_network_graph)
-
-    # 4. Assign calculated or power-law depths back to sampled_records
-    for i_entry_cell in range(_CELL_COMIDS.size):
-        sampled_record = sampled_records[i_entry_cell]
-        if sampled_record is None:
-            continue
-
-        cell_id = int(_CELL_COMIDS[i_entry_cell])
-        staged_result = dict(sampled_record.get("bank_search_result", {}))
-
-        d_q_baseflow, d_slope_use, d_bathy_target_depth, _ = _get_cell_bathymetry_inputs(
-            i_entry_cell, int(_CELL_ROWS[i_entry_cell]), int(_CELL_COLS[i_entry_cell]), params
+        reach_bank_index = None
+        if _CELL_REACH_INFLECT_BANK_INDEX is not None:
+            reach_bank_index = float(_CELL_REACH_INFLECT_BANK_INDEX[i_entry_cell])
+        _replay_precomputed_cross_section(
+            x_section,
+            sampled_record,
+            reach_bank_index=reach_bank_index,
         )
 
+        i_row_cell = int(_CELL_ROWS[i_entry_cell])
+        i_column_cell = int(_CELL_COLS[i_entry_cell])
+        (
+            d_q_baseflow,
+            d_slope_use,
+            d_bathy_target_depth,
+            _d_bathy_target_width,
+        ) = _get_cell_bathymetry_inputs(
+            i_entry_cell,
+            i_row_cell,
+            i_column_cell,
+            params,
+        )
+
+        existing_result = sampled_record.get("bank_search_result")
+        staged_result = dict(existing_result) if isinstance(existing_result, dict) else {}
         original_slope_use = float(d_slope_use)
         # d_slope_use = _replace_slope_with_smoothed_bank_grade(
         #     d_slope_use,
         #     staged_result,
         # )
-
+        # Retain both values so output diagnostics show when the smoothed bank
+        # surface replaced the raster/flowline-derived slope.
         staged_result["bathymetry_depth_original_slope"] = original_slope_use
-        staged_result["bathymetry_depth_smoothed_bank_slope"] = float(d_slope_use)
-
-        using_target_depth = x_section._is_valid_bathymetry_target(d_bathy_target_depth)
+        staged_result["bathymetry_depth_smoothed_bank_slope"] = float(
+            d_slope_use
+        )
+        using_target_depth = x_section._is_valid_bathymetry_target(
+            d_bathy_target_depth
+        )
 
         if using_target_depth:
             bathymetry_depth = float(d_bathy_target_depth)
             depth_source = "drainage_area_power_law"
-        elif cell_id in non_uniform_results:
-            bathymetry_depth = non_uniform_results[cell_id]['depth']
-            depth_source = "network_non_uniform_energy"
         else:
-            bathymetry_depth = 0.0
+            bathymetry_depth = x_section.calculate_hydraulic_bathymetry_depth(
+                d_q_baseflow,
+                d_slope_use,
+                staged_result,
+            )   
             depth_source = "baseflow_manning"
+            staged_result["hydraulic_bathymetry_depth"] = float(bathymetry_depth)
 
+        # These fields make the depth decision explicit and allow the burn pass
+        # to operate without receiving discharge, slope, or target parameters.
         staged_result["bathymetry_depth"] = float(bathymetry_depth)
+        # Preserve the former in-method gate exactly: a target depth can be
+        # applied without baseflow, while a hydraulically solved depth is only
+        # applied when baseflow is positive. This flag also distinguishes a
+        # legitimate computed zero from the no-baseflow early-return case.
         staged_result["bathymetry_should_apply"] = bool(
             using_target_depth or d_q_baseflow > 0.0
         )
@@ -2210,9 +2218,9 @@ def _stage_cross_section_bathymetry_depths(
         staged_result["bathymetry_depth_slope"] = float(d_slope_use)
         sampled_record["bank_search_result"] = staged_result
 
-    # 5. Apply reach depth smoothing / monotonicity checks
+    
     _smooth_reach_bathymetry_depths(sampled_records, params)
-
+    
 
 def _compute_filtered_reach_median_depths(
     sampled_records: list[dict | None],
@@ -2320,17 +2328,161 @@ def _enforce_non_decreasing_downstream_reach_depths(
     return constrained_depths
 
 
-def _smooth_reach_bathymetry_depths(
+def _smooth_reach_excavated_bed_elevations(
     sampled_records: list[dict | None],
     params: dict,
+    window_size: int = 5,
+    max_elevation_rate: float = 0.01,
 ) -> None:
-    """Smooth bathymetry depths by moving upstream-to-downstream and ensuring 
-    downstream depths do not exceed upstream depths.
+    """Smooths solved channel bed elevations (z_bed = z_bank - y) across the
+    network using moving-window filtering, rate-of-change constraints 
+    (|dz_bed/dx| <= max_elevation_rate), and network confluence continuity.
+    Updates 'bathymetry_depth' (y = z_bank - z_bed) in-place.
     """
     if not sampled_records:
         return
 
-    # Identify reach IDs for each sampled cell
+    source_reach_ids = (
+        _CELL_SOURCE_STREAM_IDS
+        if _CELL_SOURCE_STREAM_IDS is not None
+        else _CELL_COMIDS
+    )
+
+    # Build stream network graph
+    reach_network_graph, reach_downstream_map = _build_reach_network_graph(
+        params.get("s_strmshp_path", ""),
+        params.get("s_reach_id_field", ""),
+        params.get("s_downstream_reach_id_field", ""),
+    )
+
+    grouped_reach_entries: dict[int, list[dict]] = {}
+    for entry_index, sampled_record in enumerate(sampled_records):
+        if sampled_record is None:
+            continue
+        reach_id = int(source_reach_ids[entry_index])
+        grouped_reach_entries.setdefault(reach_id, []).append({
+            "entry_index": entry_index,
+            "row": int(_CELL_ROWS[entry_index]),
+            "col": int(_CELL_COLS[entry_index]),
+        })
+
+    upstream_to_downstream_reaches = list(nx.topological_sort(reach_network_graph))
+    reach_end_bed_elevations: dict[int, float] = {}
+
+    dx = float(params.get("dx", 1.0))
+    dy = float(params.get("dy", 1.0))
+    pad = window_size // 2
+
+    for reach_id in upstream_to_downstream_reaches:
+        reach_entries = grouped_reach_entries.get(reach_id, [])
+        if not reach_entries:
+            continue
+
+        # Order cells within the reach from upstream to downstream
+        order, stations = _order_reach_stream_cells_from_network(
+            reach_network_graph,
+            reach_id,
+            reach_entries,
+            grouped_reach_entries,
+            np.arange(len(reach_entries)),
+            np.zeros(len(reach_entries)),
+            dx,
+            dy,
+        )
+
+        num_cells = len(order)
+        if num_cells == 0:
+            continue
+
+        # Extract raw z_bank, depth y, and calculate raw z_bed = z_bank - y
+        z_bank_raw = np.zeros(num_cells, dtype=np.float64)
+        raw_depths = np.zeros(num_cells, dtype=np.float64)
+        z_bed_raw = np.zeros(num_cells, dtype=np.float64)
+        entry_indices = np.zeros(num_cells, dtype=np.int64)
+
+        for pos_idx, pos in enumerate(order):
+            entry_idx = reach_entries[int(pos)]["entry_index"]
+            entry_indices[pos_idx] = entry_idx
+            rec = sampled_records[entry_idx]
+            if rec and isinstance(rec.get("bank_search_result"), dict):
+                bk = rec["bank_search_result"]
+                z_b = float(bk.get("smoothed_bank_elevation", np.nan))
+                y_val = float(bk.get("bathymetry_depth", 0.0))
+                z_bank_raw[pos_idx] = z_b
+                raw_depths[pos_idx] = y_val
+                z_bed_raw[pos_idx] = z_b - y_val
+
+        # Step 1: Moving-Window Median Filtering on z_bed
+        z_bed_smoothed = z_bed_raw.copy()
+        for i in range(num_cells):
+            i_min = max(0, i - pad)
+            i_max = min(num_cells, i + pad + 1)
+            z_bed_smoothed[i] = np.median(z_bed_raw[i_min:i_max])
+
+        # Step 2: Confluence Boundary Hand-off from Upstream Reaches
+        predecessors = list(reach_network_graph.predecessors(reach_id))
+        pred_beds = [
+            reach_end_bed_elevations[p] for p in predecessors 
+            if p in reach_end_bed_elevations and np.isfinite(reach_end_bed_elevations[p])
+        ]
+        if pred_beds:
+            min_upstream_bed = float(np.min(pred_beds))
+            dist_from_start = max(stations[0], 0.1)
+            max_delta = max_elevation_rate * dist_from_start
+            z_bed_smoothed[0] = np.clip(
+                z_bed_smoothed[0], 
+                min_upstream_bed - max_delta, 
+                min_upstream_bed + max_delta
+            )
+
+        # Step 3: Forward Pass - Rate of Change Constraint (|dz_bed/dx| <= max_elevation_rate)
+        for i in range(num_cells - 1):
+            dist_step = max(stations[i + 1] - stations[i], 0.1)
+            max_delta = max_elevation_rate * dist_step
+            z_bed_smoothed[i + 1] = np.clip(
+                z_bed_smoothed[i + 1], 
+                z_bed_smoothed[i] - max_delta, 
+                z_bed_smoothed[i] + max_delta
+            )
+
+        # Step 4: Backward Pass - Rate of Change Constraint (Symmetry)
+        for i in range(num_cells - 2, -1, -1):
+            dist_step = max(stations[i + 1] - stations[i], 0.1)
+            max_delta = max_elevation_rate * dist_step
+            z_bed_smoothed[i] = np.clip(
+                z_bed_smoothed[i], 
+                z_bed_smoothed[i + 1] - max_delta, 
+                z_bed_smoothed[i + 1] + max_delta
+            )
+
+        # Store ending bed elevation for downstream successors
+        reach_end_bed_elevations[reach_id] = float(z_bed_smoothed[-1])
+
+        # Step 5: Recompute depth y = z_bank - z_bed and update sampled_records
+        for pos_idx, entry_idx in enumerate(entry_indices):
+            rec = sampled_records[entry_idx]
+            if rec and isinstance(rec.get("bank_search_result"), dict):
+                bk = rec["bank_search_result"]
+                z_bank = z_bank_raw[pos_idx]
+                z_bed_final = z_bed_smoothed[pos_idx]
+
+                # Recalculate depth required to reach the smoothed bed
+                y_final = max(z_bank - z_bed_final, 0.0) if np.isfinite(z_bank) else raw_depths[pos_idx]
+
+                bk["bathymetry_depth_raw_un-smoothed"] = float(raw_depths[pos_idx])
+                bk["bathymetry_depth"] = float(y_final)
+                bk["smoothed_bed_elevation"] = float(z_bed_final)
+
+def _smooth_reach_bathymetry_depths(
+    sampled_records: list[dict | None],
+    params: dict,
+) -> None:
+    """Replace bathmetry depth that are <=0 or > 25 m with the nearest 
+    valid depth from its reach.
+    """
+    if not sampled_records:
+        return
+
     source_reach_ids = (
         _CELL_SOURCE_STREAM_IDS
         if _CELL_SOURCE_STREAM_IDS is not None
@@ -2344,7 +2496,6 @@ def _smooth_reach_bathymetry_depths(
         params.get("s_downstream_reach_id_field", ""),
     )
 
-    # Group cell entry indices by reach ID
     grouped_reach_entries: dict[int, list[dict]] = {}
     for entry_index, sampled_record in enumerate(sampled_records):
         if sampled_record is None:
@@ -2356,7 +2507,6 @@ def _smooth_reach_bathymetry_depths(
             "col": int(_CELL_COLS[entry_index]),
         })
 
-    # Traverse network from upstream to downstream
     upstream_to_downstream_reaches = list(nx.topological_sort(reach_network_graph))
     reach_end_depths: dict[int, float] = {}
 
@@ -2402,10 +2552,13 @@ def _smooth_reach_bathymetry_depths(
 
             current_depth = float(bank_result.get("bathymetry_depth", 0.0))
 
-            # If downstream depth > upstream depth, cap downstream depth to upstream depth
-            if prev_depth is not None and np.isfinite(prev_depth):
-                if current_depth > prev_depth:
+            # If current depth is invalid, replace it with the previous valid depth
+            if current_depth <= 0.0 or current_depth > 25.0:
+                if prev_depth is not None and np.isfinite(prev_depth):
                     current_depth = prev_depth
+                else:
+                    # If no previous valid depth, set to a default value (e.g., 0.5 m)
+                    current_depth = 0.5
 
             bank_result["bathymetry_depth"] = current_depth
             prev_depth = current_depth
@@ -4610,6 +4763,158 @@ def _order_reach_stream_cells_from_network(
     ordered_stations = np.maximum.accumulate(ordered_stations)
     return np.asarray(order, dtype=np.int64), np.asarray(ordered_stations, dtype=np.float64)
 
+def _solve_non_uniform_network_depths_cell_by_cell(
+    reach_network_graph: nx.DiGraph,
+    reach_downstream_map: dict[int, int | None],
+    sampled_records: list[dict | None],
+    params: dict,
+) -> None:
+    """Marches downstream-to-upstream cell-by-cell through every reach,
+    solving non-uniform energy depth below each cell's smoothed bank elevation.
+    """
+    source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
+
+    # 1. Group sampled cell records by reach ID
+    grouped_reach_records: dict[int, list[tuple[int, dict]]] = {}
+    for entry_idx, sampled_record in enumerate(sampled_records):
+        if sampled_record is None:
+            continue
+        reach_id = int(source_ids[entry_idx])
+        grouped_reach_records.setdefault(reach_id, []).append((entry_idx, sampled_record))
+
+    # 2. Reverse topological sort: Downstream reaches first
+    reach_upstream_march = list(reversed(list(nx.topological_sort(reach_network_graph))))
+    
+    # Track cell hydraulic states: {entry_index: {'wse': float, 'v': float, 'sf': float, 'depth': float}}
+    cell_states: dict[int, dict] = {}
+    dx_default = float(params.get('dx', 1.0))
+    x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
+
+    for reach_id in reach_upstream_march:
+        if reach_id not in grouped_reach_records:
+            continue
+
+        records_in_reach = grouped_reach_records[reach_id]
+        
+        # Sort cells in reach from upstream (order 0) to downstream (order M-1)
+        records_in_reach.sort(
+            key=lambda item: int(item[1].get("bank_search_result", {}).get("reach_order_index", 0))
+        )
+        num_cells = len(records_in_reach)
+
+        # 3. March CELL-BY-CELL from downstream (num_cells - 1) to upstream (0)
+        for m in range(num_cells - 1, -1, -1):
+            entry_idx, sampled_record = records_in_reach[m]
+            bank_result = sampled_record.get("bank_search_result", {})
+            z_bank = float(bank_result.get("smoothed_bank_elevation", np.nan))
+
+            d_q_baseflow, s_bank, d_bathy_target_depth, _ = _get_cell_bathymetry_inputs(
+                entry_idx, int(sampled_record["row"]), int(sampled_record["col"]), params
+            )
+            s_bank = max(float(bank_result.get("network_reach_bank_elevation_grade", s_bank)), 0.0001)
+            n_manning = 0.03
+
+            # Check if power-law target depth is valid (power law overrides hydraulics)
+            using_target_depth = x_section._is_valid_bathymetry_target(d_bathy_target_depth)
+
+            # Cell geometry setup
+            i_total_cells = int(bank_result.get("i_total_bank_cells", 1))
+            w_top = float(bank_result.get("local_total_bank_width", params.get('dx', 1.0) * 2.0))
+            d_h = 0.2 * w_top
+            w_base = max(w_top - 2.0 * d_h, 0.1)
+
+            def calculate_area_perimeter(y):
+                if i_total_cells <= 1:
+                    area = 0.5 * w_top * y
+                    perim = 2.0 * np.sqrt(y ** 2 + (w_top / 2.0) ** 2)
+                else:
+                    area = (w_base + w_top) / 2.0 * y
+                    perim = w_base + 2.0 * np.sqrt(y ** 2 + d_h ** 2)
+                return max(area, 1e-5), max(perim, 1e-4)
+
+            def solve_normal_depth(slope):
+                s_use = max(slope, 0.0001)
+                def manning_res(y):
+                    a, p = calculate_area_perimeter(y)
+                    return (1.0 / n_manning) * a * ((a / p) ** (2.0 / 3.0)) * np.sqrt(s_use) - d_q_baseflow
+                try:
+                    return float(brentq(manning_res, a=0.001, b=25.0, xtol=1e-4))
+                except ValueError:
+                    return 0.5
+
+            # Handle power-law override
+            if using_target_depth:
+                y_sol = float(d_bathy_target_depth)
+                a_pow, p_pow = calculate_area_perimeter(max(y_sol, 0.001))
+                v_pow = d_q_baseflow / a_pow if a_pow > 0 else 0.0
+                sf_pow = (n_manning * d_q_baseflow / (a_pow * ((a_pow / p_pow) ** (2.0 / 3.0)))) ** 2 if a_pow > 0 else 1e-4
+                
+                cell_states[entry_idx] = {'wse': z_bank, 'v': v_pow, 'sf': sf_pow, 'depth': y_sol}
+                bank_result["bathymetry_depth"] = y_sol
+                bank_result["bathymetry_depth_source"] = "drainage_area_power_law"
+                bank_result["bathymetry_should_apply"] = True
+                continue
+
+            # Determine Downstream Neighbor State
+            if m < num_cells - 1:
+                ds_entry_idx, _ = records_in_reach[m + 1]
+                ds_state = cell_states.get(ds_entry_idx)
+                station_curr = float(bank_result.get("along_stream_coordinate", m))
+                station_next = float(records_in_reach[m + 1][1].get("bank_search_result", {}).get("along_stream_coordinate", m + 1))
+                dx_cell = max(station_next - station_curr, 0.1)
+            else:
+                ds_successors = list(reach_network_graph.successors(reach_id))
+                ds_reach_id = ds_successors[0] if ds_successors else reach_downstream_map.get(reach_id)
+                if ds_reach_id in grouped_reach_records and len(grouped_reach_records[ds_reach_id]) > 0:
+                    ds_reach_records = grouped_reach_records[ds_reach_id]
+                    ds_reach_records.sort(key=lambda item: int(item[1].get("bank_search_result", {}).get("reach_order_index", 0)))
+                    ds_entry_idx = ds_reach_records[0][0]
+                    ds_state = cell_states.get(ds_entry_idx)
+                    dx_cell = dx_default
+                else:
+                    ds_state = None
+                    dx_cell = dx_default
+
+            if ds_state is None or d_q_baseflow <= 0.0:
+                # Network Outlet Boundary
+                y_sol = solve_normal_depth(s_bank) if d_q_baseflow > 0.0 else 0.0
+                depth_src = "network_outlet_normal_depth" if d_q_baseflow > 0.0 else "zero_baseflow"
+            else:
+                # 4. Solve 1D Non-Uniform Energy Equation
+                h_ds = ds_state['wse'] + (ds_state['v'] ** 2) / (2.0 * 9.81)
+                v_ds = ds_state['v']
+                
+                s_energy_raw = (z_bank - h_ds) / dx_cell
+                s_eff = max(s_energy_raw, s_bank)
+
+                def slope_residual(y):
+                    area, perim = calculate_area_perimeter(y)
+                    r_hyd = area / perim
+                    v_local = d_q_baseflow / area
+                    sf_local = (n_manning * d_q_baseflow / (area * (r_hyd ** (2.0 / 3.0)))) ** 2
+                    kinetic_slope = (v_local ** 2 - v_ds ** 2) / (2.0 * 9.81 * dx_cell)
+                    return (sf_local - kinetic_slope) - s_eff
+
+                try:
+                    y_sol = float(brentq(slope_residual, a=0.001, b=25.0, xtol=1e-4))
+                    depth_src = "cell_by_cell_non_uniform_energy"
+                except ValueError:
+                    y_sol = solve_normal_depth(s_eff)
+                    depth_src = "cell_by_cell_normal_depth_fallback"
+
+            area_final, perim_final = calculate_area_perimeter(max(y_sol, 0.001))
+            v_final = d_q_baseflow / area_final if area_final > 0 else 0.0
+            r_final = area_final / perim_final
+            sf_final = (n_manning * d_q_baseflow / (area_final * (r_final ** (2.0 / 3.0)))) ** 2 if area_final > 0 else 1e-4
+
+            cell_states[entry_idx] = {'wse': z_bank, 'v': v_final, 'sf': sf_final, 'depth': y_sol}
+
+            bank_result["bathymetry_depth"] = float(y_sol)
+            bank_result["bathymetry_depth_source"] = depth_src
+            bank_result["bathymetry_should_apply"] = bool(d_q_baseflow > 0.0)
+            bank_result["bathymetry_depth_baseflow"] = float(d_q_baseflow)
+            bank_result["bathymetry_depth_slope"] = float(s_bank)
+            
 def _smooth_reach_bank_elevations(
     sampled_records: list[dict | None],
     params: dict,
@@ -5057,7 +5362,6 @@ def _smooth_reach_bank_elevations(
             updated_bank_result["along_stream_coordinate"] = float(ordered_coordinates[reach_order])
             sampled_record["bank_search_result"] = updated_bank_result
 
-
 def _finalize_cross_section_records(
     sampled_records: list[dict | None],
     params: dict,
@@ -5068,25 +5372,32 @@ def _finalize_cross_section_records(
 
     Once local bank indices have been estimated for all sampled cross sections,
     ARC smooths the implied bank elevations along each reach, preserves the
-    locally detected bank indices and top widths, then estimates every
-    non-target hydraulic depth in a separate pass over the unmodified cached
-    profiles. A final pass burns those stored depths into the profiles and
-    bathymetry raster.
+    locally detected bank indices and top widths, then estimates non-uniform
+    hydraulic depths using cell-by-cell backwater energy calculations.
+    A final pass burns those stored depths into the profiles and bathymetry raster.
     """
     if params['s_output_bathymetry_path']:
+        # Step A: Smooth bank elevations across the network graph
         _smooth_reach_bank_elevations(
             sampled_records,
             params,
             quiet,
         )
-        # Hydraulic depths must be solved from the finalized bank geometry,
-        # but before any profile is lowered by the bathymetry burn.
+        
+        # Step B: Solve non-uniform depths (y) cell-by-cell relative to z_bank
         _stage_cross_section_bathymetry_depths(
             sampled_records,
             params,
             quiet,
         )
 
+        # Step C: Smooth excavated bed elevations (z_bed = z_bank - y) monotonically downstream
+        _smooth_reach_excavated_bed_elevations(
+            sampled_records, 
+            params, 
+        )
+
+    # Step C: Replay profiles and burn calculated bathymetry depth (y) below z_bank
     x_section = get_cross_section(params['dx'], params['dy'], _DEM, _LAND_COVER, _STREAMS, params)
     cross_section_data = [None] * _CELL_COMIDS.size if collect_cross_section_data else None
     finalized_records = [None] * _CELL_COMIDS.size
@@ -5116,6 +5427,7 @@ def _finalize_cross_section_records(
 
         bathymetry_applied = False
         if params['s_output_bathymetry_path']:
+            # Burns z_bottom = z_bank - bathymetry_depth
             _apply_bathymetry_to_cross_section(
                 x_section,
                 params,
@@ -5123,9 +5435,7 @@ def _finalize_cross_section_records(
             )
             bathymetry_applied = True
 
-        # Export records and staged representative hydraulics should reflect the
-        # finalized profile geometry, so re-sample Manning's n after any
-        # low-spot, angle, and bathymetry adjustments.
+        # Re-sample Manning's n after bathymetry excavation
         x_section.set_mannings_n_values(_MANNINGS_N)
 
         inflect_curve = sampled_record.get("inflect_curve")

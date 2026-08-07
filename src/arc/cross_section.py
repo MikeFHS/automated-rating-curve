@@ -1436,6 +1436,12 @@ class CrossSection:
             return 0, 0, 1, 0.0, 0.0
 
         d_y_depth = float(bank_search_result.get("bathymetry_depth", 0.0))
+        # if (
+        #     not np.isfinite(d_y_depth)
+        #     or d_y_depth >= 25.0
+        #     or d_y_depth < 0.0
+        # ):
+        #     return 0, 0, 1, 0.0, 0.0
         d_y_bathy = smoothed_bank_elevation - d_y_depth
 
         if i_total_bank_cells == 1:
