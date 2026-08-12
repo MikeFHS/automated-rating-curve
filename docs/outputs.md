@@ -91,26 +91,28 @@ The following table details the columns in the cross section export file:
 | Inflect_D2W_Dy2 | String | A string representation of the raw sampled cross section's INFLECT `d2W/dy^2` curve. This curve is computed before bathymetry is applied and is the diagnostic signal ARC uses to build reach-average INFLECT bank and terrace indices. |
 
 ## Representative cross section export
-If `Build_Representative_Cross_Section` is `True`, ARC writes a second comma-separated CSV file that summarizes sampled cross sections for each `Flow_File_ID` into an INFLECT-limited representative hydraulic stage database and representative cross-section geometry.
+If `Build_Representative_Cross_Section` is `True`, ARC writes a comma-separated CSV file that summarizes the sampled cross sections belonging to each positive reach ID in `Stream_File`. Representative grouping does not depend on `Flow_File_ID` or `Flow_File_QMax`.
 
-ARC does not use `s_flow_file_qmax` to define the representative maximum WSE. Instead, ARC first samples and caches every stream-cell cross section in the reach, computes `get_representative_inflect_curve()` on those raw sampled sections, averages the resulting `d2W_dy2` arrays by reach, and uses the minimum of that mean INFLECT curve to define the representative flood-terrace depth. After the reach-scale bank search and any optional bathymetry preprocessing are complete, ARC steps upward from each sampled thalweg in 0.01 m depth increments until that terrace depth is reached. At every stage it recomputes hydraulic area, top width, velocity, and discharge with Manning's equation using the final cross-section geometry and Manning's *n* arrays. The representative export stores the reach-median hydraulic values at each depth stage.
+ARC first samples and caches every stream-cell cross section, including its final profile, Manning's *n* arrays, slope, and thalweg. If `AROutBATHY` or `BATHY_Out_File` is configured, ARC completes bank finding and bathymetry preprocessing before building the representative output. Complete `Flow_File`, `Flow_File_ID`, and `Flow_File_BF` inputs select baseflow-driven bathymetry in representative mode. Otherwise, ARC uses the complete drainage-area power-law configuration when one is supplied. If neither bathymetry output path is configured, bathymetry estimation and excavation are bypassed and the representative hydraulics use the unexcavated sampled profiles.
+
+For each reach, ARC evaluates every contributing cross section at 0.10 m increments above its local thalweg, up to a maximum depth of 25 m. At every stage it recomputes area, wetted perimeter, velocity, discharge, and top width with Manning's equation. A finite result with positive area and top width contributes to the stage medians; sections with unusable finite geometry are skipped for that stage. If any calculation produces a non-finite area, wetted perimeter, velocity, discharge, or top width, ARC stops staging that reach immediately and retains only the previously successful rows. The representative export stores the median discharge, depth, velocity, top width, area, and WSE from the contributing sections at each retained stage.
 
 The representative cross-section dimensions are then derived from the staged median top width and staged median area. Starting from a thalweg stage with zero width and zero area, ARC solves a trapezoidal area equation between successive stages to recover each representative depth increment and cumulative representative depth. Those stages are finally written as symmetric left/right stations around the reach-median thalweg elevation.
 
-Because the staged medians are computed independently at each 0.01 m depth increment, tiny non-monotonic artifacts can occur. ARC therefore applies a cumulative-maximum adjustment to the representative area and representative top width columns before deriving the representative dimensions so the exported envelope remains physically ordered.
+Because the staged medians are computed independently at each 0.10 m depth increment, small non-monotonic artifacts can occur. ARC therefore applies a cumulative-maximum adjustment to representative area and top width before deriving the representative dimensions so the exported envelope remains physically ordered.
 
 The following table details the columns in the representative cross-section export file:
 
 | Column Name | Data Type | Description |
 | --- | --- | --- |
-| COMID | String | The reach identifier from `Flow_File_ID`. |
+| COMID | Integer | The positive reach identifier from `Stream_File`. |
 | Cross_Section_Count | Integer | Number of sampled stream cells combined for the reach. |
-| Hydraulic_Sample_Count | Integer | Number of sampled stream cells that had valid hydraulic values for this reach and 0.01 m depth stage. |
-| Depth_Stage_Index | Integer | Index of the 0.01 m depth stage, starting at `1` for `0.01` m above the thalweg. |
+| Hydraulic_Sample_Count | Integer | Number of sampled stream cells that contributed valid hydraulic values at this 0.10 m stage. |
+| Depth_Stage_Index | Integer | Index of the 0.10 m evaluation stage, starting at `1` for `0.10` m above each local thalweg. |
 | Depth_Stage_Meters | Float | Depth stage above the local thalweg used to evaluate the sampled cross sections. |
-| Reach_Inflect_Terrace_Depth | Float | Maximum representative depth for the reach, in meters above the thalweg, defined from the minimum of the reach-average INFLECT `d2W_dy2` curve. |
+| Reach_Inflect_Terrace_Depth | Float | Legacy column name containing the last successful evaluation depth retained for the reach. The value is capped at 25 m and may be lower when a non-finite hydraulic result terminates staging. It is no longer derived from the reach-average INFLECT curve. |
 | Representative_Thalweg_Elevation | Float | Reach-median thalweg elevation across the contributing sampled cross sections. |
-| Median_Discharge | Float | Median Manning discharge across the valid stream cells in the reach for this 0.01 m depth stage. |
+| Median_Discharge | Float | Median Manning discharge across the valid stream cells in the reach for this 0.10 m stage. |
 | Median_Depth | Float | Median hydraulic depth across the valid stream cells in the reach for this stage. In the current workflow this matches `Depth_Stage_Meters` because ARC evaluates all cross sections at a common depth increment above their local thalweg. |
 | Median_Velocity | Float | Median hydraulic velocity across the valid stream cells in the reach for this stage. |
 | Median_Top_Width | Float | Median hydraulic top width across the valid stream cells in the reach for this stage. |

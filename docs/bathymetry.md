@@ -5,7 +5,7 @@ ARC estimates channel bathymetry at each stream cell by fitting a triangular or 
 
 After either initial estimate, ARC filters and aggregates the depths by reach and enforces a downstream non-decreasing depth constraint. Consequently, the depth finally burned into a stream cell can differ from its initial network or power-law estimate.
 
-`Flow_File_QMax` is still required either way because ARC still needs a maximum discharge to build the VDT database and curve outputs.
+`Flow_File_QMax` is still required either way for standard rating-curve runs because ARC needs a maximum discharge to build the VDT database and curve outputs. It is not required when `Build_Representative_Cross_Section` is `True`; representative processing builds fixed 0.10 m stages independently of QMax.
 
 Before any bathymetry is burned into the DEM-derived section, ARC now performs a staged preprocessing workflow:
 

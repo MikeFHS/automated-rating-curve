@@ -133,7 +133,6 @@ def get_hydraulic_data(*args):
         _HYDRAULIC_DATA = HydraulicData(*args)
         _HYDRAULIC_DATA.associate_with_cross_section(get_cross_section())
         _HYDRAULIC_DATA.associate_with_output_data(_OUTPUT_DATA_ARRAY)
-        _HYDRAULIC_DATA.associate_with_reach_inflect_terrace_index(_CELL_REACH_INFLECT_TERRACE_INDEX)
     return _HYDRAULIC_DATA
 
 def _get_reach_inflect_plot_directory(params: dict) -> str:
@@ -885,14 +884,62 @@ def read_main_input_file(s_mif_name: str, args: dict):
     # omitting Flow_File_BF is intentional.
     bathymetry_powerlaw = _build_bathymetry_powerlaw_config(sl_lines, s_strmshp_path)
 
-    # check for baseflow parameters for bathymetry estimation. If not provided, disable bathymetry estimation.
+    # Representative runs prefer the legacy baseflow bathymetry method when
+    # its complete input trio is supplied. Otherwise, they fall back to the
+    # drainage-area power law without requiring a QMax column.
+    s_input_flow_file_path = get_parameter_name(sl_lines, 'Flow_File')
+    s_flow_file_id = get_parameter_name(sl_lines, 'Flow_File_ID')
     s_flow_file_baseflow = get_parameter_name(sl_lines,  'Flow_File_BF')
     s_flow_file_qmax = get_parameter_name(sl_lines,  'Flow_File_QMax')
-    s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File'))
-    if s_flow_file_baseflow == '' and len(s_output_bathymetry_path) > 1 and not bathymetry_powerlaw['enabled']:
+    s_input_flow_file_path = s_input_flow_file_path if isinstance(s_input_flow_file_path, str) else ''
+    s_flow_file_id = s_flow_file_id if isinstance(s_flow_file_id, str) else ''
+    s_flow_file_baseflow = s_flow_file_baseflow if isinstance(s_flow_file_baseflow, str) else ''
+    s_flow_file_qmax = s_flow_file_qmax if isinstance(s_flow_file_qmax, str) else ''
+    representative_baseflow_inputs = {
+        'Flow_File': s_input_flow_file_path,
+        'Flow_File_ID': s_flow_file_id,
+        'Flow_File_BF': s_flow_file_baseflow,
+    }
+    b_use_representative_baseflow_bathymetry = bool(
+        b_build_representative_cross_section
+        and all(representative_baseflow_inputs.values())
+    )
+    if (
+        b_build_representative_cross_section
+        and any(representative_baseflow_inputs.values())
+        and not b_use_representative_baseflow_bathymetry
+    ):
+        missing = [
+            name for name, value in representative_baseflow_inputs.items()
+            if not value
+        ]
         LOG.warning(
-            'Flow_File_BF was not provided and the drainage-area bathymetry '
-            'parameters were not fully configured; disabling bathymetry estimation.'
+            'Representative baseflow bathymetry requires Flow_File, '
+            'Flow_File_ID, and Flow_File_BF together. Missing: '
+            + ', '.join(missing)
+            + '. Falling back to drainage-area power-law bathymetry.'
+        )
+
+    b_use_bathymetry_powerlaw = bool(
+        bathymetry_powerlaw['enabled']
+        and not b_use_representative_baseflow_bathymetry
+    )
+    s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File'))
+    if not isinstance(s_output_bathymetry_path, str):
+        s_output_bathymetry_path = ''
+    if b_build_representative_cross_section:
+        has_bathymetry_source = bool(
+            b_use_representative_baseflow_bathymetry
+            or b_use_bathymetry_powerlaw
+        )
+    else:
+        has_bathymetry_source = bool(
+            s_flow_file_baseflow or b_use_bathymetry_powerlaw
+        )
+    if len(s_output_bathymetry_path) > 1 and not has_bathymetry_source:
+        LOG.warning(
+            'Neither complete baseflow inputs nor drainage-area bathymetry '
+            'parameters were provided; disabling bathymetry estimation.'
         )
         s_output_bathymetry_path = ''
     if len(s_output_bathymetry_path) > 1:
@@ -901,6 +948,9 @@ def read_main_input_file(s_mif_name: str, args: dict):
                 'Bathymetry output requires both reach_id and downstream_reach_id '
                 'to be provided in the input file.'
             )
+    s_output_flood = get_parameter_name(sl_lines, 'AROutFLOOD')
+    if not isinstance(s_output_flood, str):
+        s_output_flood = ''
 
     params = {
         's_input_dem_path': get_parameter_name(sl_lines,  'DEM_File'), # Find the path to the DEM file
@@ -909,11 +959,12 @@ def read_main_input_file(s_mif_name: str, args: dict):
         's_input_stream_path': get_parameter_name(sl_lines,  'Stream_File'), # Find the path to the stream file
         's_input_land_use_path': get_parameter_name(sl_lines,  'LU_Raster_SameRes'), # Find the path to the land use raster file
         's_input_mannings_path': get_parameter_name(sl_lines,  'LU_Manning_n'), # Find the path to the mannings n file
-        's_input_flow_file_path': get_parameter_name(sl_lines,  'Flow_File'), # Find the path to the flow file
-        's_flow_file_id': get_parameter_name(sl_lines,  'Flow_File_ID'), # Find the column name 
+        's_input_flow_file_path': s_input_flow_file_path, # Find the path to the flow file
+        's_flow_file_id': s_flow_file_id, # Find the column name
         's_flow_file_baseflow': s_flow_file_baseflow, # Find the baseflow column name
         's_flow_file_qmax': s_flow_file_qmax, # Find the column name for the maximum flow
-        'b_use_bathymetry_powerlaw': bathymetry_powerlaw['enabled'],
+        'b_use_representative_baseflow_bathymetry': b_use_representative_baseflow_bathymetry,
+        'b_use_bathymetry_powerlaw': b_use_bathymetry_powerlaw,
         's_bathymetry_drainage_area_field': bathymetry_powerlaw['drainage_area_field'],
         'd_bathymetry_coefficient_depth': bathymetry_powerlaw['coefficient_depth'],
         'd_bathymetry_exponent_depth': bathymetry_powerlaw['exponent_depth'],
@@ -941,8 +992,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'i_number_of_increments': int(get_parameter_name(sl_lines,  'VDT_Database_NumIterations', 15)), # Find the number of increments to use in the velocity, depth, and top width database
         'b_FindBanksBasedOnLandCover': b_FindBanksBasedOnLandCover, # Find the true/false variable to find the banks of the river based on the land cover dataset instead of the DEM
         'b_reach_average_curve_file': b_reach_average_curve_file, # Find the true/false variable to use a reach-average curve file
-        's_output_flood': get_parameter_name(sl_lines,  'AROutFLOOD'), # Find the path to the output flood file
-
+        's_output_flood': s_output_flood, # Find the path to the output flood file
     }
 
     return params
@@ -978,7 +1028,7 @@ def _power_law_geometry_from_drainage_area(
 
 def build_bathymetry_geometry_dict(
     s_strmshp_path: str,
-    s_flow_file_id: str,
+    s_reach_id_field: str,
     drainage_area_field: str,
     coefficient_depth: float,
     exponent_depth: float,
@@ -995,8 +1045,8 @@ def build_bathymetry_geometry_dict(
     ----------
     s_strmshp_path : str
         Path to the vector dataset identified by ``StrmShp_File``.
-    s_flow_file_id : str
-        Reach identifier field shared by the flow file and stream vector.
+    s_reach_id_field : str
+        Reach identifier field in the stream vector.
     drainage_area_field : str
         Field in ``s_strmshp_path`` containing drainage area values.
     coefficient_depth, exponent_depth, coefficient_width, exponent_width : float
@@ -1008,7 +1058,7 @@ def build_bathymetry_geometry_dict(
         Mapping ``reach_id -> {"depth": depth, "width": width}``.
     """
     gdf_stream = gpd.read_file(s_strmshp_path)
-    required_columns = {s_flow_file_id, drainage_area_field}
+    required_columns = {s_reach_id_field, drainage_area_field}
     missing_columns = sorted(required_columns.difference(gdf_stream.columns))
     if missing_columns:
         raise KeyError(
@@ -1016,13 +1066,13 @@ def build_bathymetry_geometry_dict(
             "drainage-area bathymetry: " + ", ".join(missing_columns)
         )
 
-    attribute_df = gdf_stream[[s_flow_file_id, drainage_area_field]].copy()
-    attribute_df = attribute_df.dropna(subset=[s_flow_file_id, drainage_area_field])
-    attribute_df[s_flow_file_id] = pd.to_numeric(attribute_df[s_flow_file_id], errors='raise').astype(np.int64)
+    attribute_df = gdf_stream[[s_reach_id_field, drainage_area_field]].copy()
+    attribute_df = attribute_df.dropna(subset=[s_reach_id_field, drainage_area_field])
+    attribute_df[s_reach_id_field] = pd.to_numeric(attribute_df[s_reach_id_field], errors='raise').astype(np.int64)
     attribute_df[drainage_area_field] = pd.to_numeric(attribute_df[drainage_area_field], errors='raise')
 
     bathymetry_geometry: dict[int, dict[str, float]] = {}
-    for reach_id, group in attribute_df.groupby(s_flow_file_id, sort=False):
+    for reach_id, group in attribute_df.groupby(s_reach_id_field, sort=False):
         drainage_area = float(group[drainage_area_field].iloc[0])
         if not np.isfinite(drainage_area) or drainage_area <= 0.0:
             raise ValueError(
@@ -1155,13 +1205,14 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
         metadata).
     s_flow_qmax : str
         Column name containing the maximum discharge used to build rating-curve
-        increments.
+        increments. May be blank for representative-cross-section runs that
+        only need baseflow-driven bathymetry.
 
     Returns
     -------
     dict
-        Mapping ``reach_id -> {flow_column: value, ...}``. If ``s_flow_baseflow``
-        is blank, only the qmax column is loaded.
+        Mapping ``reach_id -> {flow_column: value, ...}`` containing whichever
+        requested flow columns were supplied.
 
     """
     if s_flow_file_name.endswith('.parquet'):
@@ -1169,7 +1220,11 @@ def read_flow_file(s_flow_file_name: str, s_flow_id: str, s_flow_baseflow: str, 
     else:
         df = pd.read_csv(s_flow_file_name)
 
-    flow_columns = [s_flow_qmax] if s_flow_baseflow == '' else [s_flow_baseflow, s_flow_qmax]
+    flow_columns = [
+        column_name
+        for column_name in (s_flow_baseflow, s_flow_qmax)
+        if column_name
+    ]
     return df.set_index(s_flow_id)[flow_columns].to_dict(orient='index')
 
 
@@ -1874,12 +1929,17 @@ def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform,
         dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(_STREAMS, dx, dy, quiet, params['i_general_slope_distance'], processes)
         return (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
     elif s_stream_slope_method == 'end_points':
+        stream_vector_id_field = (
+            params['s_reach_id_field']
+            if params['b_build_representative_cross_section']
+            else params['s_flow_file_id']
+        )
         dict_stream_slopes = dict_stream_slopes_from_endpoints(
             _STREAMS,
             dem_geotransform,
             dem_projection,
             params['s_strmshp_path'],
-            params['s_flow_file_id'],
+            stream_vector_id_field,
             quiet,
             i_boundary_number,
         )
@@ -5926,17 +5986,23 @@ def init_parallel(
         globals()['_PRECOMPUTED_CROSS_SECTION_RECORDS'] = params.get('_precomputed_cross_section_records')
 
 def _build_flow_arrays(
-    id_flow_dict: dict,
+    id_flow_dict: dict | None,
     baseflow_key: str,
     qmax_key: str,
     processes: int,
     bathymetry_geometry_dict: dict[int, dict[str, float]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if baseflow_key == '':
+    if id_flow_dict is None:
+        create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64, fill_value=0.0)
+        create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64, fill_value=0.0)
+    elif baseflow_key == '':
         create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64, fill_value=0.0)
     else:
         create_array("_CELL_QBASE", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][baseflow_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
-    create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][qmax_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+    if id_flow_dict is not None and qmax_key:
+        create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter((id_flow_dict[cid][qmax_key] for cid in _CELL_COMIDS), dtype=np.float64, count=len(_CELL_COMIDS))
+    elif id_flow_dict is not None:
+        create_array("_CELL_QMAX", processes, (_CELL_COMIDS.size,), np.float64, fill_value=0.0)
 
     if bathymetry_geometry_dict is None:
         return
@@ -6243,18 +6309,35 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     ### Read Main Input File ###
     
     ### Read the Flow Information ###
-    id_flow_dict = read_flow_file(params['s_input_flow_file_path'], params['s_flow_file_id'], params['s_flow_file_baseflow'], params['s_flow_file_qmax'])
-    bathymetry_geometry_dict = None
+    if params['b_use_representative_baseflow_bathymetry']:
+        id_flow_dict = read_flow_file(
+            params['s_input_flow_file_path'],
+            params['s_flow_file_id'],
+            params['s_flow_file_baseflow'],
+            '',
+        )
+    elif params['b_build_representative_cross_section']:
+        id_flow_dict = None
+    else:
+        id_flow_dict = read_flow_file(
+            params['s_input_flow_file_path'],
+            params['s_flow_file_id'],
+            params['s_flow_file_baseflow'],
+            params['s_flow_file_qmax'],
+        )
+
     if params['b_use_bathymetry_powerlaw']:
         bathymetry_geometry_dict = build_bathymetry_geometry_dict(
             params['s_strmshp_path'],
-            params['s_flow_file_id'],
+            params['s_reach_id_field'],
             params['s_bathymetry_drainage_area_field'],
             params['d_bathymetry_coefficient_depth'],
             params['d_bathymetry_exponent_depth'],
             params['d_bathymetry_coefficient_width'],
             params['d_bathymetry_exponent_width'],
         )
+    else:
+        bathymetry_geometry_dict = None
 
     ### Read Raster Data ###
     ### Imbed the Stream and DEM data within a larger Raster to help with the boundary issues. ###
@@ -6331,9 +6414,14 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     manual_cross_section_file = params.get('s_manual_cross_section_file', '')
     manual_cross_section_records = None
     if manual_cross_section_file:
+        manual_cross_section_id_field = (
+            params['s_reach_id_field']
+            if params['b_build_representative_cross_section']
+            else params['s_flow_file_id']
+        )
         manual_cross_section_records, required_x_section_distance = load_manual_cross_section_records(
             manual_cross_section_file,
-            params['s_flow_file_id'],
+            manual_cross_section_id_field,
             i_boundary_number,
         )
         if required_x_section_distance > params['d_x_section_distance']:
@@ -6348,7 +6436,11 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
 
     # Get the list of stream locations. In manual mode, the location list comes
     # from the manual cross-section file rather than from the stream raster.
-    flow_ids = np.fromiter(id_flow_dict.keys(), count=len(id_flow_dict), dtype=np.int64)
+    if params['b_build_representative_cross_section']:
+        flow_ids = np.unique(dm_stream)
+        flow_ids = flow_ids[flow_ids > 0]
+    else:
+        flow_ids = np.fromiter(id_flow_dict.keys(), count=len(id_flow_dict), dtype=np.int64)
     if manual_cross_section_records:
         matching_flow_ids = [int(flow_id) for flow_id in flow_ids if int(flow_id) in manual_cross_section_records]
         if len(matching_flow_ids) == 0:

@@ -159,18 +159,18 @@ def _get_inflect_minimum_index(mean_d2w_dy2: np.ndarray) -> int:
 def _build_representative_hydraulic_rows_for_reach(
     comid: int,
     group: list[dict],
-    terrace_depth: float,
+    max_depth: float,
 ) -> list[dict]:
-    """Build staged hydraulic medians for one reach up to the INFLECT terrace.
+    """Build staged hydraulic medians for one reach up to a fixed depth cap.
 
-    The reach-average INFLECT curve defines the maximum representative depth.
-    ARC then evaluates each contributing cross section every 0.10 meters above
-    its local thalweg up to that common terrace depth, computing area, top
-    width, velocity, and discharge from Manning's equation at each stage. The
-    representative CSV stores the reach medians of those stage-wise hydraulic
-    values.
+    ARC evaluates each contributing cross section every 0.10 meters above its
+    local thalweg up to ``max_depth`` meters, computing area, perimeter,
+    velocity, discharge, and top width from Manning's equation at each stage.
+    If any non-finite hydraulic value appears, the sweep stops early and the
+    last successful depth becomes the effective cap for that reach.
     """
-    stage_count = max(int(round(terrace_depth / REPRESENTATIVE_DEPTH_INCREMENT)), 0)
+    max_depth = float(min(max_depth, 25.0))
+    stage_count = max(int(round(max_depth / REPRESENTATIVE_DEPTH_INCREMENT)), 0)
     if stage_count <= 0:
         return []
 
@@ -178,6 +178,7 @@ def _build_representative_hydraulic_rows_for_reach(
         np.nanmedian([float(record['Thalweg']) for record in group if record.get('Thalweg') is not None])
     )
     rows: list[dict] = []
+    last_valid_stage_depth = 0.0
 
     for stage_index in range(1, stage_count + 1):
         stage_depth = float(stage_index * REPRESENTATIVE_DEPTH_INCREMENT)
@@ -213,6 +214,12 @@ def _build_representative_hydraulic_rows_for_reach(
                 sqrt_slope,
             )
 
+            if not all(np.isfinite(value) for value in (area, perimeter, velocity, discharge, top_width)):
+                if rows:
+                    for row in rows:
+                        row['Reach_Inflect_Terrace_Depth'] = last_valid_stage_depth
+                return rows
+
             if area <= 0.0 or top_width <= 0.0 or discharge < 0.0:
                 continue
 
@@ -232,7 +239,7 @@ def _build_representative_hydraulic_rows_for_reach(
                 'Hydraulic_Sample_Count': int(len(areas)),
                 'Depth_Stage_Index': int(stage_index),
                 'Depth_Stage_Meters': stage_depth,
-                'Reach_Inflect_Terrace_Depth': terrace_depth,
+                'Reach_Inflect_Terrace_Depth': max_depth,
                 'Representative_Thalweg_Elevation': representative_thalweg,
                 'Median_Discharge': float(np.nanmedian(np.asarray(discharges, dtype=np.float64))),
                 'Median_Depth': stage_depth,
@@ -242,29 +249,30 @@ def _build_representative_hydraulic_rows_for_reach(
                 'Median_WSE': float(np.nanmedian(np.asarray(wses, dtype=np.float64))),
             }
         )
+        last_valid_stage_depth = stage_depth
 
+    if rows:
+        for row in rows:
+            row['Reach_Inflect_Terrace_Depth'] = last_valid_stage_depth
     return rows
 
 
 def build_representative_cross_section_dataframe(
     cross_section_data: list[dict],
-    reach_inflect_terrace_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Build representative cross sections from INFLECT-limited hydraulic stages.
+    """Build representative cross sections from staged hydraulic medians.
 
     When representative cross sections are enabled, ARC now ignores the qmax-
     based VDT staging for this export. Instead it:
 
     1. Collects the sampled cross-section geometry, Manning's n arrays, slope,
-       thalweg elevation, and INFLECT diagnostic curve for every stream cell.
-    2. Uses the precomputed reach-level INFLECT terrace index when available.
-       If no precomputed terrace array is supplied, it falls back to averaging
-       the stored INFLECT ``d2W_dy2`` signal by reach and taking its minimum.
-    3. Recomputes hydraulic properties every 0.10 meters above each
-       cross-section thalweg up to that common terrace depth.
-    4. Takes the median discharge, velocity, top width, area, and WSE across
+       and thalweg elevation for every stream cell.
+    2. Recomputes hydraulic properties every 0.10 meters above each
+       cross-section thalweg up to a 25 meter maximum depth.
+       The sweep truncates earlier if any non-finite hydraulic outputs appear.
+    3. Takes the median discharge, velocity, top width, area, and WSE across
        the reach at each stage.
-    5. Derives representative cross-section dimensions from the staged median
+    4. Derives representative cross-section dimensions from the staged median
        top width and staged median area.
 
     Parameters
@@ -272,13 +280,8 @@ def build_representative_cross_section_dataframe(
     cross_section_data : list of dict
         Per-cell sampled cross-section records collected during the ARC main
         loop. These records include the profiles, Manning arrays, local slope,
-        thalweg elevation, and INFLECT diagnostic curve needed to rebuild the
-        representative hydraulic stage database.
-    reach_inflect_terrace_indices : numpy.ndarray, optional
-        Per-cell reach terrace depth array aligned with ``cross_section_data``.
-        This is the preferred path because the representative terrace depth was
-        already computed during ARC's cross-section prepass from the aligned
-        INFLECT depth axis.
+        and thalweg elevation needed to rebuild the representative hydraulic
+        stage database.
 
     Returns
     -------
@@ -290,29 +293,15 @@ def build_representative_cross_section_dataframe(
         return pd.DataFrame(columns=REPRESENTATIVE_CROSS_SECTION_COLUMNS)
 
     grouped_records: dict[int, list[dict]] = {}
-    grouped_terrace_indices: dict[int, list[float]] = {}
     for i, record in enumerate(cross_section_data):
         if record is None:
             continue
         comid = int(record['COMID'])
         grouped_records.setdefault(comid, []).append(record)
-        if reach_inflect_terrace_indices is not None and i < len(reach_inflect_terrace_indices):
-            terrace_depth = float(reach_inflect_terrace_indices[i])
-            if terrace_depth >= 0.0:
-                grouped_terrace_indices.setdefault(comid, []).append(terrace_depth)
 
     rows: list[dict] = []
     for comid, group in grouped_records.items():
-        terrace_index_values = grouped_terrace_indices.get(comid, [])
-        if terrace_index_values:
-            terrace_depth = float(terrace_index_values[0])
-        else:
-            mean_d2w_dy2 = _build_reach_average_inflect_curve(group)
-            if mean_d2w_dy2 is None or mean_d2w_dy2.size == 0:
-                continue
-            terrace_index = _get_inflect_minimum_index(mean_d2w_dy2)
-            terrace_depth = float((terrace_index + 1) * REPRESENTATIVE_DEPTH_INCREMENT)
-        rows.extend(_build_representative_hydraulic_rows_for_reach(int(comid), group, terrace_depth))
+        rows.extend(_build_representative_hydraulic_rows_for_reach(int(comid), group, 25.0))
 
     representative_df = pd.DataFrame(rows)
     if representative_df.empty:
@@ -902,14 +891,11 @@ class HydraulicData:
         The representative cross section is now a long-format hydraulic summary
         with one row per reach and 0.10 m depth stage. Each row stores the
         median hydraulic properties rebuilt from the sampled cross sections up
-        to the reach-level INFLECT terrace depth, plus the representative
-        dimensions derived from staged top width and staged area.
+        to a 25 meter maximum depth, plus the representative dimensions
+        derived from staged top width and staged area.
         """
         cross_section_data = list(self.xs_data) if getattr(self, "xs_data", None) is not None else []
-        df = build_representative_cross_section_dataframe(
-            cross_section_data,
-            getattr(self, "reach_inflect_terrace_index", None),
-        )
+        df = build_representative_cross_section_dataframe(cross_section_data)
         if not df.empty:
             numeric_columns = [
                 col
