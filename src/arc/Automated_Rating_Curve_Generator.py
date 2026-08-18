@@ -25,8 +25,11 @@ import sys
 import os
 import math
 import warnings
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Literal
+from datetime import datetime
+from multiprocessing import Pool, shared_memory
 
 import tqdm
 import yaml
@@ -34,6 +37,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 from datetime import datetime
+import networkx as nx
 import geopandas as gpd
 from scipy.ndimage import convolve
 from scipy.optimize import OptimizeWarning, brentq
@@ -43,6 +47,8 @@ from osgeo import gdal
 from pyproj import CRS, Geod
 from numba import njit, vectorize
 from multiprocessing import Pool, shared_memory
+from scipy.optimize import OptimizeWarning, brentq
+from shapely.geometry import LineString, MultiLineString
 
 from arc import LOG
 from arc.cross_section import CrossSection, calc_bankfull_elevation, calculate_discharge_from_wse, _calculate_all
@@ -59,10 +65,10 @@ _LAND_COVER: np.ndarray = None
 _OUTPUT_DATA_ARRAY: np.ndarray = None
 _OUT_FLOOD: np.ndarray = None
 _PARAMS: dict | None = None
+_INDEX_ARRAYS: np.ndarray = None
 _SHARED_MEMORYS: dict[str, shared_memory.SharedMemory] = {}
 _CROSS_SECTION: CrossSection = None
 _HYDRAULIC_DATA: HydraulicData = None
-_INDEX_ARRAYS: np.ndarray = None
 _Z_DISTANCE_ARRAY: np.ndarray = None
 _INDEX_FRACT_ARRAYS: np.ndarray = None
 _CELL_ROWS: np.ndarray = None
@@ -227,7 +233,7 @@ def _set_shared(name: str, shm: shared_memory.SharedMemory):
     _SHARED_MEMORYS[name] = shm
 
 def reset_globals():
-    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA', '_MANUAL_CROSS_SECTION_RECORDS', '_PRECOMPUTED_CROSS_SECTION_RECORDS']:
+    for name in ARRAY_NAMES + ['_CROSS_SECTION', '_HYDRAULIC_DATA', '_MANUAL_CROSS_SECTION_RECORDS', '_PARAMS']:
         globals()[name] = None
 
 def sample_line_for_valid_z(line: LineString, dm_elevation: np.ndarray, xy_to_rowcol, length_m, step_fraction=0.02):
@@ -392,6 +398,8 @@ def safe_signs_differ(fa, fb, tol=1e-10):
     fb = np.round(fb, 5)
 
     if fa == 0 or fb == 0:
+        safe_signs = False
+    if np.isnan(fa) or np.isnan(fb):
         safe_signs = False
     elif fa * fb < 0:
         safe_signs = True
@@ -592,7 +600,7 @@ def read_and_pad_and_maybe_make_shared(s_input_filename: str, processes: int, pa
     o_dataset = None
 
     # Write metdata information to the console
-    LOG.info('Spatial Data for Raster File:')
+    LOG.info(f'Spatial Data for {s_input_filename}:')    
     LOG.info('   ncols = ' + str(i_number_of_columns))
     LOG.info('   nrows = ' + str(i_number_of_rows))
     LOG.info('   cellsize = ' + str(d_cell_size))
@@ -822,12 +830,12 @@ def read_main_input_file(s_mif_name: str, args: dict):
     ### Open and read the input file ###
     # Open the file
     if s_mif_name:
-        if s_mif_name.lower().endswith(('.yaml', '.yml')):
-            # If it's a YAML file, parse it with PyYAML and convert to the expected list of lines format
-            data = yaml.safe_load(open(s_mif_name))
-            sl_lines = [f"{key}\t{value}\n" for key, value in data.items()]
-        else:
-             with open(s_mif_name, 'r') as o_input_file:
+        with open(s_mif_name, 'r') as o_input_file:
+            if s_mif_name.lower().endswith(('.yaml', '.yml')):
+                # If it's a YAML file, parse it with PyYAML and convert to the expected list of lines format
+                data = yaml.load(o_input_file, Loader=yaml.CSafeLoader)
+                sl_lines = [f"{key}\t{value}\n" for key, value in data.items()]
+            else:
                 sl_lines = o_input_file.readlines()
     else:
         # Convert arg dict to a list of lines
@@ -978,7 +986,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'd_degree_interval': float(get_parameter_name(sl_lines,  'Degree_Interval', 1.0)), # Find the degree interval parameter
         'i_low_spot_range': int(get_parameter_name(sl_lines,  'Low_Spot_Range', 0)), # Find the low spot range parameter
         'i_general_direction_distance': int(get_parameter_name(sl_lines,  'Gen_Dir_Dist', 10)), # Find the general direction distance parameter
-        'i_general_slope_distance': int(get_parameter_name(sl_lines,  'Gen_Slope_Dist', 0)), # Find the general slope distance parameter
+        'i_general_slope_distance': int(get_parameter_name(sl_lines,  'Gen_Slope_Dist', 10)), # Find the general slope distance parameter
         'd_bathymetry_trapzoid_height': float(get_parameter_name(sl_lines,  'Bathy_Trap_H', 0.2)), # Find the bathymetry trapezoid height parameter,
         'b_bathy_use_banks': b_bathy_use_banks, # Find the true/false variable to use the bank elevations to calculate the depth of the bathymetry estimate
         's_output_bathymetry_path': s_output_bathymetry_path, # Find the path to the output bathymetry file
@@ -993,6 +1001,9 @@ def read_main_input_file(s_mif_name: str, args: dict):
         'b_FindBanksBasedOnLandCover': b_FindBanksBasedOnLandCover, # Find the true/false variable to find the banks of the river based on the land cover dataset instead of the DEM
         'b_reach_average_curve_file': b_reach_average_curve_file, # Find the true/false variable to use a reach-average curve file
         's_output_flood': s_output_flood, # Find the path to the output flood file
+        'bathy_water_mask': get_parameter_name(sl_lines,  'BathyWaterMask', ''), # Find the path to the bathymetry water mask,
+        "slope_low_percentile": int(get_parameter_name(sl_lines, 'Slope_Low_Percentile', 25)), # Find the low percentile for slope calculation
+        "slope_high_percentile": int(get_parameter_name(sl_lines, 'Slope_High_Percentile', 75)), # Find the high percentile for slope calculation
     }
 
     return params
@@ -1383,65 +1394,29 @@ def round_sig(x, sig=3):
     factor = 10.0 ** (sig - 1 - exp)
     return math.floor(x * factor + 0.5) / factor
 
-@njit(cache=True)
-def get_reach_median_stream_slope_information(dm_dem: np.ndarray, im_streams: np.ndarray, stream_id: int, d_dx: float, d_dy: float, i_general_slope_distance: int):
-    """
-    Calculates the stream slope for each stream cell using the following process:
-
-        1.) Find all stream cells that have the same stream id value
-        2.) Look at the slope of each of the stream cells.
-        3.) Average the slopes to get the overall slope we use in the model.
-
-    Guaranteed to be >= 0.0002 and <= 0.03
-
-    Parameters
-    ----------
-    dm_dem: ndarray
-        Elevation raster
-    im_streams: ndarray
-        Stream raster
-    stream_id: int
-        ID of the stream for which to calculate slope
-    d_dx: float
-        Cell resolution in the x direction
-    d_dy: float
-        Cell resolution in the y direction
-    i_general_slope_distance: int
-        Distance in number of cells to look for slope calculations.
-
-    Returns
-    -------
-    d_stream_slope: float
-        Average slope from the stream cells in the specified search box
-    d_stream_slope_25: float
-        25th percentile slope from the stream cells in the specified search box
-    d_stream_slope_75: float
-        75th percentile slope from the stream cells in the specified search box
-
-    """
-
-    # Initialize a default stream flow
-    d_stream_slope = 0.0
-
-    # All cells in this reach (global indices)
-    reach_rows, reach_cols = np.where(im_streams == stream_id)
-    n = len(reach_rows)
-
-
-    d_stream_slope = 0.0002
+@njit(cache=True, nogil=True)
+def get_reach_median_stream_slope_information(
+    dm_dem: np.ndarray,
+    reach_rows: np.ndarray,
+    reach_cols: np.ndarray,
+    d_dx: float,
+    d_dy: float,
+    i_general_slope_distance: int,
+    low,
+    high,
+):
     lower_bound = 0.0002
     upper_bound = 0.0002
 
-    if n < 2:
-        # Not enough cells to define a slope
-        return d_stream_slope, lower_bound, upper_bound
+    # Find all cells in this reach.
+    n = len(reach_rows)
 
-    total_slope = 0.0
-    count = 0
+    if n < 2:
+        return 0.0002, lower_bound, upper_bound
 
     slope_list = []
 
-    # Loop over all unique pairs (a, b), a < b
+    # Only examine each spatial pair once.
     for a in range(n):
         ra = reach_rows[a]
         ca = reach_cols[a]
@@ -1451,42 +1426,41 @@ def get_reach_median_stream_slope_information(dm_dem: np.ndarray, im_streams: np
             rb = reach_rows[b]
             cb = reach_cols[b]
 
-            # Check if within the "box" in row/col space
             dr = rb - ra
             dc = cb - ca
 
-            if (dr >= -i_general_slope_distance and dr <= i_general_slope_distance and
-                dc >= -i_general_slope_distance and dc <= i_general_slope_distance):
+            if not (abs(dr) <= i_general_slope_distance and abs(dc) <= i_general_slope_distance):
+                continue 
 
-                zb = dm_dem[rb, cb]
+            dx = dc * d_dx
+            dy = dr * d_dy
 
-                # Horizontal distance
-                dx = dc * d_dx
-                dy = dr * d_dy
-                dist = math.sqrt(dx * dx + dy * dy)
+            dist = math.sqrt(dx * dx + dy * dy)
 
-                if dist > 0.0:
-                    slope = np.round(abs(za - zb) / dist, 8)
-                    if slope > 0.0:
-                        total_slope += slope
-                        count += 1
-                        slope_list.append(slope)
+            if dist == 0.0:
+                continue
 
-    # remove any outliers using quartiles
+            slope = np.round(abs(za - dm_dem[rb, cb]) / dist, 8)
+
+            if slope > 0.0:
+                slope_list.append(slope)
+
+    # Remove outliers using quartiles.
     if len(slope_list) > 0:
         slope_arr = np.array(slope_list)
-        slope_arr = round_sig(slope_arr, 8)   
-        Q1 = np.round(np.percentile(slope_arr, 25), 8)
-        Q3 = np.round(np.percentile(slope_arr, 75), 8)
-        IQR = Q3 - Q1
-        lower_bound = Q1
-        upper_bound = Q3
+        slope_arr = round_sig(slope_arr, 8)
+
+        lower_bound = np.round(np.percentile(slope_arr, low), 8)
+
+        upper_bound = np.round(np.percentile(slope_arr, high), 8)
+
         slope_list = [x for x in slope_list if lower_bound <= x <= upper_bound]
 
-    # Compute median slope
+    # Median slope.
     if len(slope_list) > 0:
         d_stream_slope = np.median(np.array(slope_list))
-
+    else:
+        d_stream_slope = 0.0002
 
     return d_stream_slope, lower_bound, upper_bound
 
@@ -1715,6 +1689,20 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_
     d_q_sum = 0.0
     sqrt_slope = d_slope_use**0.5
 
+    # First verify that the search bracket is valid
+    q_min = calculate_discharge_from_wse(start_wse, sqrt_slope, *x_sect_args)
+    q_max = calculate_discharge_from_wse(
+        start_wse + range_end * increment,
+        sqrt_slope,
+        *x_sect_args,
+    )
+    if d_q_maximum < q_min:
+        return start_wse, q_min, False
+
+    if d_q_maximum > q_max:
+        return start_wse + range_end * increment, q_max, False
+
+
     low = 0
     high = range_end
     
@@ -1756,7 +1744,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_
         prev_q = d_q_sum
         can_interpolate = True
 
-    return d_wse, d_q_sum
+    return d_wse, d_q_sum, True
 
 @njit(cache=True)
 def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_increments_args: tuple, thalweg: float, d_slope_use: float, d_q_sum: float, output_data: np.ndarray, i_entry_cell: int, b_modified_dem: bool):
@@ -1771,7 +1759,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
     prev_wse = 0.0
     sqrt_slope = d_slope_use**0.5
 
-    for i_entry_elevation in range(i_number_of_increments):
+    for i_entry_elevation in range(1, i_number_of_increments):
         d_wse = np.round(thalweg + d_inc_y * i_entry_elevation, 3)
 
         # Calculate the geometry          
@@ -1800,7 +1788,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
             # if we reach the upper bound without a valid candidate, or we overshot, revert
             # also add a top‑level guard before saving the initial (non‑refined) Q
             # right after computing the first Q/V for this increment:
-            if (Q <= prev_q) or (Q > d_q_sum + 1.0):
+            if (Q <= prev_q) or (Q > d_q_sum * 1.01):
                 add_hydraulic_data(output_data, i_entry_elevation, prev_wse, prev_t, prev_p, prev_q, prev_v, i_entry_cell, b_modified_dem)
                 continue
 
@@ -1838,9 +1826,9 @@ def add_100_if_elevation_less_than_0(arr):
     return b_modified_dem
 
 def get_reach_median_stream_slope_information_wrapper(args):
-    return get_reach_median_stream_slope_information(_DEM, _STREAMS, *args)
+    return get_reach_median_stream_slope_information(_DEM, *args)
 
-def create_reach_average_slope_dicts(dm_stream, dx, dy, quiet, i_general_slope_distance, processes):
+def create_reach_average_slope_dicts(dm_stream, dx, dy, quiet, i_general_slope_distance, processes, low, high):
     # create a list of unique stream IDs to loop through
     unique_stream_ids = np.unique(dm_stream)
     unique_stream_ids = unique_stream_ids[unique_stream_ids > 0]
@@ -1848,9 +1836,29 @@ def create_reach_average_slope_dicts(dm_stream, dx, dy, quiet, i_general_slope_d
     dict_stream_slopes = {}
     dict_stream_slopes_25th = {}
     dict_stream_slopes_75th = {}
+
+    reach_rows = {}
+    reach_cols = {}
+
+    rows, cols = np.where(dm_stream > 0)
+
+    for r, c in zip(rows, cols):
+        sid = dm_stream[r, c]
+
+        if sid not in reach_rows:
+            reach_rows[sid] = []
+            reach_cols[sid] = []
+
+        reach_rows[sid].append(r)
+        reach_cols[sid].append(c)
+
+    for sid in reach_rows:
+        reach_rows[sid] = np.asarray(reach_rows[sid], dtype=np.int64)
+        reach_cols[sid] = np.asarray(reach_cols[sid], dtype=np.int64)
+
     if processes == 1:
         for stream_id in pbar_slopes:
-            reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(_DEM, dm_stream, stream_id, dx, dy, i_general_slope_distance)
+            reach_slope, reach_slope_25th, reach_slope_75th = get_reach_median_stream_slope_information(_DEM, reach_rows[stream_id], reach_cols[stream_id], dx, dy, i_general_slope_distance, low, high)
             dict_stream_slopes[stream_id] = reach_slope
             dict_stream_slopes_25th[stream_id] = reach_slope_25th
             dict_stream_slopes_75th[stream_id] = reach_slope_75th
@@ -1858,7 +1866,7 @@ def create_reach_average_slope_dicts(dm_stream, dx, dy, quiet, i_general_slope_d
         args = get_init_parallel_args(["_DEM", "_STREAMS"])
         with Pool(processes, initializer=init_parallel, initargs=args) as pool:
             chunksize = min(10, len(unique_stream_ids) // (processes * 4) + 1)  # Adjust chunksize based on the number of processes and total tasks. I found 10 to be the most we should go
-            for stream_id, (reach_slope, reach_slope_25th, reach_slope_75th) in zip(pbar_slopes, pool.imap(get_reach_median_stream_slope_information_wrapper, [(stream_id, dx, dy, i_general_slope_distance) for stream_id in unique_stream_ids], chunksize=chunksize)):
+            for stream_id, (reach_slope, reach_slope_25th, reach_slope_75th) in zip(pbar_slopes, pool.imap(get_reach_median_stream_slope_information_wrapper, [(reach_rows[stream_id], reach_cols[stream_id], dx, dy, i_general_slope_distance, low, high) for stream_id in unique_stream_ids], chunksize=chunksize)):                
                 dict_stream_slopes[stream_id] = reach_slope
                 dict_stream_slopes_25th[stream_id] = reach_slope_25th
                 dict_stream_slopes_75th[stream_id] = reach_slope_75th
@@ -1912,7 +1920,7 @@ def objective_with_slope(trial_slope: float,
                          d_maxflow_wse_initial: float, d_depth_increment_small: float, d_q_maximum: float,
                          x_sect_args) -> float:
     # find_wse returns a tuple: (d_maxflow_wse_final, d_q_sum)
-    _, trial_d_q_sum = find_wse(
+    _, trial_d_q_sum, success = find_wse(
         2501, 
         d_maxflow_wse_initial, 
         d_depth_increment_small, 
@@ -1920,13 +1928,84 @@ def objective_with_slope(trial_slope: float,
         x_sect_args,
         trial_slope
     )
+    if not success:
+        return np.nan
+
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
+
+def load_graph(strm_path):
+    strm_path = Path(strm_path)
+    if strm_path.suffix in {'.pq', '.parquet'}:
+        gdf = pd.read_parquet(strm_path, columns=['LINKNO', 'DSLINKNO'])
+    else:
+        gdf = gpd.read_file(strm_path, columns=['LINKNO', 'DSLINKNO'], ignore_geometry=True)
+
+    G: nx.DiGraph = nx.from_pandas_edgelist(gdf, source='LINKNO', target='DSLINKNO', create_using=nx.DiGraph())
+    if -1 in G:
+        G.remove_node(-1)  # Remove the "no downstream" node
+
+    return G
 
 def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform, dem_projection, quiet, processes, i_boundary_number):
     s_stream_slope_method = params['s_stream_slope_method']
     if s_stream_slope_method == 'reach_average' or s_stream_slope_method == 'local_average_corrected':
-        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(_STREAMS, dx, dy, quiet, params['i_general_slope_distance'], processes)
+        dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th = create_reach_average_slope_dicts(_STREAMS, dx, dy, quiet, params['i_general_slope_distance'], processes, params['slope_low_percentile'], params['slope_high_percentile'])
+        bad_streams = set()
+        for stream_id in dict_stream_slopes.keys():
+            if dict_stream_slopes_25th[stream_id] == dict_stream_slopes_75th[stream_id]:
+                bad_streams.add(stream_id)
+        if bad_streams:
+            if not params['s_strmshp_path']:
+                LOG.error(f"Bad streams found: {bad_streams}. Please provide a stream vector file to calclulate slopes.")
+
+            G = load_graph(params['s_strmshp_path'])
+            updated = True
+            while updated:
+                updated = False
+                to_remove = set()
+                for stream_id in bad_streams:
+                    if stream_id not in G:
+                        continue
+
+                    # Use upstream and downstream neighbors to estimate slope.
+                    # When there are multiple upstreams, chose the one that has more upstreams (i.e., the one that is more "main stem").
+                    upstream_neighbors = list(set(G.predecessors(stream_id)) - bad_streams)
+                    downstream_neighbors = list(set(G.successors(stream_id)) - bad_streams)
+                    upstream_slope = None
+                    downstream_slope = None
+                    if upstream_neighbors:
+                        if len(upstream_neighbors) > 1:
+                            upstream_neighbors.sort(key=lambda x: len(list(nx.ancestors(G, x))), reverse=True)
+                        upstream_slope = dict_stream_slopes.get(upstream_neighbors[0])
+                    if downstream_neighbors:
+                        downstream_slope = dict_stream_slopes.get(downstream_neighbors[0])
+
+                    if upstream_slope is not None and downstream_slope is not None:
+                        dict_stream_slopes[stream_id] = (upstream_slope + downstream_slope) / 2
+                        dict_stream_slopes_25th[stream_id] = dict_stream_slopes[stream_id]
+                        dict_stream_slopes_75th[stream_id] = dict_stream_slopes[stream_id]
+                        updated = True
+                        to_remove.add(stream_id)
+                    elif upstream_slope is not None:
+                        dict_stream_slopes[stream_id] = upstream_slope
+                        dict_stream_slopes_25th[stream_id] = upstream_slope
+                        dict_stream_slopes_75th[stream_id] = upstream_slope
+                        updated = True
+                        to_remove.add(stream_id)
+                    elif downstream_slope is not None:
+                        dict_stream_slopes[stream_id] = downstream_slope
+                        dict_stream_slopes_25th[stream_id] = downstream_slope
+                        dict_stream_slopes_75th[stream_id] = downstream_slope
+                        updated = True
+                        to_remove.add(stream_id)
+
+                bad_streams -= to_remove
+
+            if bad_streams:
+                LOG.error(f"Unable to estimate slopes for the following streams: {bad_streams}.")
+                raise ValueError(f"Unable to estimate slopes for the following streams: {bad_streams}.")
+
         return (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
     elif s_stream_slope_method == 'end_points':
         stream_vector_id_field = (
@@ -5656,8 +5735,11 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
     if safe_signs_differ(f_lower, f_upper):
         # The signs differ, so we have a valid bracket.
         # For 3 decimal places, xtol only needs to be 0.001
-        d_maxflow_wse_final = np.round(brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.001, args=wse_obj_args), 3)
-        d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_sect_args)
+        try:
+            d_maxflow_wse_final = np.round(brentq(objective_with_wse, wse_lower, wse_upper, xtol=0.001, args=wse_obj_args), 3)
+            d_q_sum = calculate_discharge_from_wse(d_maxflow_wse_final, slope_use_squared, *x_sect_args)
+        except:
+            pass
     elif np.round(f_lower, 5) == 0 or np.round(f_upper, 5) == 0:          
         # if the f_lower or f_upper is equal to zero, it's probably close enough to be the WSE we are looking for, so we'll use it
         d_maxflow_wse_final = np.round(wse_lower, 3) if np.round(f_lower, 5) == 0 else np.round(wse_upper, 3)
@@ -5665,18 +5747,17 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
     # Let's see if the volume-fill approach gave us a better answer and use that if it did
     # To find the depth / wse where the maximum flow occurs we use two sets of incremental depths.  The first is 0.5m followed by 0.05m
-    d_maxflow_wse_initial, d_q_sum_test = find_wse(101, d_maxflow_wse_initial, DEPTH_INCREMENT_BIG, d_q_maximum, x_sect_args, d_slope_use)
-
+    d_maxflow_wse_initial, d_q_sum_test, success = find_wse(101, d_maxflow_wse_initial, DEPTH_INCREMENT_BIG, d_q_maximum, x_sect_args, d_slope_use)
 
     # Based on using depth increments of 0.5, now lets fine-tune the wse using depth increments of 0.05
     d_maxflow_wse_initial = max(d_maxflow_wse_initial - 0.5, thalweg)
     d_maxflow_wse_med = d_maxflow_wse_initial
-    d_maxflow_wse_med, d_q_sum_test = find_wse(101, d_maxflow_wse_med, DEPTH_INCREMENT_MEDIUM, d_q_maximum, x_sect_args, d_slope_use)
+    d_maxflow_wse_med, d_q_sum_test, success = find_wse(101, d_maxflow_wse_med, DEPTH_INCREMENT_MEDIUM, d_q_maximum, x_sect_args, d_slope_use)
 
     # Based on using depth increments of 0.05, now lets fine-tune the wse even more using depth increments of 0.01
     d_maxflow_wse_med = max(d_maxflow_wse_med - 0.05, thalweg)
     d_maxflow_wse_final_test = d_maxflow_wse_med
-    d_maxflow_wse_final_test, d_q_sum_test = find_wse(2501, d_maxflow_wse_med, DEPTH_INCREMENT_SMALL, d_q_maximum, x_sect_args, d_slope_use)
+    d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(2501, d_maxflow_wse_med, DEPTH_INCREMENT_SMALL, d_q_maximum, x_sect_args, d_slope_use)
 
     # let's see if the iterative method gave use a better result and use that if it did
     if abs(d_q_sum_test - d_q_maximum) < abs(d_q_sum-d_q_maximum):
@@ -5711,10 +5792,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
 
         if safe_signs_differ(f_lower, f_upper):
             # The signs differ, so we have a valid bracket.
-            trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            try:
+                trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            except:
+                trial_slope_use = 0
             trial_slope_use = np.round(trial_slope_use, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
                 DEPTH_INCREMENT_SMALL, 
@@ -5734,7 +5818,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         elif np.round(f_lower, 5) == 0:          
             trial_slope_use = np.round(slope_lower, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
                 DEPTH_INCREMENT_SMALL, 
@@ -5753,7 +5837,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         elif np.round(f_upper, 5) == 0:          
             trial_slope_use = np.round(slope_upper, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
                 DEPTH_INCREMENT_SMALL, 
@@ -5794,13 +5878,15 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         
         
         if safe_signs_differ(f_lower, f_upper):
-            
             # The signs differ, so we have a valid bracket.
-            trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            try:
+                trial_slope_use = brentq(objective_with_slope, slope_lower, slope_upper, xtol=0.0001, args=slope_obj_args)
+            except:
+                trial_slope_use = 0
             trial_slope_use = np.round(trial_slope_use, MIN_SLOPE_DECIMAL_PLACES)
-        
+    
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
                 DEPTH_INCREMENT_SMALL, 
@@ -5820,7 +5906,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         elif np.round(f_lower, 5) == 0:          
             trial_slope_use = np.round(slope_lower, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
                 DEPTH_INCREMENT_SMALL, 
@@ -5839,7 +5925,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         elif np.round(f_upper, 5) == 0:          
             trial_slope_use = np.round(slope_upper, MIN_SLOPE_DECIMAL_PLACES)
             # Optionally, recompute d_maxflow_wse_final and d_q_sum with the new slope:
-            d_maxflow_wse_final_test, d_q_sum_test = find_wse(
+            d_maxflow_wse_final_test, d_q_sum_test, success = find_wse(
                 2501, 
                 d_maxflow_wse_initial, 
                 DEPTH_INCREMENT_SMALL, 
@@ -5862,15 +5948,13 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, d_slope_use, i_entry_cell)
         return
     
-    # This just tells the curve file whether to print out a result or not.  If no realistic depths were calculated, no reason to output results.
-    add_curve_file_data = False
 
     # This is the first and last indice of elevations we'll need for the Curve Fitting for this cell
     i_start_elevation_index = -1
     i_last_elevation_index = 0
 
     # if we have a usable value for d_maxflow_wse_final, lets get rest of the VDT data
-    if acceptable and d_maxflow_wse_final > 0.0:
+    if acceptable and d_maxflow_wse_final > 0.0 and i_number_of_increments > 0:
         # round d_q_sum to the 3rd decimal place
         d_q_sum = round(d_q_sum, 3)
         # Now lets get a set number of increments between the low elevation and the elevation where Qmax hits
@@ -6275,6 +6359,98 @@ def create_array(name: str, processes: int, shape: tuple, dtype: np.dtype, fill_
     globals()[name] = arr
     return arr
 
+# @njit(cache=True, nogil=True)
+def get_rows_and_cols_for_stream_in_descending_order(
+    comid: int,
+    upstream_ids: list[int],
+    downstream_id: int,
+    streams: np.ndarray,
+    dem: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    If we have upstream ids, find the row and col which has the comid, and has a neighbor which is in the upstream ids.
+    If there are multiple, choose the one with the highest elevation.
+    If we have downstream ids, do a similar process.
+    If we have neither, find the highest elevation cell with the comid, with the fewest neighbors with the same comid.
+    Then, just collect the rows and cols, and iterate through the stream down or upstream, until we reach the end of the stream.  Return the rows and cols in order from upstream to downstream.
+    """
+    rows, cols = np.where(streams == comid)
+    if len(rows) == 0:
+        return [], []
+
+    upstream_set = set(upstream_ids)
+    upstream_row = -1
+    upstream_col = -1
+    downstream_row = -1
+    downstream_col = -1
+    highest_row = -1
+    highest_col = -1
+    for r, c in zip(rows, cols):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < streams.shape[0] and 0 <= nc < streams.shape[1]:
+                if upstream_ids:
+                    if streams[nr, nc] in upstream_set:
+                        if upstream_row == -1:
+                            upstream_row = r
+                            upstream_col = c
+                        elif dem[r, c] > dem[upstream_row, upstream_col]:
+                            upstream_row = r
+                            upstream_col = c
+                elif downstream_id > 0:
+                    if streams[nr, nc] == downstream_id:
+                        if downstream_row == -1:
+                            downstream_row = r
+                            downstream_col = c
+                        elif dem[r, c] < dem[downstream_row, downstream_col]:
+                            downstream_row = r
+                            downstream_col = c
+                else:
+                    if highest_row == -1:
+                        highest_row = r
+                        highest_col = c
+                    elif dem[r, c] > dem[highest_row, highest_col]:
+                        highest_row = r
+                        highest_col = c
+
+    if upstream_row != -1:
+        start_row, start_col = upstream_row, upstream_col
+    elif downstream_row != -1:
+        start_row, start_col = downstream_row, downstream_col
+    else:
+        start_row, start_col = highest_row, highest_col
+
+    # Now we have the starting point, we can traverse the stream to get the full path
+    path_rows = [start_row]
+    path_cols = [start_col]
+    visited = set()
+    visited.add((start_row, start_col))
+
+    while True:
+        current_row, current_col = path_rows[-1], path_cols[-1]
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = current_row + dr, current_col + dc
+            if 0 <= nr < streams.shape[0] and 0 <= nc < streams.shape[1]:
+                if streams[nr, nc] == comid and (nr, nc) not in visited:
+                    neighbors.append((nr, nc))
+        if neighbors:
+            if len(neighbors) > 1:
+                # Choose the closest neighbor (cartesian distance) to the last point in the path
+                last_row, last_col = path_rows[-1], path_cols[-1]
+                closest_neighbor = min(neighbors, key=lambda x: (x[0] - last_row) ** 2 + (x[1] - last_col) ** 2)
+                path_rows.append(closest_neighbor[0])
+                path_cols.append(closest_neighbor[1])
+                visited.add((closest_neighbor[0], closest_neighbor[1]))
+            else:
+                path_rows.append(neighbors[0][0])
+                path_cols.append(neighbors[0][1])
+                visited.add((neighbors[0][0], neighbors[0][1]))
+        else:
+            break
+
+    return path_rows, path_cols
+
 def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Literal["auto"] = 1):
     """
     Internal driver for ARC.
@@ -6434,6 +6610,8 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
             )
             params['d_x_section_distance'] = required_x_section_distance
 
+    b_bathy_use_banks = params['b_bathy_use_banks']
+
     # Get the list of stream locations. In manual mode, the location list comes
     # from the manual cross-section file rather than from the stream raster.
     if params['b_build_representative_cross_section']:
@@ -6540,7 +6718,6 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     )
 
     # Extract some parameters
-    b_bathy_use_banks = params['b_bathy_use_banks']
     s_output_bathymetry_path = params['s_output_bathymetry_path']
 
     # If b_build_representative_cross_section is False, then we want to generate hydraulic_data
@@ -6555,7 +6732,7 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         )
 
         # Create the output VDT Database file - datatypes are figured out automatically
-        if not hydraulic_data.has_vdt_data():
+        if not hydraulic_data.has_vdt_data() and _PARAMS['i_number_of_increments'] > 0:
             LOG.warning('No VDT data was generated, so no hydraulic output files will be created.')
             if precomputed_cross_section_data is not None:
                 hydraulic_data.add_cross_section_data(precomputed_cross_section_data)

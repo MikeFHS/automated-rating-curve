@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Cross-section sampling and hydraulic geometry helpers.
 
 This module contains the :class:`~arc.cross_section.CrossSection` class, which
@@ -73,6 +74,8 @@ class CrossSection:
         self.dm_elevation = dm_elevation
         self.dm_land_use = dm_land_use
         self.dm_stream = dm_stream
+
+        self.calculate_bathymetry = params["s_output_bathymetry_path"]
 
         self.b_FindBanksBasedOnLandCover = params["b_FindBanksBasedOnLandCover"]
         self.i_lc_water_value = params["i_lc_water_value"]
@@ -1435,13 +1438,9 @@ class CrossSection:
         if not should_apply:
             return 0, 0, 1, 0.0, 0.0
 
+        # Find the depth we will use for to excavate the bathymetry fromt the cross-section
         d_y_depth = float(bank_search_result.get("bathymetry_depth", 0.0))
-        # if (
-        #     not np.isfinite(d_y_depth)
-        #     or d_y_depth >= 25.0
-        #     or d_y_depth < 0.0
-        # ):
-        #     return 0, 0, 1, 0.0, 0.0
+        # Fine the elevation of the bathymetry
         d_y_bathy = smoothed_bank_elevation - d_y_depth
 
         if i_total_bank_cells == 1:
@@ -1753,7 +1752,7 @@ def _calculate_stream_geometry(da_xs_profile: np.ndarray,
     # Take action if there are values < 0
     lt_0_in_depths, i_target_index = _check_for_negative_depths(da_y_depth)
     
-    if lt_0_in_depths:
+    if lt_0_in_depths or len(da_y_depth) < 2:
         # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
         # Get the index of the first bad vadlue
         i_target_index += 1
@@ -1899,7 +1898,7 @@ def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.nda
     d_a_sum = A1 + A2
     d_p_sum = max(P1 + P2, 1e-6)  # Avoid division by zero
 
-    d_composite_n = np.round(((np1 + np2) / d_p_sum)**(2 / 3), 4)
+    d_composite_n = ((np1 + np2) / d_p_sum)**(2 / 3)
 
     # Check that the mannings n is physically realistic
     if d_composite_n < 0.0001:
@@ -1957,6 +1956,8 @@ def _adjust_one_side_for_bathymetry(i_bank_index: int, d_total_bank_dist: float,
         # Calculate the distance to the bank
         d_dist_cell_to_bank = (i_bank_index - x) * d_ordinate_dist + d_side_dist   #d_side_dist should be zero if using Flat WSE or LC method.
         # lc_grid_val = int(dm_land_use[ia_xc_r_index_main[x], ia_xc_c_index_main[x]])
+        index = ia_xc_r_index_main[x], ia_xc_c_index_main[x]
+        # lc_grid_val = int(dm_land_use[index])
 
         # if lc_grid_val<0 or (i_lc_water_value>0 and lc_grid_val!=i_lc_water_value):
         #     return
@@ -1965,38 +1966,57 @@ def _adjust_one_side_for_bathymetry(i_bank_index: int, d_total_bank_dist: float,
         # if x == 0:
         #     # If the cell is the first cell, then set it to the bottom elevation of the trapezoid.
         #     da_xs_profile[x] = d_y_bathy
-        #     dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+        #     dm_output_bathymetry[index] = da_xs_profile[x]
 
         # If the cell is in the flat part of the trapezoidal cross-section, set it to the bottom elevation of the trapezoid.
         if d_dist_cell_to_bank > d_distance_h:
-            if b_bathy_use_banks == False and d_y_bathy < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+            if b_bathy_use_banks == False and d_y_bathy < dm_elevation[index]:
                 da_xs_profile[x] = d_y_bathy
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                # dm_output_bathymetry[index] = da_xs_profile[x]
+                if np.isnan(dm_output_bathymetry[index]):
+                    dm_output_bathymetry[index] = da_xs_profile[x]
+                else:
+                    dm_output_bathymetry[index] = dm_output_bathymetry[index] + (da_xs_profile[x] - dm_output_bathymetry[index]) * 0.5
             elif b_bathy_use_banks == True:
                 da_xs_profile[x] = d_y_bathy
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if np.isnan(dm_output_bathymetry[index]):
+                    dm_output_bathymetry[index] = da_xs_profile[x]
+                else:
+                    dm_output_bathymetry[index] = dm_output_bathymetry[index] + (da_xs_profile[x] - dm_output_bathymetry[index]) * 0.5
 
         # If the cell is in the slope part of the trapezoid you need to find the elevation based on the slope of the trapezoid side.
         elif d_dist_cell_to_bank <= d_distance_h and d_dist_cell_to_bank < d_trap_base + d_distance_h:
-            if b_bathy_use_banks == False and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+            if b_bathy_use_banks == False and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))) < dm_elevation[index]:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if np.isnan(dm_output_bathymetry[index]):
+                    dm_output_bathymetry[index] = da_xs_profile[x]
+                else:
+                    dm_output_bathymetry[index] = dm_output_bathymetry[index] + (da_xs_profile[x] - dm_output_bathymetry[index]) * 0.5
             elif b_bathy_use_banks == True:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank / d_distance_h))
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if np.isnan(dm_output_bathymetry[index]):
+                    dm_output_bathymetry[index] = da_xs_profile[x]
+                else:
+                    dm_output_bathymetry[index] = dm_output_bathymetry[index] + (da_xs_profile[x] - dm_output_bathymetry[index]) * 0.5
 
         # Similar to above, but on the far-side slope of the trapezoid.  You need to find the elevation based on the slope of the trapezoid side.
         elif d_dist_cell_to_bank >= d_trap_base + d_distance_h:
             d_dist_cell_to_bank_other_side = d_total_bank_dist - d_dist_cell_to_bank
-            if b_bathy_use_banks == False and d_dist_cell_to_bank_other_side>0.0 and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+            if b_bathy_use_banks == False and d_dist_cell_to_bank_other_side>0.0 and (d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))) < dm_elevation[index]:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+                if np.isnan(dm_output_bathymetry[index]):
+                    dm_output_bathymetry[index] = da_xs_profile[x]
+                else:
+                    dm_output_bathymetry[index] = dm_output_bathymetry[index] + (da_xs_profile[x] - dm_output_bathymetry[index]) * 0.5
             elif b_bathy_use_banks == True:
                 da_xs_profile[x] = d_y_bathy + d_y_depth * (1.0 - (d_dist_cell_to_bank_other_side / d_distance_h))
-                dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
-            #if (d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h) < dm_elevation[ia_xc_r_index_main[x], ia_xc_c_index_main[x]]:
+                if np.isnan(dm_output_bathymetry[index]):
+                    dm_output_bathymetry[index] = da_xs_profile[x]
+                else:
+                    dm_output_bathymetry[index] = dm_output_bathymetry[index] + (da_xs_profile[x] - dm_output_bathymetry[index]) * 0.5
+            #if (d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h) < dm_elevation[index]:
             #    da_xs_profile[x] = d_y_bathy + d_y_depth * (d_dist_cell_to_bank - (d_trap_base + d_distance_h)) / d_distance_h
-            #    dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+            #    dm_output_bathymetry[index] = da_xs_profile[x]
 
         # If the cell is outside of the banks, then just ignore this cell (set it to it's same elevation).  No need to update the output bathymetry raster.
         elif d_dist_cell_to_bank <= 0 or d_dist_cell_to_bank >= d_total_bank_dist:
@@ -2006,7 +2026,7 @@ def _adjust_one_side_for_bathymetry(i_bank_index: int, d_total_bank_dist: float,
         
         #JUST FOR TESTING
         #da_xs_profile[x] = d_y_bathy
-        #dm_output_bathymetry[ia_xc_r_index_main[x], ia_xc_c_index_main[x]] = da_xs_profile[x]
+        #dm_output_bathymetry[index] = da_xs_profile[x]
 
     return
 

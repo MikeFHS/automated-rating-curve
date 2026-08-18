@@ -909,8 +909,9 @@ class HydraulicData:
 @njit(cache=True)
 def add_hydraulic_data(output_data: np.ndarray, n: int, wse: float, t: float, p: float, q: float, v: float, i_entry_cell: int, b_modified_dem: bool):
     """Write one increment (q, v, t, wse, p) into the output array."""
-    output_data[i_entry_cell, 8 + ((n-1) * 5):8 + ((n-1) * 5) + 5] = [q, v, t, wse - 100 if b_modified_dem else wse, p]
-
+    index = 8 + ((n-1) * 5)
+    output_data[i_entry_cell, index:index + 5] = [q, v, t, wse - 100 if b_modified_dem else wse, p]
+    
 # Power function equation
 @njit(cache=True)
 def power_func(d_value: np.ndarray, d_coefficient: float, d_power: float):
