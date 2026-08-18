@@ -9,6 +9,7 @@ from shapely.geometry import LineString
 
 from arc.Automated_Rating_Curve_Generator import (
     build_bathymetry_geometry_dict,
+    read_flow_file,
     read_main_input_file,
 )
 from arc.cross_section import CrossSection, compute_stream_derivatives, _find_nonzero_interior_bounds
@@ -143,6 +144,47 @@ def test_read_main_input_file_requires_representative_output_path() -> None:
                 "Build_Representative_Cross_Section": True,
             },
         )
+
+
+def test_representative_baseflow_inputs_take_precedence_over_powerlaw() -> None:
+    """A complete baseflow trio should select hydraulic bathymetry without QMax."""
+    params = read_main_input_file(
+        "",
+        {
+            "DEM_File": "dem.tif",
+            "Stream_File": "stream.tif",
+            "LU_Raster_SameRes": "land.tif",
+            "LU_Manning_n": "mannings.txt",
+            "Flow_File": "flows.csv",
+            "Flow_File_ID": "COMID",
+            "Flow_File_BF": "baseflow",
+            "StrmShp_File": "stream_network.gpkg",
+            "reach_id": "COMID",
+            "downstream_reach_id": "DSCOMID",
+            "AROutBATHY": "bathy.tif",
+            "Build_Representative_Cross_Section": True,
+            "Representative_Cross_Section_File": "representative.csv",
+            "drainage_area_field": "DA",
+            "coefficient_depth": 0.5,
+            "exponent_depth": 0.25,
+            "coefficient_width": 3.0,
+            "exponent_width": 0.4,
+        },
+    )
+
+    assert params["b_use_representative_baseflow_bathymetry"] is True
+    assert params["b_use_bathymetry_powerlaw"] is False
+    assert params["s_flow_file_qmax"] == ""
+
+
+def test_read_flow_file_supports_baseflow_without_qmax(tmp_path: Path) -> None:
+    """Representative bathymetry should load only its ID and baseflow columns."""
+    flow_path = tmp_path / "flows.csv"
+    flow_path.write_text("COMID,baseflow\n1,2.5\n", encoding="utf-8")
+
+    flow_data = read_flow_file(str(flow_path), "COMID", "baseflow", "")
+
+    assert flow_data == {1: {"baseflow": 2.5}}
 
 
 def test_reach_scale_inflect_bank_depth_maps_back_to_local_bank_indices() -> None:
