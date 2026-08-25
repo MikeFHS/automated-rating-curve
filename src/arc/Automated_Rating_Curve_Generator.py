@@ -1919,6 +1919,7 @@ def objective_with_wse(trial_wse: float, slope_squared: float,
 def objective_with_slope(trial_slope: float,
                          d_maxflow_wse_initial: float, d_depth_increment_small: float, d_q_maximum: float,
                          x_sect_args) -> float:
+    
     # find_wse returns a tuple: (d_maxflow_wse_final, d_q_sum)
     _, trial_d_q_sum, success = find_wse(
         2501, 
@@ -1934,14 +1935,20 @@ def objective_with_slope(trial_slope: float,
     # The objective is zero when trial_d_q_sum equals d_q_maximum.
     return trial_d_q_sum - d_q_maximum
 
-def load_graph(strm_path):
+def load_graph(strm_path, reach_id_field, downstream_reach_id_field):
     strm_path = Path(strm_path)
+    graph_columns = [reach_id_field, downstream_reach_id_field]
     if strm_path.suffix in {'.pq', '.parquet'}:
-        gdf = pd.read_parquet(strm_path, columns=['LINKNO', 'DSLINKNO'])
+        gdf = pd.read_parquet(strm_path, columns=graph_columns)
     else:
-        gdf = gpd.read_file(strm_path, columns=['LINKNO', 'DSLINKNO'], ignore_geometry=True)
+        gdf = gpd.read_file(strm_path, columns=graph_columns, ignore_geometry=True)
 
-    G: nx.DiGraph = nx.from_pandas_edgelist(gdf, source='LINKNO', target='DSLINKNO', create_using=nx.DiGraph())
+    G: nx.DiGraph = nx.from_pandas_edgelist(
+        gdf,
+        source=reach_id_field,
+        target=downstream_reach_id_field,
+        create_using=nx.DiGraph(),
+    )
     if -1 in G:
         G.remove_node(-1)  # Remove the "no downstream" node
 
@@ -1959,7 +1966,11 @@ def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform,
             if not params['s_strmshp_path']:
                 LOG.error(f"Bad streams found: {bad_streams}. Please provide a stream vector file to calclulate slopes.")
 
-            G = load_graph(params['s_strmshp_path'])
+            G = load_graph(
+                params['s_strmshp_path'],
+                params['s_reach_id_field'],
+                params['s_downstream_reach_id_field'],
+            )
             updated = True
             while updated:
                 updated = False
@@ -2002,11 +2013,7 @@ def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform,
 
                 bad_streams -= to_remove
 
-            if bad_streams:
-                LOG.error(f"Unable to estimate slopes for the following streams: {bad_streams}.")
-                raise ValueError(f"Unable to estimate slopes for the following streams: {bad_streams}.")
-
-        return (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th)
+        return (dict_stream_slopes, dict_stream_slopes_25th, dict_stream_slopes_75th, bad_streams)
     elif s_stream_slope_method == 'end_points':
         stream_vector_id_field = (
             params['s_reach_id_field']
@@ -2022,9 +2029,9 @@ def initialize_stream_slope_dictionaries(params: dict, dx, dy, dem_geotransform,
             quiet,
             i_boundary_number,
         )
-        return (dict_stream_slopes, None, None)
+        return (dict_stream_slopes, None, None, None)
     
-    return (None, None, None)
+    return (None, None, None, None)
 
 
 def _get_cell_bathymetry_inputs(i_entry_cell: int, i_row_cell: int, i_column_cell: int, params: dict) -> tuple[float, float, float | None, float | None]:
@@ -5347,6 +5354,24 @@ def _smooth_reach_bank_elevations(
     # Final pass: interpolate the graph-smoothed controls to every cross section
     # while preserving local bank indices/top width as horizontal geometry.
     for reach_id, reach_summary in reach_summaries.items():
+        if reach_id not in network_smoothed_reach_min_bank_elevations:
+            skipped_cell_count = 0
+            for reach_entry in reach_summary['reach_entries']:
+                entry_index = int(reach_entry["entry_index"])
+                if sampled_records[entry_index] is not None:
+                    sampled_records[entry_index] = None
+                    skipped_cell_count += 1
+            LOG.warning(
+                "Marking reach_id "
+                + str(reach_id)
+                + " as unusable because it has no finite bank observations "
+                + "and no network-smoothed fallback. Removed "
+                + str(skipped_cell_count)
+                + " sampled records from downstream bathymetry and "
+                + "rating-curve generation."
+            )
+            continue
+
         reach_entries = reach_summary['reach_entries']
         order = np.asarray(reach_summary['order'], dtype=np.int64)
         ordered_coordinates = np.asarray(reach_summary['ordered_coordinates'], dtype=np.float64)
@@ -5354,13 +5379,6 @@ def _smooth_reach_bank_elevations(
         function_used_by_entry_index = reach_summary['function_used_by_entry_index']
         mean_direction = float(reach_summary['mean_direction'])
         minimum_bank_elevation = float(reach_summary['minimum_bank_elevation'])
-
-        if reach_id not in network_smoothed_reach_min_bank_elevations:
-            raise ValueError(
-                'Network smoothing did not return a bank elevation for reach_id '
-                + str(reach_id)
-                + '.'
-            )
         # The node value is the reach's outlet minimum. The interpolation
         # helper uses the graph-node slope to reconstruct the upstream endpoint.
         reach_outlet_network_elevation = float(
@@ -5640,6 +5658,10 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
             raise KeyError(f"Manual cross section for ID {i_cell_comid} was not found.")
     if _PRECOMPUTED_CROSS_SECTION_RECORDS is not None:
         precomputed_record = _PRECOMPUTED_CROSS_SECTION_RECORDS[i_entry_cell]
+        if precomputed_record is None:
+            hydraulic_data = get_hydraulic_data(_PARAMS)
+            hydraulic_data.add_empty_x_section_for_curve_file(i_cell_comid, 0.0, i_entry_cell)
+            return
 
     dx = _PARAMS['dx']
     dy = _PARAMS['dy']
@@ -6619,8 +6641,13 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         flow_ids = flow_ids[flow_ids > 0]
     else:
         flow_ids = np.fromiter(id_flow_dict.keys(), count=len(id_flow_dict), dtype=np.int64)
+
     if manual_cross_section_records:
-        matching_flow_ids = [int(flow_id) for flow_id in flow_ids if int(flow_id) in manual_cross_section_records]
+        matching_flow_ids = [
+            int(flow_id)
+            for flow_id in flow_ids
+            if int(flow_id) in manual_cross_section_records
+        ]
         if len(matching_flow_ids) == 0:
             raise ValueError(
                 "No IDs were shared between the ARC flow file and the manual cross-section file."
@@ -6633,8 +6660,8 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
             [manual_cross_section_records[flow_id]['col'] for flow_id in matching_flow_ids],
             dtype=np.int64,
         )
-        create_array("_CELL_COMIDS", processes, (len(matching_flow_ids),), np.int64)[:] = np.asarray(matching_flow_ids, dtype=np.int64)
-        create_array("_CELL_SOURCE_STREAM_IDS", processes, (len(matching_flow_ids),), np.int64)[:] = np.asarray(
+        cell_comids = np.asarray(matching_flow_ids, dtype=np.int64)
+        cell_source_stream_ids = np.asarray(
             [manual_cross_section_records[flow_id]['source_stream_id'] for flow_id in matching_flow_ids],
             dtype=np.int64,
         )
@@ -6645,13 +6672,8 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         }
     else:
         ia_valued_row_indices, ia_valued_column_indices = np.where(np.isin(dm_stream, flow_ids, kind='table'))
-        create_array("_CELL_COMIDS", processes, (ia_valued_row_indices.size,), np.int64)[:] = dm_stream[ia_valued_row_indices, ia_valued_column_indices]
-
-    for arr, name in zip([ia_valued_row_indices, ia_valued_column_indices], ["_CELL_ROWS", "_CELL_COLS"]):
-        create_array(name, processes, arr.shape, arr.dtype)[:] = arr[:]
-
-    # This array will hold all the data for each stream cell. The first 8 columns are 'COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev', and then we have 5 columns repeated for each increment with 'q', 'v', 't', 'wse', 'p'. 
-    create_array("_OUTPUT_DATA_ARRAY", processes, (len(ia_valued_row_indices), 8 + params['i_number_of_increments']*5), np.float64, fill_value=np.nan)
+        cell_comids = dm_stream[ia_valued_row_indices, ia_valued_column_indices].astype(np.int64)
+        cell_source_stream_ids = None
 
     # Get the cell dx and dy coordinates
     dx, dy, dproject = convert_cell_size(dcellsize, dem_dy, dyll, dyur, dem_projection)
@@ -6669,6 +6691,33 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
         processes,
         i_boundary_number,
     )
+    slope_bad_streams = stream_slope_dicts[3]
+    if slope_bad_streams:
+        filter_ids = cell_source_stream_ids if cell_source_stream_ids is not None else cell_comids
+        keep_mask = ~np.isin(filter_ids, list(slope_bad_streams))
+        skipped_cell_count = int(keep_mask.size - np.count_nonzero(keep_mask))
+        LOG.info(
+            f"Bypassing {skipped_cell_count} stream cells from "
+            f"{len(slope_bad_streams)} streams with unresolved slope estimates."
+        )
+        ia_valued_row_indices = ia_valued_row_indices[keep_mask]
+        ia_valued_column_indices = ia_valued_column_indices[keep_mask]
+        cell_comids = cell_comids[keep_mask]
+        if cell_source_stream_ids is not None:
+            cell_source_stream_ids = cell_source_stream_ids[keep_mask]
+
+    if cell_comids.size == 0:
+        raise ValueError("No stream cells remain after bypassing streams with unresolved slope estimates.")
+
+    create_array("_CELL_COMIDS", processes, cell_comids.shape, np.int64)[:] = cell_comids
+    if cell_source_stream_ids is not None:
+        create_array("_CELL_SOURCE_STREAM_IDS", processes, cell_source_stream_ids.shape, np.int64)[:] = cell_source_stream_ids
+
+    for arr, name in zip([ia_valued_row_indices, ia_valued_column_indices], ["_CELL_ROWS", "_CELL_COLS"]):
+        create_array(name, processes, arr.shape, arr.dtype)[:] = arr[:]
+
+    # This array will hold all the data for each stream cell. The first 8 columns are 'COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev', and then we have 5 columns repeated for each increment with 'q', 'v', 't', 'wse', 'p'. 
+    create_array("_OUTPUT_DATA_ARRAY", processes, (len(ia_valued_row_indices), 8 + params['i_number_of_increments']*5), np.float64, fill_value=np.nan)
 
     _build_flow_arrays(
         id_flow_dict,
@@ -6693,6 +6742,7 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     params["nrows"] = nrows
     params["ncols"] = ncols
     params["b_modified_dem"] = b_modified_dem
+    params["slope_bad_streams"] = slope_bad_streams
     global _PARAMS
     _PARAMS = params
 
