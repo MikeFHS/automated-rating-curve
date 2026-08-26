@@ -232,10 +232,11 @@ def test_build_representative_cross_section_dataframe_uses_inflect_terrace_depth
 
     df = build_representative_cross_section_dataframe(cross_section_data)
 
-    assert df.shape == (5, 20)
+    assert df.shape == (5, 21)
     assert df["COMID"].tolist() == [7] * 5
     assert df["Depth_Stage_Index"].tolist() == [1, 2, 3, 4, 5]
     assert df["Depth_Stage_Meters"].tolist() == pytest.approx([0.01, 0.02, 0.03, 0.04, 0.05])
+    assert df["Stream_Slope"].tolist() == pytest.approx([0.001] * 5)
     assert df["Reach_Inflect_Terrace_Depth"].tolist() == pytest.approx([0.05] * 5)
     assert df["Cross_Section_Count"].tolist() == [2] * 5
     assert df["Hydraulic_Sample_Count"].tolist() == [2] * 5
@@ -258,6 +259,7 @@ def test_build_representative_cross_section_dataframe_derives_dimensions_from_wi
     representative_depth_increment = df["Representative_Depth_Increment"].to_numpy(dtype=np.float64)
     representative_depth = df["Representative_Depth"].to_numpy(dtype=np.float64)
 
+    assert df["Stream_Slope"].tolist() == pytest.approx([0.0015] * df.shape[0])
     assert np.all(np.diff(representative_area) >= -1e-9)
     assert np.all(np.diff(representative_width) >= -1e-9)
     assert np.all(np.diff(representative_depth) >= -1e-9)
@@ -289,7 +291,8 @@ def test_build_representative_cross_section_dataframe_skips_invalid_cross_sectio
 
     df = build_representative_cross_section_dataframe(cross_section_data)
 
-    assert df.shape == (5, 20)
+    assert df.shape == (5, 21)
+    assert df["Stream_Slope"].tolist() == pytest.approx([0.001] * 5)
     assert df["Cross_Section_Count"].tolist() == [2] * 5
     assert df["Hydraulic_Sample_Count"].tolist() == [1] * 5
     assert np.all(df["Median_Discharge"].to_numpy(dtype=np.float64) > 0.0)

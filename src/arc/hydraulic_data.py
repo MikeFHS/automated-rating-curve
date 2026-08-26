@@ -22,6 +22,7 @@ REPRESENTATIVE_CROSS_SECTION_COLUMNS = [
     'Hydraulic_Sample_Count',
     'Depth_Stage_Index',
     'Depth_Stage_Meters',
+    'Stream_Slope',
     'Reach_Inflect_Terrace_Depth',
     'Representative_Thalweg_Elevation',
     'Median_Discharge',
@@ -177,6 +178,12 @@ def _build_representative_hydraulic_rows_for_reach(
     representative_thalweg = float(
         np.nanmedian([float(record['Thalweg']) for record in group if record.get('Thalweg') is not None])
     )
+    valid_slopes = [
+        float(record['Slope'])
+        for record in group
+        if record.get('Slope') is not None and float(record['Slope']) > 0.0
+    ]
+    representative_stream_slope = float(np.nanmedian(valid_slopes)) if valid_slopes else np.nan
     rows: list[dict] = []
     last_valid_stage_depth = 0.0
 
@@ -239,6 +246,7 @@ def _build_representative_hydraulic_rows_for_reach(
                 'Hydraulic_Sample_Count': int(len(areas)),
                 'Depth_Stage_Index': int(stage_index),
                 'Depth_Stage_Meters': stage_depth,
+                'Stream_Slope': representative_stream_slope,
                 'Reach_Inflect_Terrace_Depth': max_depth,
                 'Representative_Thalweg_Elevation': representative_thalweg,
                 'Median_Discharge': float(np.nanmedian(np.asarray(discharges, dtype=np.float64))),
@@ -325,11 +333,13 @@ def build_representative_cross_section_dataframe(
             representative_width,
             representative_area,
         )
+        representative_velocity = _monotonic_cumulative_max(group['Median_Velocity'].to_numpy(dtype=np.float64))
 
         group['Representative_Cross_Sectional_Area'] = representative_area
         group['Representative_Depth_Increment'] = representative_depth_increment
         group['Representative_Top_Width'] = representative_width
         group['Representative_Depth'] = representative_depth
+        group['Median_Velocity'] = representative_velocity
         group['Representative_Stage_Elevation'] = (
             group['Representative_Thalweg_Elevation'].to_numpy(dtype=np.float64) + representative_depth
         )
