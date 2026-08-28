@@ -241,8 +241,8 @@ def test_build_representative_cross_section_dataframe_uses_inflect_terrace_depth
     assert df["Cross_Section_Count"].tolist() == [2] * 5
     assert df["Hydraulic_Sample_Count"].tolist() == [2] * 5
     assert df["Representative_Thalweg_Elevation"].tolist() == pytest.approx([0.005] * 5)
-    assert df["Median_Depth"].tolist() == pytest.approx([0.01, 0.02, 0.03, 0.04, 0.05])
-    assert np.all(df["Median_Discharge"].to_numpy(dtype=np.float64) > 0.0)
+    assert df["Mean_Depth"].tolist() == pytest.approx([0.01, 0.02, 0.03, 0.04, 0.05])
+    assert np.all(df["Mean_Discharge"].to_numpy(dtype=np.float64) > 0.0)
 
 
 def test_build_representative_cross_section_dataframe_derives_dimensions_from_width_and_area() -> None:
@@ -295,7 +295,7 @@ def test_build_representative_cross_section_dataframe_skips_invalid_cross_sectio
     assert df["Stream_Slope"].tolist() == pytest.approx([0.001] * 5)
     assert df["Cross_Section_Count"].tolist() == [2] * 5
     assert df["Hydraulic_Sample_Count"].tolist() == [1] * 5
-    assert np.all(df["Median_Discharge"].to_numpy(dtype=np.float64) > 0.0)
+    assert np.all(df["Mean_Discharge"].to_numpy(dtype=np.float64) > 0.0)
 
 
 def test_build_bathymetry_geometry_dict_uses_drainage_area_power_laws(tmp_path: Path) -> None:

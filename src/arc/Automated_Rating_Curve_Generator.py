@@ -113,8 +113,11 @@ ARRAY_NAMES = [
     '_CELL_REACH_INFLECT_TERRACE_INDEX',
 ]
 
-MIN_SLOPE = 1e-8
+# See https://essd.copernicus.org/articles/14/2239/2022/essd-14-2239-2022.pdf for their lower bound of river slope
+MIN_SLOPE = 1e-4
 MIN_SLOPE_DECIMAL_PLACES = -int(math.log10(MIN_SLOPE))
+MAX_SLOPE = 0.5
+MAX_SLOPE_DECIMAL_PLACES = -int(math.log10(MAX_SLOPE))
 DEPTH_INCREMENT_BIG = 0.5
 DEPTH_INCREMENT_MEDIUM = 0.05
 DEPTH_INCREMENT_SMALL = 0.01
@@ -1540,6 +1543,13 @@ def get_local_average_stream_slope_information(i_row: int, i_column: int, dm_dem
     if count > 0:
         d_stream_slope = total / count
 
+    # if we have low slope or negative slope, lets assume that the slope is just our minimum slope
+    if d_stream_slope <= MIN_SLOPE:
+        d_stream_slope = MIN_SLOPE
+
+    if d_stream_slope >= MAX_SLOPE:
+        d_stream_slope = MAX_SLOPE
+
     return d_stream_slope
 
 @njit(cache=True)
@@ -1763,7 +1773,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
         d_wse = np.round(thalweg + d_inc_y * i_entry_elevation, 3)
 
         # Calculate the geometry          
-        A, P, V, Q, T = _calculate_all(*flood_increments_args, d_wse, sqrt_slope)
+        A, P, V, Q, T, _ = _calculate_all(*flood_increments_args, d_wse, sqrt_slope)
 
         if T > 0 and A > 0 and P > 0:
             if Q < prev_q:
@@ -1774,7 +1784,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
                 while d_wse_lower_bound < d_wse_upper_bound:
                     # Calculate the geometry       
-                    A, P, V_cand, Q_cand, T = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope)   
+                    A, P, V_cand, Q_cand, T, _ = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope)   
 
                     # accept only if it improves AND respects the cap
                     if (A > prev_a) and (P > prev_p) and (Q_cand > prev_q) and (Q_cand <= d_q_sum):
@@ -1895,7 +1905,11 @@ def dict_stream_slopes_from_endpoints(dm_stream, dem_geotransform, dem_projectio
             length_m,
             pad_distance=pad_distance,
         )
-        dict_stream_slopes[stream_id] = round(slope_pct/100, 8)
+        slope = round(slope_pct/100, 8)
+        if slope > MIN_SLOPE:
+            dict_stream_slopes[stream_id] = slope
+        elif slope <= MIN_SLOPE:
+            dict_stream_slopes[stream_id] = MIN_SLOPE
 
     return dict_stream_slopes
 

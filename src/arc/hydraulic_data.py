@@ -25,12 +25,13 @@ REPRESENTATIVE_CROSS_SECTION_COLUMNS = [
     'Stream_Slope',
     'Reach_Inflect_Terrace_Depth',
     'Representative_Thalweg_Elevation',
-    'Median_Discharge',
-    'Median_Depth',
-    'Median_Velocity',
-    'Median_Top_Width',
-    'Median_Cross_Sectional_Area',
-    'Median_WSE',
+    'Mean_Discharge',
+    'Mean_Depth',
+    'Mean_Velocity',
+    'Representative_Velocity',
+    'Mean_Top_Width',
+    'Mean_Cross_Sectional_Area',
+    'Mean_WSE',
     'Representative_Cross_Sectional_Area',
     'Representative_Depth_Increment',
     'Representative_Depth',
@@ -65,7 +66,7 @@ def _calculate_increment_area(discharge: pd.Series, velocity: pd.Series) -> pd.S
 def _monotonic_cumulative_max(values: np.ndarray) -> np.ndarray:
     """Force a 1D array to be non-decreasing while preserving NaNs.
 
-    Reach medians are computed independently at each 0.10 m depth stage, so
+    Reach means are computed independently at each 0.10 m depth stage, so
     tiny non-monotonic artifacts can appear after aggregation. The
     representative geometry uses a cumulative maximum to keep the staged
     cross-section envelope physically ordered from the thalweg outward.
@@ -86,10 +87,10 @@ def _derive_depths_from_width_and_area(
     representative_widths: np.ndarray,
     representative_areas: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert staged width/area medians into cross-section depth dimensions.
+    """Convert staged width/area means into cross-section depth dimensions.
 
     The representative cross section is now defined from its staged hydraulic
-    dimensions rather than from median DEM profile points. ARC treats each
+    dimensions rather than from mean DEM profile points. ARC treats each
     0.10 m depth step as one stage on the representative section. Starting at
     the thalweg with zero width and zero area, it computes the incremental
     depth needed to grow from the previous stage to the current one assuming
@@ -157,12 +158,40 @@ def _get_inflect_minimum_index(mean_d2w_dy2: np.ndarray) -> int:
     return int(np.argmin(mean_d2w_dy2))
 
 
+def _filter_stage_samples_to_two_standard_deviations(
+    areas: np.ndarray,
+    velocities: np.ndarray,
+    top_widths: np.ndarray,
+) -> np.ndarray:
+    """Keep stage samples whose key hydraulics are near the reach mean.
+
+    The representative section is meant to summarize the reach, so a sampled
+    cross-section must have area, velocity, and top width all within two
+    standard deviations of that stage's mean before it contributes to the
+    final reach mean.
+    """
+    keep_mask = np.isfinite(areas) & np.isfinite(velocities) & np.isfinite(top_widths)
+    for values in (areas, velocities, top_widths):
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            return np.zeros(values.shape, dtype=bool)
+
+        mean_value = float(np.nanmean(finite_values))
+        standard_deviation = float(np.nanstd(finite_values))
+        if standard_deviation == 0.0:
+            keep_mask &= values == mean_value
+        else:
+            keep_mask &= np.abs(values - mean_value) <= (2.0 * standard_deviation)
+
+    return keep_mask
+
+
 def _build_representative_hydraulic_rows_for_reach(
     comid: int,
     group: list[dict],
     max_depth: float,
 ) -> list[dict]:
-    """Build staged hydraulic medians for one reach up to a fixed depth cap.
+    """Build staged hydraulic means for one reach up to a fixed depth cap.
 
     ARC evaluates each contributing cross section every 0.10 meters above its
     local thalweg up to ``max_depth`` meters, computing area, perimeter,
@@ -176,14 +205,14 @@ def _build_representative_hydraulic_rows_for_reach(
         return []
 
     representative_thalweg = float(
-        np.nanmedian([float(record['Thalweg']) for record in group if record.get('Thalweg') is not None])
+        np.nanmean([float(record['Thalweg']) for record in group if record.get('Thalweg') is not None])
     )
     valid_slopes = [
         float(record['Slope'])
         for record in group
         if record.get('Slope') is not None and float(record['Slope']) > 0.0
     ]
-    representative_stream_slope = float(np.nanmedian(valid_slopes)) if valid_slopes else np.nan
+    representative_stream_slope = float(np.nanmean(valid_slopes)) if valid_slopes else np.nan
     rows: list[dict] = []
     last_valid_stage_depth = 0.0
 
@@ -209,7 +238,7 @@ def _build_representative_hydraulic_rows_for_reach(
             wse = float(thalweg + stage_depth)
             sqrt_slope = float(slope) ** 0.5
 
-            area, perimeter, velocity, discharge, top_width = _calculate_all(
+            area, perimeter, velocity, discharge, top_width, d_composite_n = _calculate_all(
                 left_profile,
                 left_profile.size,
                 left_n,
@@ -221,7 +250,7 @@ def _build_representative_hydraulic_rows_for_reach(
                 sqrt_slope,
             )
 
-            if not all(np.isfinite(value) for value in (area, perimeter, velocity, discharge, top_width)):
+            if not all(np.isfinite(value) for value in (area, perimeter, velocity, discharge, top_width, d_composite_n)):
                 if rows:
                     for row in rows:
                         row['Reach_Inflect_Terrace_Depth'] = last_valid_stage_depth
@@ -239,22 +268,39 @@ def _build_representative_hydraulic_rows_for_reach(
         if not areas:
             continue
 
+        area_values = np.asarray(areas, dtype=np.float64)
+        velocity_values = np.asarray(velocities, dtype=np.float64)
+        top_width_values = np.asarray(top_widths, dtype=np.float64)
+        discharge_values = np.asarray(discharges, dtype=np.float64)
+        wse_values = np.asarray(wses, dtype=np.float64)
+
+        # Remove hydraulic outliers before averaging the retained stage
+        # samples. A sample must pass all three checks so odd geometry in one
+        # metric cannot still influence the representative reach curve.
+        sample_keep_mask = _filter_stage_samples_to_two_standard_deviations(
+            area_values,
+            velocity_values,
+            top_width_values,
+        )
+        if not sample_keep_mask.any():
+            continue
+
         rows.append(
             {
                 'COMID': int(comid),
                 'Cross_Section_Count': int(len(group)),
-                'Hydraulic_Sample_Count': int(len(areas)),
+                'Hydraulic_Sample_Count': int(np.count_nonzero(sample_keep_mask)),
                 'Depth_Stage_Index': int(stage_index),
                 'Depth_Stage_Meters': stage_depth,
                 'Stream_Slope': representative_stream_slope,
                 'Reach_Inflect_Terrace_Depth': max_depth,
                 'Representative_Thalweg_Elevation': representative_thalweg,
-                'Median_Discharge': float(np.nanmedian(np.asarray(discharges, dtype=np.float64))),
-                'Median_Depth': stage_depth,
-                'Median_Velocity': float(np.nanmedian(np.asarray(velocities, dtype=np.float64))),
-                'Median_Top_Width': float(np.nanmedian(np.asarray(top_widths, dtype=np.float64))),
-                'Median_Cross_Sectional_Area': float(np.nanmedian(np.asarray(areas, dtype=np.float64))),
-                'Median_WSE': float(np.nanmedian(np.asarray(wses, dtype=np.float64))),
+                'Mean_Discharge': float(np.nanmean(discharge_values[sample_keep_mask])),
+                'Mean_Depth': stage_depth,
+                'Mean_Velocity': float(np.nanmean(velocity_values[sample_keep_mask])),
+                'Mean_Top_Width': float(np.nanmean(top_width_values[sample_keep_mask])),
+                'Mean_Cross_Sectional_Area': float(np.nanmean(area_values[sample_keep_mask])),
+                'Mean_WSE': float(np.nanmean(wse_values[sample_keep_mask])),
             }
         )
         last_valid_stage_depth = stage_depth
@@ -268,7 +314,7 @@ def _build_representative_hydraulic_rows_for_reach(
 def build_representative_cross_section_dataframe(
     cross_section_data: list[dict],
 ) -> pd.DataFrame:
-    """Build representative cross sections from staged hydraulic medians.
+    """Build representative cross sections from filtered staged hydraulic means.
 
     When representative cross sections are enabled, ARC now ignores the qmax-
     based VDT staging for this export. Instead it:
@@ -278,10 +324,12 @@ def build_representative_cross_section_dataframe(
     2. Recomputes hydraulic properties every 0.10 meters above each
        cross-section thalweg up to a 25 meter maximum depth.
        The sweep truncates earlier if any non-finite hydraulic outputs appear.
-    3. Takes the median discharge, velocity, top width, area, and WSE across
-       the reach at each stage.
-    4. Derives representative cross-section dimensions from the staged median
-       top width and staged median area.
+    3. Removes cross sections whose area, velocity, or top width are outside
+       two standard deviations of the reach mean at the current stage.
+    4. Takes the mean discharge, velocity, top width, area, and WSE across the
+       retained reach samples at each stage.
+    5. Derives representative cross-section dimensions from the staged mean
+       top width and staged mean area.
 
     Parameters
     ----------
@@ -319,27 +367,26 @@ def build_representative_cross_section_dataframe(
     for _, group in representative_df.groupby('COMID', sort=True):
         group = group.sort_values('Depth_Stage_Index').copy()
 
-        # Independent depth-stage medians can wobble slightly, so enforce a
+        # Independent depth-stage means can wobble slightly, so enforce a
         # monotonic staged area/width envelope before solving for the
         # representative cross-section dimensions.
         representative_area = _monotonic_cumulative_max(
-            group['Median_Cross_Sectional_Area'].to_numpy(dtype=np.float64)
+            group['Mean_Cross_Sectional_Area'].to_numpy(dtype=np.float64)
         )
-        width_seed = group['Median_Top_Width'].to_numpy(dtype=np.float64)
-        fallback_width = representative_area / np.maximum(group['Median_Depth'].to_numpy(dtype=np.float64), 1e-9)
+        width_seed = group['Mean_Top_Width'].to_numpy(dtype=np.float64)
+        fallback_width = representative_area / np.maximum(group['Mean_Depth'].to_numpy(dtype=np.float64), 1e-9)
         width_seed = np.where(width_seed > 0.0, width_seed, fallback_width)
         representative_width = _monotonic_cumulative_max(width_seed)
         representative_depth_increment, representative_depth = _derive_depths_from_width_and_area(
             representative_width,
             representative_area,
         )
-        representative_velocity = _monotonic_cumulative_max(group['Median_Velocity'].to_numpy(dtype=np.float64))
 
         group['Representative_Cross_Sectional_Area'] = representative_area
         group['Representative_Depth_Increment'] = representative_depth_increment
         group['Representative_Top_Width'] = representative_width
         group['Representative_Depth'] = representative_depth
-        group['Median_Velocity'] = representative_velocity
+        group['Representative_Velocity'] = group['Mean_Discharge'] / group['Representative_Cross_Sectional_Area'] 
         group['Representative_Stage_Elevation'] = (
             group['Representative_Thalweg_Elevation'].to_numpy(dtype=np.float64) + representative_depth
         )
@@ -900,7 +947,7 @@ class HydraulicData:
 
         The representative cross section is now a long-format hydraulic summary
         with one row per reach and 0.10 m depth stage. Each row stores the
-        median hydraulic properties rebuilt from the sampled cross sections up
+        mean hydraulic properties rebuilt from the sampled cross sections up
         to a 25 meter maximum depth, plus the representative dimensions
         derived from staged top width and staged area.
         """

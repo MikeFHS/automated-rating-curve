@@ -95,11 +95,11 @@ If `Build_Representative_Cross_Section` is `True`, ARC writes a comma-separated 
 
 ARC first samples and caches every stream-cell cross section, including its final profile, Manning's *n* arrays, slope, and thalweg. If `AROutBATHY` or `BATHY_Out_File` is configured, ARC completes bank finding and bathymetry preprocessing before building the representative output. Complete `Flow_File`, `Flow_File_ID`, and `Flow_File_BF` inputs select baseflow-driven bathymetry in representative mode. Otherwise, ARC uses the complete drainage-area power-law configuration when one is supplied. If neither bathymetry output path is configured, bathymetry estimation and excavation are bypassed and the representative hydraulics use the unexcavated sampled profiles.
 
-For each reach, ARC evaluates every contributing cross section at 0.10 m increments above its local thalweg, up to a maximum depth of 25 m. At every stage it recomputes area, wetted perimeter, velocity, discharge, and top width with Manning's equation. A finite result with positive area and top width contributes to the stage medians; sections with unusable finite geometry are skipped for that stage. If any calculation produces a non-finite area, wetted perimeter, velocity, discharge, or top width, ARC stops staging that reach immediately and retains only the previously successful rows. The representative export stores the reach-median positive stream slope and the median discharge, depth, velocity, top width, area, and WSE from the contributing sections at each retained stage.
+For each reach, ARC evaluates every contributing cross section at 0.10 m increments above its local thalweg, up to a maximum depth of 25 m. At every stage it recomputes area, wetted perimeter, velocity, discharge, and top width with Manning's equation. A finite result with positive area and top width is eligible for that stage; sections with unusable finite geometry are skipped for that stage. ARC then computes each eligible section's hydraulic radius as `area / wetted perimeter` and removes sections whose cross-sectional area or hydraulic radius falls outside two standard deviations of that stage's reach mean. If any calculation produces a non-finite area, wetted perimeter, velocity, discharge, or top width, ARC stops staging that reach immediately and retains only the previously successful rows. The representative export stores the reach-mean positive stream slope and the mean discharge, depth, velocity, top width, area, and WSE from the retained sections at each stage.
 
-The representative cross-section dimensions are then derived from the staged median top width and staged median area. Starting from a thalweg stage with zero width and zero area, ARC solves a trapezoidal area equation between successive stages to recover each representative depth increment and cumulative representative depth. Those stages are finally written as symmetric left/right stations around the reach-median thalweg elevation.
+The representative cross-section dimensions are then derived from the staged mean top width and staged mean area. Starting from a thalweg stage with zero width and zero area, ARC solves a trapezoidal area equation between successive stages to recover each representative depth increment and cumulative representative depth. Those stages are finally written as symmetric left/right stations around the reach-mean thalweg elevation.
 
-Because the staged medians are computed independently at each 0.10 m depth increment, small non-monotonic artifacts can occur. ARC therefore applies a cumulative-maximum adjustment to representative area and top width before deriving the representative dimensions so the exported envelope remains physically ordered.
+Because the staged means are computed independently at each 0.10 m depth increment, small non-monotonic artifacts can occur. ARC therefore applies a cumulative-maximum adjustment to representative area and top width before deriving the representative dimensions so the exported envelope remains physically ordered. `Representative_Velocity` is computed from the mean discharge divided by the representative cross-sectional area so the exported velocity is paired with the representative geometry.
 
 The following table details the columns in the representative cross-section export file:
 
@@ -107,18 +107,19 @@ The following table details the columns in the representative cross-section expo
 | --- | --- | --- |
 | COMID | Integer | The positive reach identifier from `Stream_File`. |
 | Cross_Section_Count | Integer | Number of sampled stream cells combined for the reach. |
-| Hydraulic_Sample_Count | Integer | Number of sampled stream cells that contributed valid hydraulic values at this 0.10 m stage. |
+| Hydraulic_Sample_Count | Integer | Number of sampled stream cells retained at this 0.10 m stage after finite-value checks and the two-standard-deviation area/hydraulic-radius filter. |
 | Depth_Stage_Index | Integer | Index of the 0.10 m evaluation stage, starting at `1` for `0.10` m above each local thalweg. |
 | Depth_Stage_Meters | Float | Depth stage above the local thalweg used to evaluate the sampled cross sections. |
-| Stream_Slope | Float | Reach-median positive stream slope from the sampled stream-cell cross sections. This is the slope used by ARC when recomputing representative hydraulics for the reach. |
+| Stream_Slope | Float | Reach-mean positive stream slope from the sampled stream-cell cross sections. This is the slope used by ARC when recomputing representative hydraulics for the reach. |
 | Reach_Inflect_Terrace_Depth | Float | Legacy column name containing the last successful evaluation depth retained for the reach. The value is capped at 25 m and may be lower when a non-finite hydraulic result terminates staging. It is no longer derived from the reach-average INFLECT curve. |
-| Representative_Thalweg_Elevation | Float | Reach-median thalweg elevation across the contributing sampled cross sections. |
-| Median_Discharge | Float | Median Manning discharge across the valid stream cells in the reach for this 0.10 m stage. |
-| Median_Depth | Float | Median hydraulic depth across the valid stream cells in the reach for this stage. In the current workflow this matches `Depth_Stage_Meters` because ARC evaluates all cross sections at a common depth increment above their local thalweg. |
-| Median_Velocity | Float | Median hydraulic velocity across the valid stream cells in the reach for this stage. |
-| Median_Top_Width | Float | Median hydraulic top width across the valid stream cells in the reach for this stage. |
-| Median_Cross_Sectional_Area | Float | Median hydraulic cross-sectional area across the valid stream cells in the reach for this stage. |
-| Median_WSE | Float | Median water-surface elevation across the valid stream cells in the reach for this stage. |
+| Representative_Thalweg_Elevation | Float | Reach-mean thalweg elevation across the contributing sampled cross sections. |
+| Mean_Discharge | Float | Mean Manning discharge across the retained stream cells in the reach for this 0.10 m stage. |
+| Mean_Depth | Float | Mean hydraulic depth across the retained stream cells in the reach for this stage. In the current workflow this matches `Depth_Stage_Meters` because ARC evaluates all cross sections at a common depth increment above their local thalweg. |
+| Mean_Velocity | Float | Mean hydraulic velocity across the retained stream cells in the reach for this stage. |
+| Representative_Velocity | Float | Representative velocity for this stage, computed as `Mean_Discharge / Representative_Cross_Sectional_Area`. |
+| Mean_Top_Width | Float | Mean hydraulic top width across the retained stream cells in the reach for this stage. |
+| Mean_Cross_Sectional_Area | Float | Mean hydraulic cross-sectional area across the retained stream cells in the reach for this stage. |
+| Mean_WSE | Float | Mean water-surface elevation across the retained stream cells in the reach for this stage. |
 | Representative_Cross_Sectional_Area | Float | Cross-sectional area used in the exported representative geometry after enforcing non-decreasing staged area by depth increment. |
 | Representative_Depth_Increment | Float | Depth added between the previous representative stage and this stage when solving the trapezoidal width-area relationship for the representative section. |
 | Representative_Depth | Float | Cumulative depth used in the exported representative geometry after deriving the stage increments from representative area and representative top width. |

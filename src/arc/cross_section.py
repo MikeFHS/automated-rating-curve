@@ -1519,7 +1519,7 @@ def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarr
     P = np.round(P1 + P2, 3)
 
     if A <= 0.0 or P <= 0.0:
-        return 0.0, 0.0, 0.0, 0.0, T
+        return 0.0, 0.0, 0.0, 0.0, T, 0.0
 
     # Estimate mannings n
     d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
@@ -1528,7 +1528,7 @@ def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarr
     Q = np.round((1 / d_composite_n) * A * (A / P)**(2 / 3) * sqrt_slope, 3)
     V = np.round(Q / A, 3)
 
-    return A, P, V, Q, T
+    return A, P, V, Q, T, d_composite_n
 
 @njit(cache=True)
 def _adjust_cross_section_to_lowest_point(i_low_spot_range: int,
