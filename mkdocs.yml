@@ -52,6 +52,7 @@ nav:
     - Running ARC: running_arc.md
     - Making Inputs for FIST: making_inputs_for_fist.md
     - Neuse River Flooding: neuse_river_flooding.md
+    - Representative Cross Section: representative_cross_section.md
   - License: license.md
 
 plugins:

@@ -8,7 +8,7 @@ Once the retrospective and return period datasets are downloaded, the directorie
     options:
       show_root_heading: true
 
-The resulting streamflow is used by ARC user to define a baseflow, for bathymetry estimation, and a maximum flow, to used as the highest streamflow used in estimating an ARC synthetic rating curve and velocity, depth, and top-width (VDT database). 
+The resulting streamflow is used by ARC to define a maximum flow, which is still required for estimating the ARC synthetic rating curve and velocity, depth, and top-width (VDT database). `Flow_File_BF` can still be supplied from this dataset for bathymetry estimation, but it is now optional when ARC bathymetry is configured from the drainage-area power-law parameters documented in [Model Input File](model_input_file.md).
 
 [Here](https://drive.google.com/drive/folders/1xJkZoY3xoUAcLjODHUINJcS4pk7ljyCr?usp=sharing) is a shared folder that contains test data for the Shields River in Montana. The "NetCDF_RecurrenceInterval_File_Path" corresponds to "returnperiods_714.nc" in the "714_ReturnPeriods" shared folder. The "NetCDF_Historical_Folder" corresponds to "714_HistoricFlows" in the shared folder. These data were downloaded from the [GEOGLOWS ECMWF Streamflow Service](https://geoglows.ecmwf.int/). 
 
