@@ -103,9 +103,57 @@ def test_read_main_input_file_keeps_bathymetry_enabled_without_baseflow(tmp_path
     assert params["s_bathymetry_drainage_area_field"] == "DA"
 
 
-def test_read_main_input_file_rejects_partial_powerlaw_configuration() -> None:
-    """The new parameters are all-or-nothing so ARC never guesses intent."""
-    with pytest.raises(ValueError, match="requires all five optional parameters together"):
+def test_read_main_input_file_accepts_depth_only_powerlaw_configuration() -> None:
+    """A depth relationship can be configured without a width relationship."""
+    params = read_main_input_file(
+        "",
+        {
+            "DEM_File": "dem.tif",
+            "Stream_File": "stream.tif",
+            "LU_Raster_SameRes": "land.tif",
+            "LU_Manning_n": "mannings.txt",
+            "Flow_File": "flows.csv",
+            "Flow_File_ID": "COMID",
+            "Flow_File_QMax": "qmax",
+            "StrmShp_File": "stream_network.gpkg",
+            "drainage_area_field": "DA",
+            "coefficient_depth": 0.5,
+            "exponent_depth": 0.25,
+        },
+    )
+
+    assert params["b_use_bathymetry_powerlaw"] is True
+    assert params["d_bathymetry_coefficient_width"] is None
+    assert params["d_bathymetry_exponent_width"] is None
+
+
+def test_read_main_input_file_accepts_width_only_powerlaw_configuration() -> None:
+    """A width relationship can be configured without a depth relationship."""
+    params = read_main_input_file(
+        "",
+        {
+            "DEM_File": "dem.tif",
+            "Stream_File": "stream.tif",
+            "LU_Raster_SameRes": "land.tif",
+            "LU_Manning_n": "mannings.txt",
+            "Flow_File": "flows.csv",
+            "Flow_File_ID": "COMID",
+            "Flow_File_QMax": "qmax",
+            "StrmShp_File": "stream_network.gpkg",
+            "drainage_area_field": "DA",
+            "coefficient_width": 3.0,
+            "exponent_width": 0.4,
+        },
+    )
+
+    assert params["b_use_bathymetry_powerlaw"] is True
+    assert params["d_bathymetry_coefficient_depth"] is None
+    assert params["d_bathymetry_exponent_depth"] is None
+
+
+def test_read_main_input_file_requires_drainage_area_for_powerlaw_configuration() -> None:
+    """A power-law relationship cannot be used without its drainage-area field."""
+    with pytest.raises(ValueError, match="drainage_area_field is required"):
         read_main_input_file(
             "",
             {
@@ -117,8 +165,6 @@ def test_read_main_input_file_rejects_partial_powerlaw_configuration() -> None:
                 "Flow_File_ID": "COMID",
                 "Flow_File_QMax": "qmax",
                 "StrmShp_File": "stream_network.gpkg",
-                "AROutBATHY": "bathy.tif",
-                "drainage_area_field": "DA",
                 "coefficient_depth": 0.5,
                 "exponent_depth": 0.25,
             },
@@ -174,6 +220,7 @@ def test_representative_baseflow_inputs_take_precedence_over_powerlaw() -> None:
 
     assert params["b_use_representative_baseflow_bathymetry"] is True
     assert params["b_use_bathymetry_powerlaw"] is False
+    assert params["b_use_bathymetry_powerlaw_width"] is True
     assert params["s_flow_file_qmax"] == ""
 
 

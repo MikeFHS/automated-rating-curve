@@ -362,12 +362,17 @@ def Create_ARC_Model_Input_File(
     out_file.write('\n' + 'Bathy_Trap_H	0.20')
     out_file.write('\n' + 'Bathy_Use_Banks' + '\t' + str(bathy_use_banks))
     out_file.write('\n' + 'FindBanksBasedOnLandCover' + '\t' + str(use_land_cover_to_find_banks))
-    if drainage_area_field and coefficient_depth is not None and exponent_depth is not None and coefficient_width is not None and exponent_width is not None:
+    if drainage_area_field and (
+        (coefficient_depth is not None and exponent_depth is not None)
+        or (coefficient_width is not None and exponent_width is not None)
+    ):
         out_file.write('\n' + 'drainage_area_field\t' + str(drainage_area_field))
-        out_file.write('\n' + 'coefficient_depth\t' + str(coefficient_depth))
-        out_file.write('\n' + 'exponent_depth\t' + str(exponent_depth))
-        out_file.write('\n' + 'coefficient_width\t' + str(coefficient_width))
-        out_file.write('\n' + 'exponent_width\t' + str(exponent_width))
+        if coefficient_depth is not None and exponent_depth is not None:
+            out_file.write('\n' + 'coefficient_depth\t' + str(coefficient_depth))
+            out_file.write('\n' + 'exponent_depth\t' + str(exponent_depth))
+        if coefficient_width is not None and exponent_width is not None:
+            out_file.write('\n' + 'coefficient_width\t' + str(coefficient_width))
+            out_file.write('\n' + 'exponent_width\t' + str(exponent_width))
     out_file.write('\n' + 'AROutBATHY	' + ARC_BathyFile)
 
     out_file.write('\n\n#Cross Section Information')

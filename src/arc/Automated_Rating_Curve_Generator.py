@@ -753,7 +753,7 @@ def _build_bathymetry_powerlaw_config(sl_lines: list[str], s_strmshp_path: str) 
     Returns
     -------
     dict
-        Normalized configuration describing whether the power-law mode is fully
+        Normalized configuration describing whether either power-law pair is
         configured, plus the parsed field names and coefficients.
     """
     drainage_area_field = _get_optional_parameter_value(
@@ -783,25 +783,37 @@ def _build_bathymetry_powerlaw_config(sl_lines: list[str], s_strmshp_path: str) 
         'coefficient_width': coefficient_width is not None,
         'exponent_width': exponent_width is not None,
     }
-    any_provided = any(provided_flags.values())
-    all_provided = all(provided_flags.values())
+    depth_provided = provided_flags['coefficient_depth'] or provided_flags['exponent_depth']
+    width_provided = provided_flags['coefficient_width'] or provided_flags['exponent_width']
+    any_powerlaw_provided = depth_provided or width_provided
 
-    if any_provided and not s_strmshp_path:
+    if any_powerlaw_provided and not provided_flags['drainage_area_field']:
+        raise ValueError(
+            'drainage_area_field is required when bathymetry power-law '
+            'coefficients or exponents are provided.'
+        )
+
+    if depth_provided and provided_flags['coefficient_depth'] != provided_flags['exponent_depth']:
+        raise ValueError(
+            'The depth bathymetry power law requires coefficient_depth and '
+            'exponent_depth together.'
+        )
+
+    if width_provided and provided_flags['coefficient_width'] != provided_flags['exponent_width']:
+        raise ValueError(
+            'The width bathymetry power law requires coefficient_width and '
+            'exponent_width together.'
+        )
+
+    if any_powerlaw_provided and not s_strmshp_path:
         raise ValueError(
             "StrmShp_File is required when configuring drainage-area bathymetry "
             "parameters because ARC reads the drainage area attribute from that dataset."
         )
 
-    if any_provided and not all_provided:
-        missing = [name for name, supplied in provided_flags.items() if not supplied]
-        raise ValueError(
-            "The drainage-area bathymetry mode requires all five optional "
-            "parameters together. Missing: " + ", ".join(missing)
-        )
-
     return {
-        'enabled': all_provided,
-        'drainage_area_field': drainage_area_field if all_provided else '',
+        'enabled': any_powerlaw_provided,
+        'drainage_area_field': drainage_area_field if any_powerlaw_provided else '',
         'coefficient_depth': coefficient_depth,
         'exponent_depth': exponent_depth,
         'coefficient_width': coefficient_width,
@@ -935,6 +947,10 @@ def read_main_input_file(s_mif_name: str, args: dict):
         bathymetry_powerlaw['enabled']
         and not b_use_representative_baseflow_bathymetry
     )
+    b_use_bathymetry_powerlaw_width = bool(
+        bathymetry_powerlaw['coefficient_width'] is not None
+        and bathymetry_powerlaw['exponent_width'] is not None
+    )
     s_output_bathymetry_path = get_parameter_name(sl_lines,  'AROutBATHY', get_parameter_name(sl_lines,  'BATHY_Out_File'))
     if not isinstance(s_output_bathymetry_path, str):
         s_output_bathymetry_path = ''
@@ -942,6 +958,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         has_bathymetry_source = bool(
             b_use_representative_baseflow_bathymetry
             or b_use_bathymetry_powerlaw
+            or b_use_bathymetry_powerlaw_width
         )
     else:
         has_bathymetry_source = bool(
@@ -976,6 +993,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         's_flow_file_qmax': s_flow_file_qmax, # Find the column name for the maximum flow
         'b_use_representative_baseflow_bathymetry': b_use_representative_baseflow_bathymetry,
         'b_use_bathymetry_powerlaw': b_use_bathymetry_powerlaw,
+        'b_use_bathymetry_powerlaw_width': b_use_bathymetry_powerlaw_width,
         's_bathymetry_drainage_area_field': bathymetry_powerlaw['drainage_area_field'],
         'd_bathymetry_coefficient_depth': bathymetry_powerlaw['coefficient_depth'],
         'd_bathymetry_exponent_depth': bathymetry_powerlaw['exponent_depth'],
@@ -1014,11 +1032,11 @@ def read_main_input_file(s_mif_name: str, args: dict):
 
 def _power_law_geometry_from_drainage_area(
     drainage_area: float,
-    coefficient_depth: float,
-    exponent_depth: float,
-    coefficient_width: float,
-    exponent_width: float,
-) -> tuple[float, float]:
+    coefficient_depth: float | None,
+    exponent_depth: float | None,
+    coefficient_width: float | None,
+    exponent_width: float | None,
+) -> tuple[float | None, float | None]:
     """Estimate bathymetry target depth and fallback width from drainage area.
 
     Parameters
@@ -1032,22 +1050,28 @@ def _power_law_geometry_from_drainage_area(
 
     Returns
     -------
-    tuple[float, float]
+    tuple[float | None, float | None]
         ``(estimated_depth, estimated_width)``.
     """
-    estimated_depth = coefficient_depth * (drainage_area ** exponent_depth)
-    estimated_width = coefficient_width * (drainage_area ** exponent_width)
-    return float(estimated_depth), float(estimated_width)
+    estimated_depth = None
+    if coefficient_depth is not None and exponent_depth is not None:
+        estimated_depth = float(coefficient_depth * (drainage_area ** exponent_depth))
+
+    estimated_width = None
+    if coefficient_width is not None and exponent_width is not None:
+        estimated_width = float(coefficient_width * (drainage_area ** exponent_width))
+
+    return estimated_depth, estimated_width
 
 
 def build_bathymetry_geometry_dict(
     s_strmshp_path: str,
     s_reach_id_field: str,
     drainage_area_field: str,
-    coefficient_depth: float,
-    exponent_depth: float,
-    coefficient_width: float,
-    exponent_width: float,
+    coefficient_depth: float | None,
+    exponent_depth: float | None,
+    coefficient_width: float | None,
+    exponent_width: float | None,
 ) -> dict[int, dict[str, float]]:
     """Read stream attributes and convert them into per-reach bathymetry targets.
 
@@ -1063,8 +1087,9 @@ def build_bathymetry_geometry_dict(
         Reach identifier field in the stream vector.
     drainage_area_field : str
         Field in ``s_strmshp_path`` containing drainage area values.
-    coefficient_depth, exponent_depth, coefficient_width, exponent_width : float
+        coefficient_depth, exponent_depth, coefficient_width, exponent_width : float, optional
         Power-law coefficients and exponents used to estimate target geometry.
+        The depth and width pairs are independently optional.
 
     Returns
     -------
@@ -1101,21 +1126,22 @@ def build_bathymetry_geometry_dict(
             coefficient_width,
             exponent_width,
         )
-        if not np.isfinite(estimated_depth) or estimated_depth <= 0.0:
+        if estimated_depth is not None and (not np.isfinite(estimated_depth) or estimated_depth <= 0.0):
             raise ValueError(
                 f"Estimated depth for reach {reach_id} was not positive. "
                 "Check coefficient_depth, exponent_depth, and the drainage area values."
             )
-        if not np.isfinite(estimated_width) or estimated_width <= 0.0:
+        if estimated_width is not None and (not np.isfinite(estimated_width) or estimated_width <= 0.0):
             raise ValueError(
                 f"Estimated width for reach {reach_id} was not positive. "
                 "Check coefficient_width, exponent_width, and the drainage area values."
             )
 
-        bathymetry_geometry[int(reach_id)] = {
-            'depth': estimated_depth,
-            'width': estimated_width,
-        }
+        bathymetry_geometry[int(reach_id)] = {}
+        if estimated_depth is not None:
+            bathymetry_geometry[int(reach_id)]['depth'] = estimated_depth
+        if estimated_width is not None:
+            bathymetry_geometry[int(reach_id)]['width'] = estimated_width
 
     return bathymetry_geometry
 
@@ -6132,16 +6158,19 @@ def _build_flow_arrays(
     # the same source-ID fallback that ARC already applies for reach-average
     # slopes so the optional power-law bathymetry mode behaves consistently.
     source_ids = _CELL_SOURCE_STREAM_IDS if _CELL_SOURCE_STREAM_IDS is not None else _CELL_COMIDS
-    create_array("_CELL_BATHY_DEPTH", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter(
-        (bathymetry_geometry_dict[int(stream_id)]['depth'] for stream_id in source_ids),
-        dtype=np.float64,
-        count=len(_CELL_COMIDS),
-    )
-    create_array("_CELL_BATHY_WIDTH", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter(
-        (bathymetry_geometry_dict[int(stream_id)]['width'] for stream_id in source_ids),
-        dtype=np.float64,
-        count=len(_CELL_COMIDS),
-    )
+    sample_geometry = next(iter(bathymetry_geometry_dict.values()), {})
+    if 'depth' in sample_geometry:
+        create_array("_CELL_BATHY_DEPTH", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter(
+            (bathymetry_geometry_dict[int(stream_id)]['depth'] for stream_id in source_ids),
+            dtype=np.float64,
+            count=len(_CELL_COMIDS),
+        )
+    if 'width' in sample_geometry:
+        create_array("_CELL_BATHY_WIDTH", processes, (_CELL_COMIDS.size,), np.float64)[:] = np.fromiter(
+            (bathymetry_geometry_dict[int(stream_id)]['width'] for stream_id in source_ids),
+            dtype=np.float64,
+            count=len(_CELL_COMIDS),
+        )
 
 def _build_reach_slope_arrays(stream_slope_dicts: tuple[dict], params: dict, processes: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     method = params['s_stream_slope_method']
@@ -6538,13 +6567,13 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
             params['s_flow_file_qmax'],
         )
 
-    if params['b_use_bathymetry_powerlaw']:
+    if params['b_use_bathymetry_powerlaw'] or params['b_use_bathymetry_powerlaw_width']:
         bathymetry_geometry_dict = build_bathymetry_geometry_dict(
             params['s_strmshp_path'],
             params['s_reach_id_field'],
             params['s_bathymetry_drainage_area_field'],
-            params['d_bathymetry_coefficient_depth'],
-            params['d_bathymetry_exponent_depth'],
+            params['d_bathymetry_coefficient_depth'] if params['b_use_bathymetry_powerlaw'] else None,
+            params['d_bathymetry_exponent_depth'] if params['b_use_bathymetry_powerlaw'] else None,
             params['d_bathymetry_coefficient_width'],
             params['d_bathymetry_exponent_width'],
         )

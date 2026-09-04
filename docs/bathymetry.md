@@ -1,7 +1,7 @@
 ARC estimates channel bathymetry at each stream cell by fitting a triangular or trapezoidal cross section whose geometry is constrained by detected bank locations and a target depth. ARC can obtain the initial target depth in one of two ways:
 
 1. From `Flow_File_BF`, by marching downstream-to-upstream through the directed reach network and matching the local friction slope to an effective energy slope.
-2. From a drainage-area power law, by combining `drainage_area_field`, `coefficient_depth`, and `exponent_depth`.
+2. From a drainage-area power law, using either or both of the optional depth and width parameter pairs with `drainage_area_field`. In representative-cross-section mode, a complete `Flow_File`/`Flow_File_ID`/`Flow_File_BF` set still controls depth, but a configured width pair remains available for the one-cell width gate.
 
 After either initial estimate, ARC filters and aggregates the depths by reach and enforces a downstream non-decreasing depth constraint. Consequently, the depth finally burned into a stream cell can differ from its initial network or power-law estimate.
 
