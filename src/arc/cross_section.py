@@ -61,6 +61,10 @@ class CrossSection:
         """Initialize a reusable sampler and allocate working arrays."""
         self.d_x_section_distance = params["d_x_section_distance"]
         self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
+        self.slope_adjustment_factor = float(params.get("slope_adjustment_factor", 1.0))
+        self.k_decay = float(params.get("k_decay", 6.0))
+        self.shallow_factor = float(params.get("shallow_factor", 2.0))
+        self.deep_factor = float(params.get("deep_factor", 1.0))
         self.dx = dx
         self.dy = dy
 
@@ -1206,7 +1210,7 @@ class CrossSection:
             
     def get_calculate_discharge_from_wse_args(self):
         """Return the tuple of arrays needed by :func:`calculate_discharge_from_wse`."""
-        return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist
+        return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist, self.k_decay, self.shallow_factor, self.deep_factor, self.slope_adjustment_factor
 
     def _get_precomputed_bathymetry_bank_result(
         self,
@@ -1509,10 +1513,28 @@ class CrossSection:
         return i_bank_1_index, i_bank_2_index, i_total_bank_cells, d_y_depth, d_y_bathy
     
 @njit(cache=True)
-def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarray, da_xs_profile2: np.ndarray, xs2_n: int, mannings_n2: np.ndarray, d_ordinate_dist: float, wse: float, sqrt_slope: float):
+def _calculate_all(
+    da_xs_profile1: np.ndarray,
+    xs1_n: int,
+    mannings_n1: np.ndarray,
+    da_xs_profile2: np.ndarray,
+    xs2_n: int,
+    mannings_n2: np.ndarray,
+    d_ordinate_dist: float,
+    wse: float,
+    sqrt_slope: float,
+    k_decay: float = 6.0,
+    shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0
+):
     wse = np.round(wse, 3)
-    A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(da_xs_profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1)
-    A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(da_xs_profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2)
+
+    # Pass depth-scaling parameters to geometry functions
+    A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(
+        da_xs_profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1[:xs1_n], k_decay, shallow_factor, deep_factor
+    )
+    A2, P2, np2, T2 = _calculate_stream_geometry_and_topwidth(
+        da_xs_profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2[:xs2_n], k_decay, shallow_factor, deep_factor
+    )
 
     T = np.round(T1 + T2, 3)
     A = np.round(A1 + A2, 3)
@@ -1521,11 +1543,11 @@ def _calculate_all(da_xs_profile1: np.ndarray, xs1_n: int, mannings_n1: np.ndarr
     if A <= 0.0 or P <= 0.0:
         return 0.0, 0.0, 0.0, 0.0, T, 0.0
 
-    # Estimate mannings n
+    # Composite roughness formula remains unchanged; np1 and np2 already incorporate depth scaling
     d_composite_n = np.round(((np1 + np2) / P)**(2 / 3), 4)
 
-    # use Manning's equation to estimate the flow
-    Q = np.round((1 / d_composite_n) * A * (A / P)**(2 / 3) * sqrt_slope, 3)
+    # Manning's discharge calculation
+    Q = np.round((1 / d_composite_n) * A * (A / P)**(2 / 3) * (sqrt_slope * slope_adjustment_factor), 3)
     V = np.round(Q / A, 3)
 
     return A, P, V, Q, T, d_composite_n
@@ -1785,88 +1807,137 @@ def _calculate_stream_geometry(da_xs_profile: np.ndarray,
     # Return to the calling function
     return d_area, d_perimeter, d_composite_n
 
-@njit(cache=True)
-def _calculate_stream_geometry_and_topwidth(da_xs_profile: np.ndarray, 
-                            d_wse: float, 
-                            d_ordinate_dist: float,
-                            da_n_profile: np.ndarray,) -> tuple[float, ...]:
-    """
-    Estimates the stream geometry
+import numpy as np
+from numba import njit
 
-    Uses a composite Manning's n as given by:
-    Composite Manning N based on https://www.hec.usace.army.mil/confluence/rasdocs/ras1dtechref/6.5/theoretical-basis-for-one-dimensional-and-two-dimensional-hydrodynamic-calculations/1d-steady-flow-water-surface-profiles/composite-manning-s-n-for-the-main-channel
+
+@njit(cache=True)
+def _adjust_n_by_depth(
+    n0: np.ndarray,
+    depth: np.ndarray,
+    shallow_factor: float,
+    deep_factor: float,
+    k_decay: float,
+) -> np.ndarray:
+    """
+    Apply a bounded exponential adjustment to baseline Manning's n.
+
+    n(h) = n0 * [
+        deep_factor
+        + (shallow_factor - deep_factor) * exp(-k_decay * h)
+    ]
 
     Parameters
     ----------
-    da_xs_profile: ndarray
-        Elevations of the stream cross section
-    d_wse: float
-        Water surface elevation
-    d_distance_z: float
-        Incremental distance per cell parallel to the orientation of the cross section
-    da_n_profile: float
-        Input initial Manning's n for the stream
+    n0 : np.ndarray
+        Baseline Manning's n values. Preprocess NoData and ensure
+        finite, positive values before calling.
+    depth : np.ndarray
+        Signed local depths, aligned with n0.
+    shallow_factor : float
+        Multiplier as wet depth approaches zero; must be >= 1.
+    deep_factor : float
+        Large-depth limiting multiplier; must be in (0, 1].
+    k_decay : float
+        Positive decay coefficient in inverse depth units.
 
-    Returns
-    -------
-    d_area, d_perimeter, d_composite_n, d_top_width
-
+    Notes
+    -----
+    Setting both factors to 1 reproduces the baseline.
+    Neither input array is modified.
+    Dry locations must still be excluded by the geometry calculation.
     """
-    # Initial output
+    if not np.isfinite(shallow_factor) or shallow_factor < 1.0:
+        raise ValueError(
+            "shallow_factor must be finite and >= 1."
+        )
+
+    if (
+        not np.isfinite(deep_factor)
+        or deep_factor <= 0.0
+        or deep_factor > 1.0
+    ):
+        raise ValueError(
+            "deep_factor must be finite and in (0, 1]."
+        )
+
+    if not np.isfinite(k_decay) or k_decay <= 0.0:
+        raise ValueError(
+            "k_decay must be finite and > 0."
+        )
+
+    if (
+        n0.ndim != 1
+        or depth.ndim != 1
+        or n0.size != depth.size
+    ):
+        raise ValueError(
+            "n0 and depth must be matching 1-D arrays."
+        )
+
+    # Clamp only the depths used for roughness scaling.
+    # Preserve signed input depths for bank-intersection calculations.
+    h = np.maximum(depth, 0.0)
+
+    return n0 * (
+        deep_factor
+        + (shallow_factor - deep_factor)
+        * np.exp(-k_decay * h)
+    )
+
+@njit(cache=True)
+def _calculate_stream_geometry_and_topwidth(
+    da_xs_profile: np.ndarray,
+    d_wse: float,
+    d_ordinate_dist: float,
+    da_n_profile: np.ndarray,
+    k_decay: float = 1.0,
+    shallow_factor: float = 2.0, deep_factor: float = 1.0
+) -> tuple[float, ...]:
     d_area, d_perimeter, d_composite_n, d_top_width = 0.0, 0.0, 0.0, 0.0
 
-    # Estimate the depth of the stream
     da_y_depth = _get_stream_depths(d_wse, da_xs_profile)
-
-    # Return if the depth is not valid.
     if da_y_depth is None:
-        return 0, 0, 0, 0
+        return 0.0, 0.0, 0.0, 0.0
 
-    # Take action if there are values < 0
+    # Transition between the configured shallow and deep roughness factors.
+    da_scaled_n = _adjust_n_by_depth(
+        n0=da_n_profile,
+        depth=da_y_depth,
+        shallow_factor=shallow_factor,
+        deep_factor=deep_factor,
+        k_decay=k_decay
+    )
+
     lt_0_in_depths, i_target_index = _check_for_negative_depths(da_y_depth)
     
     if lt_0_in_depths:
-        # A value < 0 exists. Calculate up to that value then break for the rest of hte values.
-        # Get the index of the first bad vadlue
         i_target_index += 1
-
-        # Calculate the distance to use
         d_dist_use = _get_distance_to_use(da_y_depth, i_target_index, d_ordinate_dist)
 
-        # Calculate the geometric variables
         d_area = np.sum(d_ordinate_dist * 0.5 * (da_y_depth[1:i_target_index] + da_y_depth[:i_target_index-1])) + 0.5 * d_dist_use * da_y_depth[i_target_index-1]
-
         d_perimeter_i = calculate_hypotnuse(d_dist_use, da_y_depth[i_target_index - 1])
         perim_array = calculate_hypotnuse(d_ordinate_dist, (da_y_depth[1:i_target_index] - da_y_depth[:i_target_index-1]))
 
         d_perimeter = np.sum(perim_array) + d_perimeter_i
-        
-        # Calculate the composite n
-        d_composite_n = np.sum(perim_array[:i_target_index-1] * da_n_profile[1:i_target_index]**1.5) + d_perimeter_i * da_n_profile[i_target_index - 1]**1.5
-
-        # Update the top width
+        d_composite_n = np.sum(perim_array[:i_target_index-1] * da_scaled_n[1:i_target_index]**1.5) + d_perimeter_i * da_scaled_n[i_target_index - 1]**1.5
         d_top_width = _calculate_top_width_up_to_point(i_target_index, d_dist_use, d_ordinate_dist)
 
     else:
-        # All values are positive, so include them all.
-
-        # Calculate the geometric values
         d_area = np.sum(d_ordinate_dist * 0.5 * (da_y_depth[2:] + da_y_depth[1:-1]))
-
         perim_array = calculate_hypotnuse(d_ordinate_dist, da_y_depth[1:] - da_y_depth[:-1])
 
         d_perimeter = np.sum(perim_array[1:])
-
-        d_composite_n = np.sum(perim_array * da_n_profile[1:]**1.5)
-
+        # Match roughness to the endpoints of the retained perimeter segments.
+        d_composite_n = np.sum(perim_array[1:] * da_scaled_n[2:]**1.5)
         d_top_width = _calculate_top_width_from_all(da_y_depth, d_ordinate_dist)
 
-    # Return to the calling function
     return d_area, d_perimeter, d_composite_n, d_top_width
 
 @njit(cache=True)
 def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.ndarray, xs1_n: float, mannings_n1: float,
-                                profile2: np.ndarray, xs2_n: float, mannings_n2: float, d_ordinate_dist: float):
+                                profile2: np.ndarray, xs2_n: float, mannings_n2: float, d_ordinate_dist: float,
+                                k_decay: float = 6.0, shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0):
     """Compute discharge (Q) at a given WSE using Manning's equation.
 
     Parameters
@@ -1885,14 +1956,22 @@ def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.nda
     d_ordinate_dist : float
         Distance between successive ordinates along the cross-section.
 
+    slope_adjustment_factor : float
+        Positive multiplier applied to sqrt_slope (not to slope before taking
+        its square root). Defaults to 1.0, leaving discharge unchanged.
+
     Returns
     -------
     float
         Discharge corresponding to the given WSE.
     """
     # Calculate the geometry
-    A1, P1, np1 = _calculate_stream_geometry(profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1)
-    A2, P2, np2 = _calculate_stream_geometry(profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2)
+    A1, P1, np1, _ = _calculate_stream_geometry_and_topwidth(
+        profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1[:xs1_n], k_decay, shallow_factor, deep_factor
+    )
+    A2, P2, np2, _ = _calculate_stream_geometry_and_topwidth(
+        profile2[:xs2_n], wse, d_ordinate_dist, mannings_n2[:xs2_n], k_decay, shallow_factor, deep_factor
+    )
 
     # Aggregate the geometric properties
     d_a_sum = A1 + A2
@@ -1904,7 +1983,7 @@ def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.nda
     if d_composite_n < 0.0001:
         d_composite_n = 0.035
 
-    discharge = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * sqrt_slope
+    discharge = (1 / d_composite_n) * d_a_sum * (d_a_sum / d_p_sum)**(2 / 3) * (sqrt_slope * slope_adjustment_factor)
     return discharge
 
 @njit(cache=True)

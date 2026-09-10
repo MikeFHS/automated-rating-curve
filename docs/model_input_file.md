@@ -8,6 +8,10 @@ DEM_File: /path/to/DEM.tif
 Stream_File: /path/to/Stream_Raster.tif
 LU_Raster_SameRes: /path/to/Land_Cover.tif
 LU_Manning_n: /path/to/Mannings_n.txt
+slope_adjustment_factor: 1.0
+k_decay: 6.0
+shallow_factor: 2.0
+deep_factor: 1.0
 Flow_File: /path/to/Flow_File.csv
 Flow_File_ID: COMID
 Flow_File_QMax: rp100_premium
@@ -126,3 +130,64 @@ The gap-crossing seasonal export writes this schema directly. Additional metadat
 | `LC_Water_Value` | 80 | int | The value in the land cover raster that corresponds to water. Required if `FindBanksBasedOnLandCover` is true. Defaults to 80, which is the value for water in the ESA Land Cover dataset. |
 
 `Flow_File_QMax` remains required for standard rating-curve runs even when `Flow_File_BF` is omitted. It is not required in representative-cross-section mode because that workflow builds its own 0.10 m hydraulic stages instead of the QMax-based VDT increments.
+
+### Depth-dependent Manning's roughness
+
+| Parameter | Default | Valid values |
+| --- | --- | --- |
+| `k_decay` | `6.0` | Finite and positive (inverse meters). |
+| `shallow_factor` | `2.0` | Finite and >= 1. |
+| `deep_factor` | `1.0` | Finite and in (0, 1]. |
+
+```text
+n_adjusted = n * (deep_factor + (shallow_factor - deep_factor)
+                  * exp(-k_decay * max(depth_m, 0)))
+```
+
+The factors multiply the baseline Manning's n at zero wet depth and in the
+deep-water limit, respectively. Both factors equal to 1 disable the adjustment.
+Dry depths are clamped to zero only for roughness scaling; signed depths remain
+available for geometry and bank-intersection calculations.
+
+The parameters reach the geometry helper through WSE searches, VDT staging,
+and representative-cross-section exports. Existing rounding is unchanged.
+
+Python API:
+
+```python
+Arc(args={**inputs, "k_decay": 6.0, "shallow_factor": 2.0, "deep_factor": 1.0}).run()
+```
+
+YAML MIF:
+
+```yaml
+slope_adjustment_factor: 1.0
+k_decay: 6.0
+shallow_factor: 2.0
+deep_factor: 1.0
+```
+
+Text MIFs use the same keys separated from their values by a tab.
+`alpha_low`, `alpha_boost`, and `f_min` are no longer accepted. To reproduce
+the previous shallow-boost formula, use `shallow_factor = 1 + old_alpha_low`
+and `deep_factor = 1`. The new defaults reproduce the old default boost.
+
+### Slope adjustment
+
+`slope_adjustment_factor` defaults to `1.0` and must be finite and positive.
+It multiplies `sqrt_slope` in the discharge calculation:
+
+```text
+adjusted_sqrt_slope = sqrt_slope * slope_adjustment_factor
+```
+
+This is equivalent to multiplying the underlying slope by the factor squared.
+The multiplier is applied once, before discharge rounding, in both WSE searches
+and staged hydraulics (including representative exports). Stored slope values
+are unchanged. At fixed geometry and roughness, a factor of 2 doubles discharge
+and velocity; the default factor preserves existing results.
+
+Pass `"slope_adjustment_factor": 1.0` in `Arc(args=...)`, or use the same key
+in a YAML or tab-delimited input file. The analysis tuning script exposes
+`--slope-adjustment-factor-range 0.5 2.0` and saves the optimized factor with
+the depth-roughness parameters.

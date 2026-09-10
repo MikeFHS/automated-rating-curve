@@ -190,6 +190,9 @@ def _build_representative_hydraulic_rows_for_reach(
     comid: int,
     group: list[dict],
     max_depth: float,
+    k_decay: float = 6.0,
+    shallow_factor: float = 2.0, deep_factor: float = 1.0,
+    slope_adjustment_factor: float = 1.0,
 ) -> list[dict]:
     """Build staged hydraulic means for one reach up to a fixed depth cap.
 
@@ -248,6 +251,10 @@ def _build_representative_hydraulic_rows_for_reach(
                 ordinate_dist,
                 wse,
                 sqrt_slope,
+                k_decay,
+                shallow_factor,
+                deep_factor,
+                slope_adjustment_factor,
             )
 
             if not all(np.isfinite(value) for value in (area, perimeter, velocity, discharge, top_width, d_composite_n)):
@@ -313,6 +320,9 @@ def _build_representative_hydraulic_rows_for_reach(
 
 def build_representative_cross_section_dataframe(
     cross_section_data: list[dict],
+    k_decay: float = 6.0,
+    shallow_factor: float = 2.0, deep_factor: float = 1.0,
+    slope_adjustment_factor: float = 1.0,
 ) -> pd.DataFrame:
     """Build representative cross sections from filtered staged hydraulic means.
 
@@ -357,7 +367,7 @@ def build_representative_cross_section_dataframe(
 
     rows: list[dict] = []
     for comid, group in grouped_records.items():
-        rows.extend(_build_representative_hydraulic_rows_for_reach(int(comid), group, 25.0))
+        rows.extend(_build_representative_hydraulic_rows_for_reach(int(comid), group, 25.0, k_decay, shallow_factor, deep_factor, slope_adjustment_factor))
 
     representative_df = pd.DataFrame(rows)
     if representative_df.empty:
@@ -413,6 +423,10 @@ class HydraulicData:
     """
     def __init__(self,  params: dict):
         """Initialize output configuration from ``params``."""
+        self.slope_adjustment_factor = float(params.get('slope_adjustment_factor', 1.0))
+        self.k_decay = float(params.get('k_decay', 6.0))
+        self.shallow_factor = float(params.get('shallow_factor', 2.0))
+        self.deep_factor = float(params.get('deep_factor', 1.0))
         self.ap_file: str = params['s_output_ap_database']
         self.vdt_file: str = params["s_output_vdt_database"]
         self.curve_file: str = params["s_output_curve_file"]
@@ -952,7 +966,9 @@ class HydraulicData:
         derived from staged top width and staged area.
         """
         cross_section_data = list(self.xs_data) if getattr(self, "xs_data", None) is not None else []
-        df = build_representative_cross_section_dataframe(cross_section_data)
+        df = build_representative_cross_section_dataframe(
+            cross_section_data, self.k_decay, self.shallow_factor, self.deep_factor, self.slope_adjustment_factor
+        )
         if not df.empty:
             numeric_columns = [
                 col

@@ -987,6 +987,10 @@ def read_main_input_file(s_mif_name: str, args: dict):
         's_input_stream_path': get_parameter_name(sl_lines,  'Stream_File'), # Find the path to the stream file
         's_input_land_use_path': get_parameter_name(sl_lines,  'LU_Raster_SameRes'), # Find the path to the land use raster file
         's_input_mannings_path': get_parameter_name(sl_lines,  'LU_Manning_n'), # Find the path to the mannings n file
+        'slope_adjustment_factor': float(get_parameter_name(sl_lines, 'slope_adjustment_factor', 1.0)),
+        'k_decay': float(get_parameter_name(sl_lines, 'k_decay', 6.0)),
+        'shallow_factor': float(get_parameter_name(sl_lines, 'shallow_factor', 2.0)),
+        'deep_factor': float(get_parameter_name(sl_lines, 'deep_factor', 1.0)),
         's_input_flow_file_path': s_input_flow_file_path, # Find the path to the flow file
         's_flow_file_id': s_flow_file_id, # Find the column name
         's_flow_file_baseflow': s_flow_file_baseflow, # Find the baseflow column name
@@ -1026,6 +1030,18 @@ def read_main_input_file(s_mif_name: str, args: dict):
         "slope_low_percentile": int(get_parameter_name(sl_lines, 'Slope_Low_Percentile', 25)), # Find the low percentile for slope calculation
         "slope_high_percentile": int(get_parameter_name(sl_lines, 'Slope_High_Percentile', 75)), # Find the high percentile for slope calculation
     }
+
+    if not np.isfinite(params['slope_adjustment_factor']) or params['slope_adjustment_factor'] <= 0.0:
+        raise ValueError('slope_adjustment_factor must be finite and positive.')
+    if not np.isfinite(params['k_decay']) or params['k_decay'] <= 0.0:
+        raise ValueError('k_decay must be finite and positive.')
+    if not np.isfinite(params['shallow_factor']) or params['shallow_factor'] < 1.0:
+        raise ValueError('shallow_factor must be finite and >= 1.')
+    if not np.isfinite(params['deep_factor']) or not 0.0 < params['deep_factor'] <= 1.0:
+        raise ValueError('deep_factor must be finite and in (0, 1].')
+    for obsolete_name in ('f_min', 'alpha_boost', 'alpha_low'):
+        if get_parameter_name(sl_lines, obsolete_name) != '':
+            raise ValueError(f'{obsolete_name} has been replaced by shallow_factor and deep_factor; update your ARC inputs.')
 
     return params
 
@@ -1783,7 +1799,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_
     return d_wse, d_q_sum, True
 
 @njit(cache=True)
-def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_increments_args: tuple, thalweg: float, d_slope_use: float, d_q_sum: float, output_data: np.ndarray, i_entry_cell: int, b_modified_dem: bool):
+def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_increments_args: tuple, thalweg: float, d_slope_use: float, d_q_sum: float, output_data: np.ndarray, i_entry_cell: int, b_modified_dem: bool, k_decay: float = 6.0, shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0):
     i_start_elevation_index, i_last_elevation_index = 0, 0
 
     # Initialize previous values
@@ -1799,7 +1815,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
         d_wse = np.round(thalweg + d_inc_y * i_entry_elevation, 3)
 
         # Calculate the geometry          
-        A, P, V, Q, T, _ = _calculate_all(*flood_increments_args, d_wse, sqrt_slope)
+        A, P, V, Q, T, _ = _calculate_all(*flood_increments_args, d_wse, sqrt_slope, k_decay, shallow_factor, deep_factor, slope_adjustment_factor)
 
         if T > 0 and A > 0 and P > 0:
             if Q < prev_q:
@@ -1810,7 +1826,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
                 while d_wse_lower_bound < d_wse_upper_bound:
                     # Calculate the geometry       
-                    A, P, V_cand, Q_cand, T, _ = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope)   
+                    A, P, V_cand, Q_cand, T, _ = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope, k_decay, shallow_factor, deep_factor, slope_adjustment_factor)
 
                     # accept only if it improves AND respects the cap
                     if (A > prev_a) and (P > prev_p) and (Q_cand > prev_q) and (Q_cand <= d_q_sum):
@@ -6025,7 +6041,9 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
         i_start_elevation_index, i_last_elevation_index = flood_increments(i_number_of_increments + 1, 
                                                                         d_inc_y, 
                                                                         flood_increments_args, thalweg, d_slope_use, 
-                                                                        d_q_sum, _OUTPUT_DATA_ARRAY, i_entry_cell, hydraulic_data.b_modified_dem)
+                                                                        d_q_sum, _OUTPUT_DATA_ARRAY, i_entry_cell, hydraulic_data.b_modified_dem,
+                                                                        x_section.k_decay, x_section.shallow_factor, x_section.deep_factor,
+                                                                        x_section.slope_adjustment_factor)
         
         if i_last_elevation_index > i_start_elevation_index:
             if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell):
