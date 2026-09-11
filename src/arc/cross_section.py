@@ -1822,10 +1822,10 @@ def _adjust_n_by_depth(
     """
     Apply a bounded exponential adjustment to baseline Manning's n.
 
-    n(h) = n0 * [
+    n(h) = n0 * (
         deep_factor
-        + (shallow_factor - deep_factor) * exp(-k_decay * h)
-    ]
+        + (shallow_factor - deep_factor) / (1.0 + k_decay * h)
+    )
 
     Parameters
     ----------
@@ -1879,11 +1879,13 @@ def _adjust_n_by_depth(
     # Preserve signed input depths for bank-intersection calculations.
     h = np.maximum(depth, 0.0)
 
-    return n0 * (
+
+    updated_mannning_n = n0 * (
         deep_factor
-        + (shallow_factor - deep_factor)
-        * np.exp(-k_decay * h)
+        + (shallow_factor - deep_factor) / (1.0 + k_decay * h)
     )
+
+    return updated_mannning_n
 
 @njit(cache=True)
 def _calculate_stream_geometry_and_topwidth(
@@ -1900,6 +1902,9 @@ def _calculate_stream_geometry_and_topwidth(
     if da_y_depth is None:
         return 0.0, 0.0, 0.0, 0.0
 
+    # set da_n_profile to 0.03 and adjust it based on depth
+    # da_n_profile = np.full_like(da_n_profile, 1.0)
+
     # Transition between the configured shallow and deep roughness factors.
     da_scaled_n = _adjust_n_by_depth(
         n0=da_n_profile,
@@ -1908,6 +1913,8 @@ def _calculate_stream_geometry_and_topwidth(
         deep_factor=deep_factor,
         k_decay=k_decay
     )
+
+    # da_scaled_n = da_n_profile
 
     lt_0_in_depths, i_target_index = _check_for_negative_depths(da_y_depth)
     
