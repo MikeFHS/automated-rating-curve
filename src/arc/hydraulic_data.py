@@ -198,7 +198,8 @@ def _build_representative_hydraulic_rows_for_reach(
 
     ARC evaluates each contributing cross section every 0.10 meters above its
     local thalweg up to ``max_depth`` meters, computing area, perimeter,
-    velocity, discharge, and top width from Manning's equation at each stage.
+    main-channel velocity, total discharge, and total top width at each stage.
+    Without valid bank stations, velocity falls back to the whole-section mean.
     If any non-finite hydraulic value appears, the sweep stops early and the
     last successful depth becomes the effective cap for that reach.
     """
@@ -255,6 +256,9 @@ def _build_representative_hydraulic_rows_for_reach(
                 shallow_factor,
                 deep_factor,
                 slope_adjustment_factor,
+                int(record.get("Bank_Index1", -1)),
+                int(record.get("Bank_Index2", -1)),
+                channel_velocity=True,
             )
 
             if not all(np.isfinite(value) for value in (area, perimeter, velocity, discharge, top_width, d_composite_n)):
@@ -396,7 +400,8 @@ def build_representative_cross_section_dataframe(
         group['Representative_Depth_Increment'] = representative_depth_increment
         group['Representative_Top_Width'] = representative_width
         group['Representative_Depth'] = representative_depth
-        group['Representative_Velocity'] = group['Mean_Discharge'] / group['Representative_Cross_Sectional_Area'] 
+        # Preserve the filtered mean of per-section Q_channel / A_channel.
+        group['Representative_Velocity'] = group['Mean_Velocity']
         group['Representative_Stage_Elevation'] = (
             group['Representative_Thalweg_Elevation'].to_numpy(dtype=np.float64) + representative_depth
         )

@@ -62,6 +62,7 @@ class CrossSection:
         self.d_x_section_distance = params["d_x_section_distance"]
         self.i_center_point = int((self.d_x_section_distance / (sum([dx, dy]) * 0.5)) / 2.0) + 1
         self.slope_adjustment_factor = float(params.get("slope_adjustment_factor", 1.0))
+        self.hydraulic_bank_indices = (-1, -1)
         self.k_decay = float(params.get("k_decay", 6.0))
         self.shallow_factor = float(params.get("shallow_factor", 2.0))
         self.deep_factor = float(params.get("deep_factor", 1.0))
@@ -267,6 +268,7 @@ class CrossSection:
         """
         self.row = row
         self.col = col
+        self.hydraulic_bank_indices = (-1, -1)
         self.i_precompute_angle_closest = i_precompute_angle_closest
         self.d_xs_direction = d_xs_direction
         self.xs1_n = 0
@@ -1208,9 +1210,18 @@ class CrossSection:
             except Exception:
                 return 0.5 * self.d_ordinate_dist
             
+    def set_hydraulic_banks(self, bank_result):
+        """Retain inferred bank stations for channel/overbank conveyance."""
+        self.hydraulic_bank_indices = (-1, -1)
+        if isinstance(bank_result, dict) and bank_result.get("is_valid", False):
+            left = int(bank_result.get("i_bank_1_index", -1))
+            right = int(bank_result.get("i_bank_2_index", -1))
+            if 0 < left < self.xs1_n and 0 < right < self.xs2_n:
+                self.hydraulic_bank_indices = (left, right)
+
     def get_calculate_discharge_from_wse_args(self):
         """Return the tuple of arrays needed by :func:`calculate_discharge_from_wse`."""
-        return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist, self.k_decay, self.shallow_factor, self.deep_factor, self.slope_adjustment_factor
+        return self.da_xs_profile1, self.xs1_n, self.mannings_n1, self.da_xs_profile2, self.xs2_n, self.mannings_n2, self.d_ordinate_dist, self.k_decay, self.shallow_factor, self.deep_factor, self.slope_adjustment_factor, *self.hydraulic_bank_indices
 
     def _get_precomputed_bathymetry_bank_result(
         self,
@@ -1524,9 +1535,33 @@ def _calculate_all(
     wse: float,
     sqrt_slope: float,
     k_decay: float = 6.0,
-    shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0
+    shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0, bank_index1: int = -1, bank_index2: int = -1,
+    channel_velocity: bool = False
 ):
     wse = np.round(wse, 3)
+
+    if 0 < bank_index1 < xs1_n and 0 < bank_index2 < xs2_n:
+        A, P, T, conveyance = _compound_section_conveyance(
+            da_xs_profile1[:xs1_n], mannings_n1[:xs1_n], bank_index1,
+            da_xs_profile2[:xs2_n], mannings_n2[:xs2_n], bank_index2,
+            wse, d_ordinate_dist, k_decay, shallow_factor, deep_factor,
+        )
+        if A <= 0.0 or P <= 0.0 or conveyance <= 0.0:
+            return 0.0, 0.0, 0.0, 0.0, np.round(T, 3), 0.0
+        # An equivalent n is diagnostic only; discharge uses summed conveyance.
+        equivalent_n = A * (A / P)**(2.0 / 3.0) / conveyance
+        Q = np.round(conveyance * sqrt_slope * slope_adjustment_factor, 3)
+        A = np.round(A, 3)
+        V = np.round(Q / A, 3) if A > 0.0 else 0.0
+        if channel_velocity:
+            channel_area, _, _, channel_conveyance = _compound_section_conveyance(
+                da_xs_profile1[:xs1_n], mannings_n1[:xs1_n], bank_index1,
+                da_xs_profile2[:xs2_n], mannings_n2[:xs2_n], bank_index2,
+                wse, d_ordinate_dist, k_decay, shallow_factor, deep_factor,
+                channel_only=True,
+            )
+            V = np.round(channel_conveyance * sqrt_slope * slope_adjustment_factor / channel_area, 3) if channel_area > 0.0 else 0.0
+        return A, np.round(P, 3), V, Q, np.round(T, 3), np.round(equivalent_n, 4)
 
     # Pass depth-scaling parameters to geometry functions
     A1, P1, np1, T1 = _calculate_stream_geometry_and_topwidth(
@@ -1888,6 +1923,68 @@ def _adjust_n_by_depth(
     return updated_mannning_n
 
 @njit(cache=True)
+def _bank_subsection_geometry(profile, roughness, bank_index, wse, spacing,
+                              k_decay, shallow_factor, deep_factor):
+    """Integrate connected wet bed segments into channel and overbank parts.
+
+    Columns are area, bed perimeter, perimeter-weighted n**1.5, and width.
+    Vertical subdivision interfaces contribute no solid wetted perimeter.
+    Stop at the first dry barrier, as in the existing side-profile calculation.
+    """
+    parts = np.zeros((2, 4))
+    depths = wse - profile
+    if len(depths) < 2 or depths[0] <= 0.0:
+        return parts
+    scaled_n = _adjust_n_by_depth(roughness, depths, shallow_factor, deep_factor, k_decay)
+    for j in range(1, len(profile)):
+        h0, h1 = depths[j - 1], depths[j]
+        if h0 <= 0.0:
+            break
+        width = spacing
+        n = scaled_n[j]
+        if h1 <= 0.0:
+            width *= h0 / (h0 - h1)
+            h1 = 0.0
+            n = scaled_n[j - 1]
+        perimeter = np.hypot(width, h1 - h0)
+        part = 0 if j <= bank_index else 1
+        parts[part, 0] += width * (h0 + h1) * 0.5
+        parts[part, 1] += perimeter
+        parts[part, 2] += perimeter * n**1.5
+        parts[part, 3] += width
+        if depths[j] <= 0.0:
+            break
+    return parts
+
+
+@njit(cache=True)
+def _compound_section_conveyance(profile1, n1, bank1, profile2, n2, bank2,
+                                 wse, spacing, k_decay, shallow_factor, deep_factor,
+                                 channel_only=False):
+    """Sum conveyances (SI units), optionally returning only main-channel geometry and conveyance."""
+    left = _bank_subsection_geometry(profile1, n1, bank1, wse, spacing,
+                                    k_decay, shallow_factor, deep_factor)
+    right = _bank_subsection_geometry(profile2, n2, bank2, wse, spacing,
+                                     k_decay, shallow_factor, deep_factor)
+    sections = np.empty((3, 4))
+    sections[0] = left[0] + right[0]
+    sections[1] = left[1]
+    sections[2] = right[1]
+    area, perimeter, width, conveyance = 0.0, 0.0, 0.0, 0.0
+    for i in range(1 if channel_only else 3):
+        a, p, weighted_n, t = sections[i]
+        area += a
+        perimeter += p
+        width += t
+        if a > 0.0 and p > 0.0:
+            n = (weighted_n / p)**(2.0 / 3.0)
+            if n < 0.0001:
+                n = 0.035
+            conveyance += a * (a / p)**(2.0 / 3.0) / n
+    return area, perimeter, width, conveyance
+
+
+@njit(cache=True)
 def _calculate_stream_geometry_and_topwidth(
     da_xs_profile: np.ndarray,
     d_wse: float,
@@ -1944,7 +2041,7 @@ def _calculate_stream_geometry_and_topwidth(
 @njit(cache=True)
 def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.ndarray, xs1_n: float, mannings_n1: float,
                                 profile2: np.ndarray, xs2_n: float, mannings_n2: float, d_ordinate_dist: float,
-                                k_decay: float = 6.0, shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0):
+                                k_decay: float = 6.0, shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0, bank_index1: int = -1, bank_index2: int = -1):
     """Compute discharge (Q) at a given WSE using Manning's equation.
 
     Parameters
@@ -1972,6 +2069,14 @@ def calculate_discharge_from_wse(wse: float, sqrt_slope: float, profile1: np.nda
     float
         Discharge corresponding to the given WSE.
     """
+    if 0 < bank_index1 < xs1_n and 0 < bank_index2 < xs2_n:
+        _, _, _, conveyance = _compound_section_conveyance(
+            profile1[:xs1_n], mannings_n1[:xs1_n], bank_index1,
+            profile2[:xs2_n], mannings_n2[:xs2_n], bank_index2,
+            wse, d_ordinate_dist, k_decay, shallow_factor, deep_factor,
+        )
+        return conveyance * sqrt_slope * slope_adjustment_factor
+
     # Calculate the geometry
     A1, P1, np1, _ = _calculate_stream_geometry_and_topwidth(
         profile1[:xs1_n], wse, d_ordinate_dist, mannings_n1[:xs1_n], k_decay, shallow_factor, deep_factor
