@@ -63,7 +63,7 @@ class DepthRoughnessTests(unittest.TestCase):
     def test_adjustment_endpoints_and_input_preservation(self):
         n = np.full(4, 0.03)
         depth = np.array([-1., 0., 0.5, 100.])
-        expected = n * (0.6 + (2.5 - 0.6) * np.exp(-2. * np.maximum(depth, 0.)))
+        expected = n * (0.6 + (2.5 - 0.6) / (1. + 2. * np.maximum(depth, 0.)))
         adjusted = _adjust_n_by_depth(n, depth, 2.5, 0.6, 2.)
         np.testing.assert_allclose(adjusted, expected)
         np.testing.assert_array_equal(n, np.full(4, 0.03))
@@ -77,7 +77,7 @@ class DepthRoughnessTests(unittest.TestCase):
         for depth in (0.1, 0.5, 2.):
             base = _calculate_all(*args, depth, 0.03, 6., 1., 1.)
             reduced = _calculate_all(*args, depth, 0.03, 6., 2., 1.)
-            multiplier = 1.0 + np.exp(-6. * depth)
+            multiplier = 1.0 + 1.0 / (1.0 + 6. * depth)
             self.assertAlmostEqual(reduced[5] / base[5], multiplier, delta=0.005)
             np.testing.assert_allclose(np.array(reduced)[[0, 1, 4]], np.array(base)[[0, 1, 4]])
 
