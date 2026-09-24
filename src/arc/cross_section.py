@@ -1212,12 +1212,14 @@ class CrossSection:
             
     def set_hydraulic_banks(self, bank_result):
         """Retain inferred bank stations for channel/overbank conveyance."""
+        
         self.hydraulic_bank_indices = (-1, -1)
-        if isinstance(bank_result, dict) and bank_result.get("is_valid", False):
-            left = int(bank_result.get("i_bank_1_index", -1))
-            right = int(bank_result.get("i_bank_2_index", -1))
-            if 0 < left < self.xs1_n and 0 < right < self.xs2_n:
-                self.hydraulic_bank_indices = (left, right)
+        if not isinstance(bank_result, dict):
+            return
+        left = int(bank_result.get("i_bank_1_index", -1))
+        right = int(bank_result.get("i_bank_2_index", -1))
+        if 0 < left < self.xs1_n and 0 < right < self.xs2_n:
+            self.hydraulic_bank_indices = (left, right)
 
     def get_calculate_discharge_from_wse_args(self):
         """Return the tuple of arrays needed by :func:`calculate_discharge_from_wse`."""

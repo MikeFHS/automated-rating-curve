@@ -1401,7 +1401,6 @@ def load_manual_cross_section_records(
 
 def apply_manual_cross_section_data(x_section: CrossSection, manual_record: dict) -> None:
     """Populate a :class:`CrossSection` instance from a manual input record."""
-    x_section.hydraulic_bank_indices = (-1, -1)
     x_section.row = manual_record["row"]
     x_section.col = manual_record["col"]
     x_section.d_xs_direction = manual_record["xs_angle"]
@@ -1800,7 +1799,7 @@ def find_wse(range_end, start_wse, increment, d_q_maximum, x_sect_args, d_slope_
     return d_wse, d_q_sum, True
 
 @njit(cache=True)
-def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_increments_args: tuple, thalweg: float, d_slope_use: float, d_q_sum: float, output_data: np.ndarray, i_entry_cell: int, b_modified_dem: bool, k_decay: float = 6.0, shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0, bank_index1: int = -1, bank_index2: int = -1):
+def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_increments_args: tuple, thalweg: float, d_slope_use: float, d_q_sum: float, output_data: np.ndarray, i_entry_cell: int, b_modified_dem: bool, k_decay: float = 6.0, shallow_factor: float = 2.0, deep_factor: float = 1.0, slope_adjustment_factor: float = 1.0):
     i_start_elevation_index, i_last_elevation_index = 0, 0
 
     # Initialize previous values
@@ -1816,7 +1815,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
         d_wse = np.round(thalweg + d_inc_y * i_entry_elevation, 3)
 
         # Calculate the geometry          
-        A, P, V, Q, T, _ = _calculate_all(*flood_increments_args, d_wse, sqrt_slope, k_decay, shallow_factor, deep_factor, slope_adjustment_factor, bank_index1, bank_index2)
+        A, P, V, Q, T, _ = _calculate_all(*flood_increments_args, d_wse, sqrt_slope, k_decay, shallow_factor, deep_factor, slope_adjustment_factor)
 
         if T > 0 and A > 0 and P > 0:
             if Q < prev_q:
@@ -1827,7 +1826,7 @@ def flood_increments(i_number_of_increments: int, d_inc_y: float, flood_incremen
                 d_wse_upper_bound = np.round(d_wse_upper_bound, 3)
                 while d_wse_lower_bound < d_wse_upper_bound:
                     # Calculate the geometry       
-                    A, P, V_cand, Q_cand, T, _ = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope, k_decay, shallow_factor, deep_factor, slope_adjustment_factor, bank_index1, bank_index2)
+                    A, P, V_cand, Q_cand, T, _ = _calculate_all(*flood_increments_args, d_wse_lower_bound, sqrt_slope, k_decay, shallow_factor, deep_factor, slope_adjustment_factor)
 
                     # accept only if it improves AND respects the cap
                     if (A > prev_a) and (P > prev_p) and (Q_cand > prev_q) and (Q_cand <= d_q_sum):
@@ -2837,8 +2836,6 @@ def _build_cross_section_export_record(
         'c1': int(x_section.ia_xc_column1_index_main[x_section.xs1_n-1] - x_section.i_boundary_number),
         'r2': int(x_section.ia_xc_row2_index_main[x_section.xs2_n-1] - x_section.i_boundary_number),
         'c2': int(x_section.ia_xc_column2_index_main[x_section.xs2_n-1] - x_section.i_boundary_number),
-        'Bank_Index1': int(x_section.hydraulic_bank_indices[0]),
-        'Bank_Index2': int(x_section.hydraulic_bank_indices[1]),
         'Slope': float(d_slope_use),
         'Thalweg': float(x_section.get_thalweg() - 100 if b_modified_dem else x_section.get_thalweg()),
         'Inflect_D2W_Dy2': None if inflect_curve is None else np.asarray(inflect_curve, dtype=np.float64).copy(),
@@ -2904,7 +2901,6 @@ def _replay_precomputed_cross_section(
 ) -> None:
     """Load a cached cross section back into a reusable sampler instance."""
     apply_manual_cross_section_data(x_section, precomputed_record)
-    x_section.set_hydraulic_banks(precomputed_record.get("bank_search_result"))
     x_section.set_reach_scale_inflect_bank_index(reach_bank_index)
 
 # Function for identifying top inflection point peaks
@@ -4709,8 +4705,9 @@ def _interpolate_reach_bank_elevation_surface(
             0.0,
         )
     )
-    if not np.isfinite(reach_grade) or reach_grade < 0.0:
-        reach_grade = 0.0
+    if not np.isfinite(reach_grade):
+        reach_grade = MIN_SLOPE
+    reach_grade = float(np.clip(reach_grade, MIN_SLOPE, MAX_SLOPE))
     upstream_control_elevation = (
         downstream_control_elevation + reach_grade * reach_length
     )
@@ -5637,8 +5634,7 @@ def _finalize_cross_section_records(
     hydraulic depths using cell-by-cell backwater energy calculations.
     A final pass burns those stored depths into the profiles and bathymetry raster.
     """
-    # Set the water-class Manning's n for all cells within the detected banks. This
-    # ensures that the hydraulic calculations use the correct roughness for the channel.
+    # Set baseline channel roughness before smoothing the bank elevations.
     _set_in_bank_mannings_n_to_water(sampled_records, params)
 
     if params['s_output_bathymetry_path']:
@@ -6095,7 +6091,7 @@ def calculate_hydraulic_data_for_cell(i_entry_cell: int):
                                                                         flood_increments_args, thalweg, d_slope_use, 
                                                                         d_q_sum, _OUTPUT_DATA_ARRAY, i_entry_cell, hydraulic_data.b_modified_dem,
                                                                         x_section.k_decay, x_section.shallow_factor, x_section.deep_factor,
-                                                                        x_section.slope_adjustment_factor, *x_section.hydraulic_bank_indices)
+                                                                        x_section.slope_adjustment_factor)
         
         if i_last_elevation_index > i_start_elevation_index:
             if d_q_baseflow > 0.001 and hydraulic_data.is_start_q_greater_than_baseflow(i_start_elevation_index, d_q_baseflow, i_entry_cell):
@@ -6368,8 +6364,7 @@ def run_main_loop(
         requested cross-section export data.
     """
     # Representative cross sections are rebuilt later from stored per-cell
-    # cross-section records using 0.10 m hydraulic staging, so
-    # either output requires retaining the sampled profile records. 
+    # data, this flag is used to determine whether to collect that data during the main loop.
     want_xs = bool(
         params.get('s_xs_output_file')
         or (

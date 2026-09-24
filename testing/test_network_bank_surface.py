@@ -7,6 +7,7 @@ from pyproj import CRS
 from shapely.geometry import LineString
 
 from arc.Automated_Rating_Curve_Generator import (
+    MAX_SLOPE,
     MIN_SLOPE,
     _anchor_interpolated_bank_surface_to_cell_observations,
     _exclude_thalweg_equal_bank_elevations,
@@ -416,8 +417,8 @@ def test_degenerate_coordinates_use_the_known_stream_order() -> None:
     assert elevations.tolist() == pytest.approx([12.0, 11.0, 10.0])
 
 
-def test_surface_uses_zero_grade_when_graph_grade_is_invalid() -> None:
-    """An invalid stored grade should become flat rather than rise downstream."""
+def test_surface_uses_minimum_grade_when_graph_grade_is_invalid() -> None:
+    """An invalid stored grade still produces the minimum downstream fall."""
     graph = nx.DiGraph()
     graph.add_nodes_from(
         [
@@ -436,10 +437,30 @@ def test_surface_uses_zero_grade_when_graph_grade_is_invalid() -> None:
         )
     )
 
-    assert elevations.tolist() == pytest.approx([10.0, 10.0, 10.0])
+    assert elevations.tolist() == pytest.approx(
+        [10.0 + 10.0 * MIN_SLOPE, 10.0 + 5.0 * MIN_SLOPE, 10.0]
+    )
     assert np.all(np.diff(elevations) <= 0.0)
     assert downstream_id == 2
     assert downstream_control == pytest.approx(10.0)
+
+
+def test_surface_caps_grade_without_clipping_reach_positions() -> None:
+    """The slope limit applies to elevation change, not station fractions."""
+    graph = nx.DiGraph()
+    graph.add_node(1, length=10.0, bank_elevation_grade=MAX_SLOPE * 2.0)
+
+    elevations, fractions, _, _ = _interpolate_reach_bank_elevation_surface(
+        graph,
+        1,
+        np.asarray([0.0, 2.0, 10.0]),
+        {1: 10.0},
+    )
+
+    assert fractions.tolist() == pytest.approx([0.0, 0.2, 1.0])
+    assert elevations.tolist() == pytest.approx(
+        [10.0 + 10.0 * MAX_SLOPE, 10.0 + 8.0 * MAX_SLOPE, 10.0]
+    )
 
 
 def test_equal_outlet_controls_use_minimum_numerical_grade() -> None:
