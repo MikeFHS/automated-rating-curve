@@ -6,15 +6,18 @@ import pytest
 from pyproj import CRS
 from shapely.geometry import LineString
 
+import arc.Automated_Rating_Curve_Generator as generator
 from arc.Automated_Rating_Curve_Generator import (
     MAX_SLOPE,
     MIN_SLOPE,
     _anchor_interpolated_bank_surface_to_cell_observations,
-    _exclude_thalweg_equal_bank_elevations,
+    _build_downstream_monotone_bank_profile,
+    _compute_raw_bank_elevation_from_result,
     _estimate_network_smoothed_reach_min_bank_elevations,
     _interpolate_reach_bank_elevation_surface,
     _measure_reach_geometry_length,
     _order_reach_stream_cells_from_network,
+    _replace_reach_bank_outliers_with_downstream,
     _reconstruct_reach_bank_width_with_fallback,
 )
 
@@ -51,18 +54,159 @@ def test_projected_reach_length_converts_native_units_to_meters() -> None:
     assert measured_length == pytest.approx(304.8006096)
 
 
-def test_excludes_thalweg_equal_banks_before_reach_statistics() -> None:
-    """Banks at or below the thalweg must not enter reach statistics."""
-    filtered = _exclude_thalweg_equal_bank_elevations(
-        np.asarray([100.0, 101.5, 99.00000001, 97.5, np.nan]),
-        np.asarray([100.0, 100.0, 99.0, 98.0, 98.0]),
+def test_valid_bank_equal_to_channel_bottom_remains_an_observation() -> None:
+    """A valid bank is usable even when its height equals the sampled bed."""
+    result = {
+        "is_valid": True,
+        "i_bank_1_index": 2,
+        "i_bank_2_index": 2,
+        "bank_elev_1": 100.0,
+        "bank_elev_2": 101.0,
+    }
+    assert _compute_raw_bank_elevation_from_result(result) == pytest.approx(100.0)
+    assert np.isnan(_compute_raw_bank_elevation_from_result({**result, "is_valid": False}))
+
+
+def test_reach_bank_iqr_outliers_use_nearest_retained_downstream_bank() -> None:
+    filtered, replaced = _replace_reach_bank_outliers_with_downstream(
+        np.asarray([80.0, 120.0, 40.0, 80.0, 85.0, 85.0, 85.0, 85.0]),
+        reach_id=7,
+    )
+    assert filtered.tolist() == pytest.approx([80.0, 80.0, 80.0, 80.0, 85.0, 85.0, 85.0, 85.0])
+    assert replaced.tolist() == [False, True, True, False, False, False, False, False]
+
+
+def test_reach_bank_iqr_filter_uses_upstream_bank_at_reach_end() -> None:
+    filtered, replaced = _replace_reach_bank_outliers_with_downstream(
+        np.asarray([100.0, 90.0, 80.0, 70.0]), reach_id=7,
+    )
+    assert filtered.tolist() == pytest.approx([90.0, 90.0, 80.0, 80.0])
+    assert replaced.tolist() == [True, False, False, True]
+    short, replaced = _replace_reach_bank_outliers_with_downstream(
+        np.asarray([100.0, 90.0, np.nan]), reach_id=7,
+    )
+    assert short[:2].tolist() == [100.0, 90.0]
+    assert np.isnan(short[2])
+    assert not np.any(replaced)
+
+
+def test_forward_bank_profile_interpolates_rises_to_next_lower_bank() -> None:
+    """Equal banks remain level and a rise is replaced using the next fall."""
+    surface, corrected = _build_downstream_monotone_bank_profile(
+        np.asarray([100.0, 100.0, 101.0, 96.0, 97.0]),
+        np.asarray([0.0, 25.0, 50.0, 75.0, 100.0]),
     )
 
-    assert np.isnan(filtered[0])
-    assert filtered[1] == pytest.approx(101.5)
-    assert np.isnan(filtered[2])
-    assert np.isnan(filtered[3])
-    assert np.isnan(filtered[4])
+    assert surface.tolist() == pytest.approx([100.0, 100.0, 98.0, 96.0, 96.0 - 25.0 * MIN_SLOPE])
+    assert corrected.tolist() == [False, False, True, False, True]
+
+
+def test_forward_bank_profile_respects_incoming_reach_control() -> None:
+    """A connected reach cannot start above its upstream outlet."""
+    surface, corrected = _build_downstream_monotone_bank_profile(
+        np.asarray([101.0, 102.0, 99.0]),
+        np.asarray([0.0, 50.0, 100.0]),
+        upstream_control=100.0,
+    )
+    assert surface.tolist() == pytest.approx([100.0, 99.5, 99.0])
+    assert corrected.tolist() == [True, True, False]
+
+
+def test_forward_bank_profile_caps_slope_and_interpolates_invalid_banks() -> None:
+    surface, corrected = _build_downstream_monotone_bank_profile(
+        np.asarray([100.0, 101.0, 0.0]),
+        np.asarray([0.0, 25.0, 50.0]),
+    )
+    assert surface.tolist() == pytest.approx([100.0, 87.5, 75.0])
+    assert corrected.tolist() == [False, True, True]
+    for invalid in (np.nan, np.inf, -np.inf):
+        filled, filled_mask = _build_downstream_monotone_bank_profile(
+            np.asarray([100.0, invalid, 96.0]),
+            np.asarray([0.0, 50.0, 100.0]),
+        )
+        assert filled.tolist() == pytest.approx([100.0, 98.0, 96.0])
+        assert filled_mask.tolist() == [False, True, False]
+
+    tail, tail_mask = _build_downstream_monotone_bank_profile(
+        np.asarray([100.0, 101.0, np.nan]),
+        np.asarray([0.0, 25.0, 50.0]),
+    )
+    assert tail.tolist() == pytest.approx([100.0, 100.0 - 25.0 * MIN_SLOPE, 100.0 - 50.0 * MIN_SLOPE])
+    assert tail_mask.tolist() == [False, True, True]
+
+
+def test_forward_bank_profile_requires_a_starting_bank_or_incoming_control() -> None:
+    with pytest.raises(ValueError, match="first bank"):
+        _build_downstream_monotone_bank_profile(
+            np.asarray([np.nan, 99.0]), np.asarray([0.0, 50.0]),
+        )
+    surface, corrected = _build_downstream_monotone_bank_profile(
+        np.asarray([np.nan, 101.0, 99.0]),
+        np.asarray([0.0, 50.0, 100.0]),
+        upstream_control=100.0,
+    )
+    assert surface.tolist() == pytest.approx([100.0, 99.5, 99.0])
+    assert corrected.tolist() == [True, True, False]
+
+
+def test_reach_smoother_writes_forward_profile_to_bathymetry_records(monkeypatch) -> None:
+    """The forward profile must become each cell's bathymetry bank control."""
+    class FakeCrossSection:
+        def build_bank_search_result_from_smoothed_elevation(
+            self, existing, elevation, _function_used
+        ):
+            return {**existing, "smoothed_bank_elevation": elevation}
+
+    graph = nx.DiGraph()
+    graph.add_node(1, length=100.0, bank_elevation_grade=0.01)
+    records = [
+        {
+            "row": 0,
+            "col": index,
+            "bank_search_result": {
+                "is_valid": True,
+                "i_bank_1_index": 1,
+                "i_bank_2_index": 1,
+                "bank_elev_1": elevation,
+                "bank_elev_2": elevation,
+                "function_used": "local_bank",
+            },
+        }
+        for index, elevation in enumerate([100.0, np.nan, 96.0])
+    ]
+    monkeypatch.setattr(generator, "_CELL_COMIDS", np.asarray([1, 1, 1]))
+    monkeypatch.setattr(generator, "_CELL_SOURCE_STREAM_IDS", None)
+    monkeypatch.setattr(generator, "_CELL_ROWS", np.asarray([0, 0, 0]))
+    monkeypatch.setattr(generator, "_CELL_COLS", np.asarray([0, 1, 2]))
+    monkeypatch.setattr(generator, "_CELL_REACH_INFLECT_BANK_INDEX", None)
+    monkeypatch.setattr(generator, "get_cross_section", lambda *_args: FakeCrossSection())
+    monkeypatch.setattr(generator, "_replay_precomputed_cross_section", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(generator, "get_stream_direction_information", lambda *_args: (0.0, 0.0))
+    monkeypatch.setattr(generator, "_apply_reach_top_width_filter", lambda *_args: None)
+    monkeypatch.setattr(generator, "_apply_reach_median_top_width_to_missing_bank", lambda *_args: None)
+    monkeypatch.setattr(
+        generator, "_order_reach_stream_cells_from_network",
+        lambda *_args: (np.asarray([0, 1, 2]), np.asarray([0.0, 50.0, 100.0])),
+    )
+    monkeypatch.setattr(generator, "_build_reach_network_graph", lambda *_args: (graph, {1: None}))
+
+    generator._smooth_reach_bank_elevations(
+        records,
+        {
+            "dx": 50.0,
+            "dy": 1.0,
+            "i_general_direction_distance": 1,
+            "s_strmshp_path": "unused",
+            "s_reach_id_field": "unused",
+            "s_downstream_reach_id_field": "unused",
+        },
+        quiet=True,
+    )
+
+    assert [record["bank_search_result"]["smoothed_bank_elevation"] for record in records] == (
+        pytest.approx([100.0, 98.0, 96.0])
+    )
+    assert records[1]["bank_search_result"]["forward_bank_rise_corrected"] is True
 
 
 class _WidthReconstructionCrossSection:
@@ -249,8 +393,8 @@ def test_observation_above_interpolation_is_not_used_as_anchor() -> None:
     assert anchor_mask.tolist() == [False, False]
 
 
-def test_observation_anchor_filters_bounds_and_thalweg_values() -> None:
-    """Only in-bound observations detectably above the bed may be anchors."""
+def test_observation_anchor_filters_reach_bounds_without_channel_bottom() -> None:
+    """Only the reach outlier bounds restrict local bank anchors."""
     surface, _, anchor_mask = (
         _anchor_interpolated_bank_surface_to_cell_observations(
             np.asarray([np.nan, 10.5, 9.5, 8.5, 7.0]),
@@ -259,16 +403,14 @@ def test_observation_anchor_filters_bounds_and_thalweg_values() -> None:
             100.0,
             8.0,
             0.001,
-            thalweg_elevations=np.asarray([11.0, 9.0, 9.0, 8.5, 6.0]),
             lower_bound=8.0,
             upper_bound=10.0,
         )
     )
 
-    # 10.5 is above the upper bound, 8.5 equals its thalweg, and 7.0 is
-    # below the lower bound. Only 9.5 is eligible to reset the interpolation.
-    assert surface.tolist() == pytest.approx([12.0, 10.75, 9.5, 8.75, 8.0])
-    assert anchor_mask.tolist() == [False, False, True, False, False]
+    # 10.5 and 7.0 are outliers; both 9.5 and 8.5 can lower the interpolation.
+    assert surface.tolist() == pytest.approx([12.0, 10.75, 9.5, 8.5, 8.0])
+    assert anchor_mask.tolist() == [False, False, True, True, False]
     assert np.all(np.diff(surface) < 0.0)
 
 
@@ -565,7 +707,6 @@ def test_outlet_surface_uses_lower_filtered_banks_as_anchors() -> None:
                 # filtered 103 m bank becomes an anchor before returning to
                 # the fixed 100 m outlet minimum.
                 "observed_elevations": np.asarray([110.0, 103.0, 100.0]),
-                "thalweg_elevations": np.asarray([90.0, 90.0, 90.0]),
                 "lower_bound": 100.0,
                 "upper_bound": 110.0,
             }
@@ -604,7 +745,6 @@ def test_isolated_reach_uses_maximum_to_minimum_surface_and_anchors() -> None:
                 # The 94 m middle bank is lower than the initial 95 m line and
                 # therefore exercises the unchanged shared anchoring pass.
                 "observed_elevations": np.asarray([100.0, 94.0, 90.0]),
-                "thalweg_elevations": np.asarray([80.0, 80.0, 80.0]),
                 "lower_bound": 90.0,
                 "upper_bound": 100.0,
             }
@@ -677,7 +817,6 @@ def test_headwater_surface_uses_filtered_maximum_and_low_bank_anchors() -> None:
                 # The initial 110-to-100 m line predicts 105 m at the middle
                 # cell. Its filtered 103 m bank therefore becomes an anchor.
                 "observed_elevations": np.asarray([110.0, 103.0, 100.0]),
-                "thalweg_elevations": np.asarray([90.0, 90.0, 90.0]),
                 "lower_bound": 100.0,
                 "upper_bound": 110.0,
                 # Production supplies this value directly from the already
