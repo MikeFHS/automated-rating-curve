@@ -4,8 +4,12 @@ from arc.cross_section import (
     CrossSection, _compound_section_conveyance, _calculate_all,
     calculate_discharge_from_wse,
 )
-from arc.Automated_Rating_Curve_Generator import find_wse, flood_increments
-from arc.hydraulic_data import build_representative_cross_section_dataframe
+from arc.Automated_Rating_Curve_Generator import (
+    _build_cross_section_export_record, find_wse, flood_increments,
+)
+from arc.hydraulic_data import (
+    build_representative_cross_section_dataframe,
+)
 
 
 class CompoundConveyanceTests(unittest.TestCase):
@@ -83,6 +87,30 @@ class CompoundConveyanceTests(unittest.TestCase):
         self.assertAlmostEqual(row.Mean_Cross_Sectional_Area, full[0])
         unbanked = _calculate_all(*self.args, 2., .03)
         np.testing.assert_equal(unbanked, _calculate_all(*self.args, 2., .03, channel_velocity=True))
+
+    def test_representative_export_passes_final_bathymetry_banks_to_hydraulics(self):
+        section = object.__new__(CrossSection)
+        section.xs1_n = section.xs2_n = 4
+        section.da_xs_profile1 = section.da_xs_profile2 = self.profile
+        section.mannings_n1 = section.mannings_n2 = self.n
+        section.d_ordinate_dist = 1.
+        section.i_boundary_number = 0
+        section.ia_xc_row1_index_main = section.ia_xc_row2_index_main = np.zeros(4, dtype=int)
+        section.ia_xc_column1_index_main = section.ia_xc_column2_index_main = np.arange(4)
+        banks = {'is_valid': True, 'i_bank_1_index': 1, 'i_bank_2_index': 1}
+        record = _build_cross_section_export_record(
+            section, {'b_modified_dem': False}, 1, 0, 0, .0009, None, banks,
+        )
+        self.assertEqual((record['Bank_Index1'], record['Bank_Index2']), (1, 1))
+        frame = build_representative_cross_section_dataframe([record], 1., 1., 1.)
+        channel = _calculate_all(*self.args, 2., .03, *self.parameters, channel_velocity=True)
+        self.assertAlmostEqual(frame.Mean_Velocity.iloc[19], channel[2])
+
+        invalid = _build_cross_section_export_record(
+            section, {'b_modified_dem': False}, 1, 0, 0, .0009, None,
+            {'is_valid': False, 'i_bank_1_index': 1, 'i_bank_2_index': 1},
+        )
+        self.assertEqual((invalid['Bank_Index1'], invalid['Bank_Index2']), (-1, -1))
 
     def test_asymmetric_banks_and_dry_barriers(self):
         from arc.cross_section import _bank_subsection_geometry

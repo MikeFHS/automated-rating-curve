@@ -17,7 +17,7 @@ from arc.Automated_Rating_Curve_Generator import (
     _interpolate_reach_bank_elevation_surface,
     _measure_reach_geometry_length,
     _order_reach_stream_cells_from_network,
-    _replace_reach_bank_outliers_with_downstream,
+    _smooth_ordered_reach_banks_with_moving_mean,
     _reconstruct_reach_bank_width_with_fallback,
 )
 
@@ -67,27 +67,27 @@ def test_valid_bank_equal_to_channel_bottom_remains_an_observation() -> None:
     assert np.isnan(_compute_raw_bank_elevation_from_result({**result, "is_valid": False}))
 
 
-def test_reach_bank_iqr_outliers_use_nearest_retained_downstream_bank() -> None:
-    filtered, replaced = _replace_reach_bank_outliers_with_downstream(
-        np.asarray([80.0, 120.0, 40.0, 80.0, 85.0, 85.0, 85.0, 85.0]),
-        reach_id=7,
+def test_reach_bank_moving_mean_uses_centered_window() -> None:
+    smoothed, changed = _smooth_ordered_reach_banks_with_moving_mean(
+        np.asarray([100.0, 110.0, 120.0, 130.0, 140.0]), window_size=3,
     )
-    assert filtered.tolist() == pytest.approx([80.0, 80.0, 80.0, 80.0, 85.0, 85.0, 85.0, 85.0])
-    assert replaced.tolist() == [False, True, True, False, False, False, False, False]
+    assert smoothed.tolist() == pytest.approx([105.0, 110.0, 120.0, 130.0, 135.0])
+    assert changed.tolist() == [True, False, False, False, True]
 
 
-def test_reach_bank_iqr_filter_uses_upstream_bank_at_reach_end() -> None:
-    filtered, replaced = _replace_reach_bank_outliers_with_downstream(
-        np.asarray([100.0, 90.0, 80.0, 70.0]), reach_id=7,
+def test_reach_bank_moving_mean_preserves_invalid_cells_for_profile_interpolation() -> None:
+    smoothed, changed = _smooth_ordered_reach_banks_with_moving_mean(
+        np.asarray([100.0, np.nan, 96.0]), window_size=5,
     )
-    assert filtered.tolist() == pytest.approx([90.0, 90.0, 80.0, 80.0])
-    assert replaced.tolist() == [True, False, False, True]
-    short, replaced = _replace_reach_bank_outliers_with_downstream(
-        np.asarray([100.0, 90.0, np.nan]), reach_id=7,
+    assert smoothed[[0, 2]].tolist() == pytest.approx([98.0, 98.0])
+    assert np.isnan(smoothed[1])
+    assert changed.tolist() == [True, False, True]
+    unchanged, unchanged_mask = _smooth_ordered_reach_banks_with_moving_mean(
+        np.asarray([100.0, np.nan, 96.0]), window_size=1,
     )
-    assert short[:2].tolist() == [100.0, 90.0]
-    assert np.isnan(short[2])
-    assert not np.any(replaced)
+    assert unchanged[[0, 2]].tolist() == [100.0, 96.0]
+    assert np.isnan(unchanged[1])
+    assert not np.any(unchanged_mask)
 
 
 def test_forward_bank_profile_interpolates_rises_to_next_lower_bank() -> None:
@@ -204,7 +204,7 @@ def test_reach_smoother_writes_forward_profile_to_bathymetry_records(monkeypatch
     )
 
     assert [record["bank_search_result"]["smoothed_bank_elevation"] for record in records] == (
-        pytest.approx([100.0, 98.0, 96.0])
+        pytest.approx([98.0, 98.0 - 50.0 * MIN_SLOPE, 98.0 - 100.0 * MIN_SLOPE])
     )
     assert records[1]["bank_search_result"]["forward_bank_rise_corrected"] is True
 

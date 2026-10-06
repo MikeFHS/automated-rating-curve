@@ -2820,9 +2820,16 @@ def _build_cross_section_export_record(
     i_column_cell: int,
     d_slope_use: float,
     inflect_curve: np.ndarray | None,
+    bank_search_result: dict | None,
 ) -> dict:
     """Build the persisted per-cell cross-section record used by ARC outputs."""
     b_modified_dem = params['b_modified_dem']
+    bank_index1 = bank_index2 = -1
+    if isinstance(bank_search_result, dict) and bank_search_result.get('is_valid', False):
+        left = int(bank_search_result['i_bank_1_index'])
+        right = int(bank_search_result['i_bank_2_index'])
+        if 0 < left < x_section.xs1_n and 0 < right < x_section.xs2_n:
+            bank_index1, bank_index2 = left, right
     return {
         'COMID': int(i_cell_comid),
         'Row': int(i_row_cell - x_section.i_boundary_number),
@@ -2832,6 +2839,8 @@ def _build_cross_section_export_record(
         'Manning_N_Raster1': x_section.mannings_n1[:x_section.xs1_n].copy(),
         'XS2_Profile': x_section.da_xs_profile2[0:x_section.xs2_n].copy() - 100 if b_modified_dem else x_section.da_xs_profile2[0:x_section.xs2_n].copy(),
         'Manning_N_Raster2': x_section.mannings_n2[:x_section.xs2_n].copy(),
+        'Bank_Index1': bank_index1,
+        'Bank_Index2': bank_index2,
         'r1': int(x_section.ia_xc_row1_index_main[x_section.xs1_n-1] - x_section.i_boundary_number),
         'c1': int(x_section.ia_xc_column1_index_main[x_section.xs1_n-1] - x_section.i_boundary_number),
         'r2': int(x_section.ia_xc_row2_index_main[x_section.xs2_n-1] - x_section.i_boundary_number),
@@ -5115,36 +5124,25 @@ def _build_downstream_monotone_bank_profile(
 
 
 
-def _replace_reach_bank_outliers_with_downstream(
+def _smooth_ordered_reach_banks_with_moving_mean(
     ordered_banks: np.ndarray,
-    reach_id: int,
+    window_size: int = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Replace IQR outliers from downstream, or upstream at a reach end."""
+    """Average finite banks in a centered window, leaving invalid cells unset."""
+    if isinstance(window_size, bool) or not isinstance(window_size, (int, np.integer)) or window_size < 1:
+        raise ValueError("The moving bank window size must be a positive integer.")
     observed = np.asarray(ordered_banks, dtype=np.float64)
-    filtered = observed.copy()
-    replaced = np.zeros(observed.size, dtype=bool)
+    smoothed = observed.copy()
+    changed = np.zeros(observed.size, dtype=bool)
     finite = np.isfinite(observed)
-    if np.count_nonzero(finite) < 4:
-        return filtered, replaced
-
-    q1, q3 = np.percentile(observed[finite], [10., 90.0])
-    retained = finite & (observed >= q1) & (observed <= q3)
-    replaced = finite & ~retained
-    retained_positions = np.flatnonzero(retained)
-    for position in np.flatnonzero(replaced):
-        downstream = retained_positions[retained_positions > position]
-        if downstream.size:
-            source_position = downstream[0]
-        else:
-            upstream = retained_positions[retained_positions < position]
-            if upstream.size == 0:
-                raise ValueError(
-                    f"Reach {reach_id} has no bank inside its interquartile range "
-                    f"to replace the outlier at ordered cell {position}."
-                )
-            source_position = upstream[-1]
-        filtered[position] = observed[source_position]
-    return filtered, replaced
+    left = window_size // 2
+    right = window_size - left
+    for position in np.flatnonzero(finite):
+        neighbors = observed[max(0, position - left):min(observed.size, position + right)]
+        valid_neighbors = neighbors[np.isfinite(neighbors)]
+        smoothed[position] = float(np.mean(valid_neighbors))
+        changed[position] = not np.isclose(smoothed[position], observed[position])
+    return smoothed, changed
 
 
 def _smooth_reach_bank_elevations(
@@ -5152,9 +5150,9 @@ def _smooth_reach_bank_elevations(
     params: dict,
     quiet: bool,
 ) -> None:
-    """Build downstream-monotone banks from ordered, observed cell elevations.
+    """Build downstream-monotone banks from moving-mean cell elevations.
 
-    Rising and invalid cells are interpolated to the next lower observed bank.
+    Rising and invalid cells are interpolated to the next lower averaged bank.
     If no lower bank remains, the profile continues at MIN_SLOPE. No reach minimum or
     thalweg elevation controls the profile.
     """
@@ -5288,10 +5286,10 @@ def _smooth_reach_bank_elevations(
             float(params['dy']),
         )
         ordered_raw_banks = raw_bank_elevations[order]
-        filtered_banks, percentile_replaced = _replace_reach_bank_outliers_with_downstream(
-            ordered_raw_banks, int(reach_id),
+        mean_banks, moving_mean_applied = _smooth_ordered_reach_banks_with_moving_mean(
+            ordered_raw_banks,
         )
-        if not np.isfinite(filtered_banks[0]) and reach_network_graph.in_degree(reach_id) == 0:
+        if not np.isfinite(mean_banks[0]) and reach_network_graph.in_degree(reach_id) == 0:
             first_cell = reach_entries[int(order[0])]
             raise ValueError(
                 f'Reach {reach_id} has no finite upstream starting bank at '
@@ -5317,8 +5315,8 @@ def _smooth_reach_bank_elevations(
             'order': order,
             'stations': stations,
             'ordered_raw_banks': ordered_raw_banks,
-            'filtered_banks': filtered_banks,
-            'percentile_replaced': percentile_replaced,
+            'mean_banks': mean_banks,
+            'moving_mean_applied': moving_mean_applied,
             'function_used_by_entry_index': function_used_by_entry_index,
         }
 
@@ -5347,10 +5345,10 @@ def _smooth_reach_bank_elevations(
             continue
 
         raw_banks = summary['ordered_raw_banks']
-        filtered_banks = summary['filtered_banks']
+        mean_banks = summary['mean_banks']
         stations = summary['stations']
         profile, corrected = _build_downstream_monotone_bank_profile(
-            filtered_banks, stations, upstream_control,
+            mean_banks, stations, upstream_control,
         )
         outlet_by_reach[int(reach_id)] = float(profile[-1])
         grades = np.full(profile.size, MIN_SLOPE, dtype=np.float64)
@@ -5377,9 +5375,9 @@ def _smooth_reach_bank_elevations(
                 summary['function_used_by_entry_index'].get(entry_index),
             )
             updated['raw_bank_elevation'] = float(raw_banks[reach_order])
-            updated['percentile_filtered_bank_elevation'] = float(filtered_banks[reach_order])
-            updated['bank_elevation_percentile_replaced'] = bool(
-                summary['percentile_replaced'][reach_order]
+            updated['moving_mean_bank_elevation'] = float(mean_banks[reach_order])
+            updated['bank_elevation_moving_mean_applied'] = bool(
+                summary['moving_mean_applied'][reach_order]
             )
             updated['smoothed_bank_elevation'] = float(profile[reach_order])
             updated['forward_bank_rise_corrected'] = bool(corrected[reach_order])
@@ -5533,6 +5531,7 @@ def _finalize_cross_section_records(
                 export_col,
                 d_slope_use,
                 inflect_curve,
+                sampled_record.get('bank_search_result'),
             )
 
     return cross_section_data, finalized_records

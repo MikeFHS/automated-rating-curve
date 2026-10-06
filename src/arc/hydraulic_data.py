@@ -162,6 +162,8 @@ def _filter_stage_samples_to_two_standard_deviations(
     areas: np.ndarray,
     velocities: np.ndarray,
     top_widths: np.ndarray,
+    perimeters: np.ndarray,
+    discharges: np.ndarray,
 ) -> np.ndarray:
     """Keep stage samples whose key hydraulics are near the reach mean.
 
@@ -170,8 +172,8 @@ def _filter_stage_samples_to_two_standard_deviations(
     standard deviations of that stage's mean before it contributes to the
     final reach mean.
     """
-    keep_mask = np.isfinite(areas) & np.isfinite(velocities) & np.isfinite(top_widths)
-    for values in (areas, velocities, top_widths):
+    keep_mask = np.isfinite(areas) & np.isfinite(velocities) & np.isfinite(top_widths) & np.isfinite(perimeters) & np.isfinite(discharges)
+    for values in (areas, velocities, top_widths, perimeters, discharges):
         finite_values = values[np.isfinite(values)]
         if finite_values.size == 0:
             return np.zeros(values.shape, dtype=bool)
@@ -222,11 +224,7 @@ def _build_representative_hydraulic_rows_for_reach(
 
     for stage_index in range(1, stage_count + 1):
         stage_depth = float(stage_index * REPRESENTATIVE_DEPTH_INCREMENT)
-        discharges = []
-        velocities = []
-        top_widths = []
-        areas = []
-        wses = []
+        samples = []
 
         for record in group:
             thalweg = record.get('Thalweg')
@@ -262,36 +260,28 @@ def _build_representative_hydraulic_rows_for_reach(
             )
 
             if not all(np.isfinite(value) for value in (area, perimeter, velocity, discharge, top_width, d_composite_n)):
-                if rows:
-                    for row in rows:
-                        row['Reach_Inflect_Terrace_Depth'] = last_valid_stage_depth
+                for row in rows:
+                    row['Reach_Inflect_Terrace_Depth'] = last_valid_stage_depth
                 return rows
 
             if area <= 0.0 or top_width <= 0.0 or discharge < 0.0:
                 continue
 
-            discharges.append(float(discharge))
-            velocities.append(float(velocity))
-            top_widths.append(float(top_width))
-            areas.append(float(area))
-            wses.append(float(wse))
+            samples.append((float(area), float(velocity), float(top_width),
+                            float(perimeter), float(discharge), float(wse)))
 
-        if not areas:
+        if not samples:
             continue
+        sample_values = np.asarray(samples, dtype=np.float64)
+        area_values, velocity_values, top_width_values, perimeter_values, discharge_values, wse_values = sample_values.T
 
-        area_values = np.asarray(areas, dtype=np.float64)
-        velocity_values = np.asarray(velocities, dtype=np.float64)
-        top_width_values = np.asarray(top_widths, dtype=np.float64)
-        discharge_values = np.asarray(discharges, dtype=np.float64)
-        wse_values = np.asarray(wses, dtype=np.float64)
-
-        # Remove hydraulic outliers before averaging the retained stage
-        # samples. A sample must pass all three checks so odd geometry in one
-        # metric cannot still influence the representative reach curve.
+        # Remove hydraulic outliers before averaging each stage's samples.
         sample_keep_mask = _filter_stage_samples_to_two_standard_deviations(
             area_values,
             velocity_values,
             top_width_values,
+            perimeter_values,
+            discharge_values,
         )
         if not sample_keep_mask.any():
             continue
@@ -315,7 +305,6 @@ def _build_representative_hydraulic_rows_for_reach(
             }
         )
         last_valid_stage_depth = stage_depth
-
     if rows:
         for row in rows:
             row['Reach_Inflect_Terrace_Depth'] = last_valid_stage_depth
@@ -377,36 +366,22 @@ def build_representative_cross_section_dataframe(
     if representative_df.empty:
         return pd.DataFrame(columns=REPRESENTATIVE_CROSS_SECTION_COLUMNS)
 
+
     representative_groups = []
     for _, group in representative_df.groupby('COMID', sort=True):
         group = group.sort_values('Depth_Stage_Index').copy()
-
-        # Independent depth-stage means can wobble slightly, so enforce a
-        # monotonic staged area/width envelope before solving for the
-        # representative cross-section dimensions.
-        representative_area = _monotonic_cumulative_max(
-            group['Mean_Cross_Sectional_Area'].to_numpy(dtype=np.float64)
-        )
-        width_seed = group['Mean_Top_Width'].to_numpy(dtype=np.float64)
-        fallback_width = representative_area / np.maximum(group['Mean_Depth'].to_numpy(dtype=np.float64), 1e-9)
-        width_seed = np.where(width_seed > 0.0, width_seed, fallback_width)
-        representative_width = _monotonic_cumulative_max(width_seed)
-        representative_depth_increment, representative_depth = _derive_depths_from_width_and_area(
-            representative_width,
-            representative_area,
-        )
-
-        group['Representative_Cross_Sectional_Area'] = representative_area
-        group['Representative_Depth_Increment'] = representative_depth_increment
-        group['Representative_Top_Width'] = representative_width
-        group['Representative_Depth'] = representative_depth
+        group['Mean_Discharge'] = group['Mean_Discharge'].to_numpy(dtype=np.float64)
+        group['Representative_Cross_Sectional_Area'] = group['Mean_Cross_Sectional_Area'].to_numpy(dtype=np.float64)
+        group['Representative_Depth_Increment'] = group['Mean_Depth'].to_numpy(dtype=np.float64)
+        group['Representative_Top_Width'] = group['Mean_Top_Width'].to_numpy(dtype=np.float64)
+        group['Representative_Depth'] = group['Mean_Depth'].to_numpy(dtype=np.float64)
         # Preserve the filtered mean of per-section Q_channel / A_channel.
         group['Representative_Velocity'] = group['Mean_Velocity']
         group['Representative_Stage_Elevation'] = (
-            group['Representative_Thalweg_Elevation'].to_numpy(dtype=np.float64) + representative_depth
+            group['Representative_Thalweg_Elevation'].to_numpy(dtype=np.float64) + group['Mean_Depth'].to_numpy(dtype=np.float64)
         )
-        group['Representative_Left_Station'] = -0.5 * representative_width
-        group['Representative_Right_Station'] = 0.5 * representative_width
+        group['Representative_Left_Station'] = -0.5 * group['Representative_Top_Width']
+        group['Representative_Right_Station'] = 0.5 * group['Representative_Top_Width']
         representative_groups.append(group)
 
     representative_df = pd.concat(representative_groups, ignore_index=True)

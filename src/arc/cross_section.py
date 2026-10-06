@@ -1562,7 +1562,7 @@ def _calculate_all(
                 wse, d_ordinate_dist, k_decay, shallow_factor, deep_factor,
                 channel_only=True,
             )
-            V = np.round(channel_conveyance * sqrt_slope * slope_adjustment_factor / channel_area, 3) if channel_area > 0.0 else 0.0
+            V = np.round(channel_conveyance * sqrt_slope * slope_adjustment_factor / channel_area, 3) if channel_area > 0.0 else np.nan
         return A, np.round(P, 3), V, Q, np.round(T, 3), np.round(equivalent_n, 4)
 
     # Pass depth-scaling parameters to geometry functions

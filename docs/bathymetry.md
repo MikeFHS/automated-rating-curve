@@ -19,10 +19,10 @@ Before any bathymetry is burned into the DEM-derived section, ARC now performs a
     - If a sampled top width falls outside the 25th-75th percentile band for that reach, ARC replaces its bank indices with bank locations that match the reach-median top width as closely as the sampled cross-section spacing allows.
     - If a sampled section still does not have a valid local bank result after the local bank-search hierarchy runs, ARC now also uses that same reach-median top width to assign replacement bank indices on the sampled profile.
 6. After the width screen, ARC orders the original bank elevations upstream to downstream and builds a downstream reach network from `StrmShp_File` using `reach_id` and `downstream_reach_id`.
-    - For reaches with at least four finite banks, ARC calculates the 25th and 75th percentiles. A bank outside that range is replaced with the first retained bank downstream. At a reach end with no retained bank downstream, it uses the nearest retained bank upstream.
+    - ARC applies a centered moving mean to each finite bank elevation, using up to five neighboring cells by default. Invalid elevations remain unset for the downstream profile interpolation.
     - The first cell on a connected reach cannot exceed the lowest incoming profile outlet.
-    - When a downstream bank rises or has no valid floating-point elevation, ARC finds the next valid observed bank lower than the current profile, calculates the slope over their along-reach distance, and replaces the intervening higher or invalid cells by interpolation. Slopes are capped at `MAX_SLOPE` (`0.5`).
-    - When no lower observed bank remains, the profile continues at `MIN_SLOPE` (`1e-4`). Equal banks remain level. The thalweg is not used as a bank-elevation constraint.
+    - When a downstream bank rises or has no valid floating-point elevation, ARC finds the next valid averaged bank lower than the current profile, calculates the slope over their along-reach distance, and replaces the intervening higher or invalid cells by interpolation. Slopes are capped at `MAX_SLOPE` (`0.5`).
+    - When no lower averaged bank remains, the profile continues at `MIN_SLOPE` (`1e-4`). Equal banks remain level. The thalweg is not used as a bank-elevation constraint.
     - An invalid first bank uses an incoming reach outlet when available. A headwater with no finite first bank stops with an error that identifies the cell.
     - Local bank indices and top widths remain the horizontal geometry; the monotone profile provides the vertical bathymetry control.
 7. Only after those filtered and smoothed bank controls are known does ARC estimate and burn bathymetry.
@@ -61,7 +61,7 @@ Once banks are found:
 1. ARC evaluates the locally detected bank-to-bank top widths within each reach and replaces any cross section whose width falls outside the reach 25th-75th percentile band with bank indices matching the reach-median top width.
 2. If a cross section still does not have a valid bank result after that screen, ARC uses the same reach-median top width to assign bank indices directly from the sampled profile spacing.
 3. ARC orders the original bank elevations upstream to downstream and processes reaches in the order of the directed stream network.
-    - With at least four finite banks, values outside the reach interquartile range use the nearest retained downstream bank, or the nearest retained upstream bank when none exists downstream. The original value remains available in `raw_bank_elevation` diagnostics.
+    - A centered moving mean of finite neighboring banks supplies the profile observations. The default window has five cells, and the original value remains available in `raw_bank_elevation` diagnostics.
     - A connected reach starts no higher than its lowest incoming profile outlet. A rising or invalid bank is replaced by a line from the current bank to the next lower valid observed bank, with its slope capped at `MAX_SLOPE`.
     - If no lower bank remains, the profile continues at `MIN_SLOPE`. A headwater without a finite starting bank stops with an error.
 4. ARC keeps the filtered or reach-filled bank indices and the corresponding bank-to-bank top width on each sampled cross section.
@@ -95,7 +95,7 @@ Once banks are found, ARC:
 
 1. Evaluates the locally detected bank-to-bank top widths within each reach and replaces any cross section whose width falls outside the reach 25th-75th percentile band with bank indices matching the reach-median top width.
 2. If a cross section still lacks a valid bank result, uses that same reach-median top width to assign replacement bank indices on the sampled profile.
-3. Orders the original bank elevations upstream to downstream, replaces values outside the reach interquartile range with the nearest retained downstream bank, then interpolates rises or invalid values to the next lower valid bank. Slopes are capped at `MAX_SLOPE`; a tail without a lower bank uses `MIN_SLOPE`. A headwater without a valid starting bank stops the run.
+3. Orders the original bank elevations upstream to downstream, applies a centered moving mean to finite values in a five-cell window, then interpolates rises or invalid values to the next lower valid bank. Slopes are capped at `MAX_SLOPE`; a tail without a lower bank uses `MIN_SLOPE`. A headwater without a valid starting bank stops the run.
 4. Keeps the filtered or reach-filled bank indices and bank-to-bank top width for each sampled cross section.
 5. Uses the smoothed bank elevation as the vertical bathymetry control to compute bankfull elevation while preserving the local width geometry.
 6. Estimates depth using one of two paths:
