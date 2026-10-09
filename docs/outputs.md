@@ -127,3 +127,14 @@ The following table details the columns in the representative cross-section expo
 | Representative_Stage_Elevation | Float | Elevation used for the representative stage point, computed as `Representative_Thalweg_Elevation + Representative_Depth`. |
 | Representative_Left_Station | Float | Left station for the representative stage point, computed as `-Representative_Top_Width / 2`. |
 | Representative_Right_Station | Float | Right station for the representative stage point, computed as `Representative_Top_Width / 2`. |
+### Representative cross-section coefficients export
+
+ARC also writes a companion CSV automatically beside `Representative_Cross_Section_File`. Its filename is the original stem followed by `_exponents`, with the same extension: `representative.csv` produces `representative_exponents.csv`. It contains one row per exported COMID. The hydraulic-stage CSV contains no power-law coefficient columns.
+
+| Column Name | Data Type | Description |
+| --- | --- | --- |
+| COMID | Integer | Reach identifier matching the representative hydraulic-stage CSV. |
+| Celerity_K_Power_Law_A | Float | Per-COMID amplitude A in seconds times (m^3/s)^(-p) for `K = A Q^p`, stored once per COMID. |
+| Celerity_K_Power_Law_p | Float | Per-COMID dimensionless exponent p in `K = A Q^p`, stored once per COMID. |
+
+ARC fits the coefficients independently for each COMID using `Mean_Discharge` (Q in m^3/s) and its paired `Representative_Velocity` (V in m/s). Celerity is `(5/3) V`, and K is the configured reach length divided by that celerity. `Stream_Length_m` names the length column in `StrmShp_File`; the stream records are matched to the representative COMIDs. The fit minimizes squared errors in log(K), with A strictly positive and p retaining its fitted positive or negative sign, giving each unique positive discharge equal weight and using median velocity where discharges repeat. It fits `log(K) = log(A) + p log(Q)` without constraining the slope: negative p gives decreasing K and positive p gives increasing K. At least three finite positive discharge-velocity pairs with distinct discharges are required. Unavailable or failed fits produce NaN coefficients in the coefficients CSV while retaining the hydraulic rows in the stage CSV. Coefficients retain full floating-point precision in the CSV, including very small p values. The power-law function applies only for Q > 0; it is not evaluated at zero discharge.

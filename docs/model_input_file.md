@@ -41,6 +41,7 @@ Reach_Average_Curve_File: False
 XS_Out_File: /path/to/Output_Cross_Sections.txt
 Build_Representative_Cross_Section: True
 Representative_Cross_Section_File: /path/to/Representative_Cross_Sections.csv
+Stream_Length_m: LengthGeodesicMeters
 
 #Bathymetry_Information
 Bathy_Trap_H: 0.2
@@ -64,13 +65,14 @@ BATHY_Out_File: /path/to/Output_Bathy.tif
 | `Manual_Cross_Sections_File` | --- | str | Optional tabular cross-section input file. When provided, ARC skips raster-based cross-section sampling and instead uses the supplied profiles, row/column arrays, and land-cover arrays for each `Flow_File_ID`. |
 | `LU_Raster_SameRes` | --- | str | Path to the land cover raster file. |
 | `Stream_File` | --- | str | Path to the stream raster file. |
-| `StrmShp_File` | --- | str | Path to the stream shapefile or vector stream network. Required if `Stream_Slope_Method` is set to `end_points`, and also required when the optional drainage-area bathymetry parameters are used because ARC reads `drainage_area_field` from this dataset. |
+| `StrmShp_File` | --- | str | Path to the stream shapefile or vector stream network. Required in representative mode to read the column named by `Stream_Length_m`. Also required if `Stream_Slope_Method` is set to `end_points`, or when the optional drainage-area bathymetry parameters are used because ARC reads `drainage_area_field` from this dataset. |
 | `reach_id` | --- | str | Field name in `StrmShp_File` containing the stream-network reach identifier used by the network-based bank-elevation smoother. When bathymetry output is requested, this parameter is required and ARC uses it instead of `Flow_File_ID` to build the directed reach graph. |
 | `downstream_reach_id` | --- | str | Field name in `StrmShp_File` containing the immediate downstream reach identifier for each reach. When bathymetry output is requested, this parameter is required so ARC can build the directed reach network with `networkx` and estimate smoothed bank elevations for all sampled cross sections. Reach geometry lengths are converted to meters from the vector layer CRS, including ellipsoidal measurement for geographic flowlines. Headwater surfaces are initialized between their highest filtered raw bank and their minimum outlet bank. Outlet surfaces are initialized between the lowest incoming predecessor minimum and the outlet's own lowest filtered bank. A stream with neither neighbor uses its filtered maximum and minimum to infer flow direction and endpoint slope. Lower per-cell banks are subsequently applied as anchors. |
 
 ### Parameters
 | Key | Default Value | Data Type | Description |
 | --- | --- | --- | --- |
+| `Stream_Length_m` | --- | str | Column name in `StrmShp_File` containing stream reach length in meters. Required, together with `StrmShp_File`, when `Build_Representative_Cross_Section` is `True`. Each exported COMID must match a unique stream record with a finite positive length. ARC uses this length to fit celerity-based K. |
 | `Degree_Manip` | 1.1 | float | The maximum angle, in degrees, that the cross-section may be rotated in either direction from perpendicular to the stream direction to find the orientation which yields the smallest water surface top-width. |
 | `Degree_Interval` | 1.0 | float | The interval, in degrees, at which the cross-section is rotated to find the orientation which yields the smallest water surface top-width. |
 | `Build_Representative_Cross_Section` | False | bool | When true, ARC builds a representative cross section for each positive reach ID in `Stream_File`. ARC samples and preprocesses each stream-cell cross section, applies bathymetry only when a bathymetry output path is configured, and recomputes area, wetted perimeter, velocity, discharge, top width, and hydraulic radius every 0.10 m above each local thalweg. Each reach is capped at 25 m, or at the last successful stage before any hydraulic value becomes non-finite. At each stage, ARC removes cross sections whose area or hydraulic radius falls outside two standard deviations of the reach mean, then stores reach-mean hydraulics and representative dimensions derived from monotonic staged mean top width and area. `Representative_Cross_Section_File` is required; `Flow_File_QMax` is not. |
@@ -92,7 +94,7 @@ See [**Outputs**](outputs.md) documentation for details on the output datasets t
 | `Print_AP_Database` | --- | str | Path to the output Area/Perimeter (AP) database file. |
 | `Print_Curve_File` | --- | str | Path to the output curve file. |
 | `Print_VDT_Database` | --- | str | Path to the output VDT database file. |
-| `Representative_Cross_Section_File` | --- | str | Path to the output representative cross-section CSV file. This file is only written when `Build_Representative_Cross_Section` is `True`. It stores one row per reach and successful 0.10 m stage, up to 25 m or the first stage that produces a non-finite area, wetted perimeter, velocity, discharge, or top width. Each row includes `Stream_Slope`, the reach-mean positive stream slope from the sampled cross sections. |
+| `Representative_Cross_Section_File` | --- | str | Path to the output representative cross-section CSV file. This file is only written when `Build_Representative_Cross_Section` is `True`. ARC also automatically writes a companion coefficients CSV with `_exponents` added before the filename extension, containing one row per COMID with power-law A and signed p. The hydraulic-stage file contains no coefficient columns. It stores one row per reach and successful 0.10 m stage, up to 25 m or the first stage that produces a non-finite area, wetted perimeter, velocity, discharge, or top width. Each row includes `Stream_Slope`, the reach-mean positive stream slope from the sampled cross sections. |
 | `XS_Out_File` | --- | str | Path to the output cross-section export file. |
 
 ## Manual Cross-Section Input Schema

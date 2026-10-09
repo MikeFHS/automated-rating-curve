@@ -903,12 +903,23 @@ class CrossSection:
             if i_total_bank_cells > 1:
                 function_used = "find_wse_and_banks_by_flat_water"
 
+        allow_single_cell = (
+            i_bank_1_index == 1
+            and i_bank_2_index == 1
+            and np.isfinite(bank_elev_1)
+            and np.isfinite(bank_elev_2)
+        )
+
+        if allow_single_cell:
+            function_used = "find_single_cell_banks_from_profile"
+
         return self._build_bank_search_result(
             function_used,
             i_bank_1_index,
             i_bank_2_index,
             bank_elev_1=bank_elev_1,
             bank_elev_2=bank_elev_2,
+            allow_single_cell=allow_single_cell,
         )
 
     def get_representative_bank_indices(self) -> tuple[int, int]:

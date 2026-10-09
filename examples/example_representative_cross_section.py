@@ -62,6 +62,7 @@ if __name__ == "__main__":
             "Stream_Slope_Method": Stream_Slope_Method,
             "Reach_Average_Curve_File": Reach_Average_Curve_File,
             "StrmShp_File": StrmShp_File,
+            "Stream_Length_m": "LengthGeodesicMeters",
             "Bathy_Trap_H": Bathy_Trap_H,
             "Bathy_Use_Banks": Bathy_Use_Banks,
             "LAND_WaterValue": LAND_WaterValue,

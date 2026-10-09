@@ -5,6 +5,8 @@ derives requested output products (VDT database, AP database, curve file, and
 optional cross-section exports) from that array.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from numba import njit
@@ -40,6 +42,18 @@ REPRESENTATIVE_CROSS_SECTION_COLUMNS = [
     'Representative_Left_Station',
     'Representative_Right_Station',
 ]
+
+REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS = [
+    'COMID',
+    'Celerity_K_Power_Law_A',
+    'Celerity_K_Power_Law_p',
+]
+
+
+def representative_cross_section_coefficients_path(representative_cross_section_file):
+    """Derive the companion coefficients filename: <stem>_exponents<suffix>."""
+    path = Path(representative_cross_section_file)
+    return path.with_name(f'{path.stem}_exponents{path.suffix}')
 
 XS_EXPORT_COLUMNS = [
     'COMID',
@@ -311,11 +325,50 @@ def _build_representative_hydraulic_rows_for_reach(
     return rows
 
 
+def fit_celerity_k_power_law(discharge, velocity, reach_length_m):
+    """Fit K = A Q^p, where K = L / ((5/3) V), in seconds.
+
+    Equal weights are used for each unique positive discharge, matching the
+    representative hydraulic curve used by the analysis scripts. A is strictly
+    positive and p retains its fitted sign, so K stays positive for Q > 0.
+    Negative p describes decreasing K; positive p describes increasing K. Only finite
+    discharge values greater than zero with positive velocities are used. Failed or
+    insufficient fits return NaN coefficients without discarding stage rows.
+    """
+    if not np.isfinite(reach_length_m) or reach_length_m <= 0:
+        return np.nan, np.nan
+    pairs = pd.DataFrame({'Q': discharge, 'V': velocity}).replace([np.inf, -np.inf], np.nan).dropna()
+    # Exclude zero and negative discharges before grouping or fitting.
+    pairs = pairs.loc[pairs.Q > 0]
+    pairs = pairs.loc[pairs.V > 0]
+    pairs = pairs.groupby('Q', as_index=False).V.median().sort_values('Q')
+    if len(pairs) < 3:
+        return np.nan, np.nan
+    q = pairs.Q.to_numpy(dtype=float)
+    k = reach_length_m / ((5.0 / 3.0) * pairs.V.to_numpy(dtype=float))
+    if not (np.isfinite(k) & (k > 0)).all():
+        return np.nan, np.nan
+    # Minimize squared log(K) errors so large low-flow K values do not dominate.
+    log_q, log_k = np.log(q), np.log(k)
+    centered_q = log_q - log_q.mean()
+    try:
+        slope = np.linalg.lstsq(centered_q[:, None], log_k - log_k.mean(), rcond=None)[0][0]
+        exponent = float(slope)
+        with np.errstate(over='raise', under='ignore', invalid='raise'):
+            amplitude = float(np.exp(log_k.mean() - exponent * log_q.mean()))
+    except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+        return np.nan, np.nan
+    if not np.isfinite([amplitude, exponent]).all() or amplitude <= 0:
+        return np.nan, np.nan
+    return amplitude, exponent
+
+
 def build_representative_cross_section_dataframe(
     cross_section_data: list[dict],
     k_decay: float = 6.0,
     shallow_factor: float = 2.0, deep_factor: float = 1.0,
     slope_adjustment_factor: float = 1.0,
+    reach_lengths_m: dict[int, float] | None = None,
 ) -> pd.DataFrame:
     """Build representative cross sections from filtered staged hydraulic means.
 
@@ -333,6 +386,8 @@ def build_representative_cross_section_dataframe(
        retained reach samples at each stage.
     5. Derives representative cross-section dimensions from the staged mean
        top width and staged mean area.
+    6. Fits K = A Q^p for each COMID using celerity = (5/3) V and
+       repeats the fitted coefficients on every row belonging to that COMID.
 
     Parameters
     ----------
@@ -341,15 +396,20 @@ def build_representative_cross_section_dataframe(
         loop. These records include the profiles, Manning arrays, local slope,
         and thalweg elevation needed to rebuild the representative hydraulic
         stage database.
+    reach_lengths_m : dict, optional
+        Reach lengths in meters keyed by COMID. Missing or invalid lengths
+        leave the power-law coefficients NaN, preserving the hydraulic rows.
 
     Returns
     -------
     pandas.DataFrame
         Long-format representative cross-section table with one row per reach
-        and 0.10 m depth stage up to the INFLECT-defined flood terrace.
+        and 0.10 m depth stage, including repeated per-COMID coefficients for
+        internal use. The writer separates those coefficients from the stage CSV.
     """
+    columns = REPRESENTATIVE_CROSS_SECTION_COLUMNS + REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS[1:]
     if not cross_section_data:
-        return pd.DataFrame(columns=REPRESENTATIVE_CROSS_SECTION_COLUMNS)
+        return pd.DataFrame(columns=columns)
 
     grouped_records: dict[int, list[dict]] = {}
     for i, record in enumerate(cross_section_data):
@@ -364,11 +424,11 @@ def build_representative_cross_section_dataframe(
 
     representative_df = pd.DataFrame(rows)
     if representative_df.empty:
-        return pd.DataFrame(columns=REPRESENTATIVE_CROSS_SECTION_COLUMNS)
+        return pd.DataFrame(columns=columns)
 
 
     representative_groups = []
-    for _, group in representative_df.groupby('COMID', sort=True):
+    for comid, group in representative_df.groupby('COMID', sort=True):
         group = group.sort_values('Depth_Stage_Index').copy()
         group['Mean_Discharge'] = group['Mean_Discharge'].to_numpy(dtype=np.float64)
         group['Representative_Cross_Sectional_Area'] = group['Mean_Cross_Sectional_Area'].to_numpy(dtype=np.float64)
@@ -382,10 +442,18 @@ def build_representative_cross_section_dataframe(
         )
         group['Representative_Left_Station'] = -0.5 * group['Representative_Top_Width']
         group['Representative_Right_Station'] = 0.5 * group['Representative_Top_Width']
+        length_m = (reach_lengths_m or {}).get(int(comid), np.nan)
+        amplitude, exponent = fit_celerity_k_power_law(
+            group['Mean_Discharge'], group['Representative_Velocity'], length_m,
+        )
+        group['Celerity_K_Power_Law_A'] = amplitude
+        group['Celerity_K_Power_Law_p'] = exponent
+        if reach_lengths_m is not None and not np.isfinite(amplitude):
+            LOG.warning('No celerity K power-law fit for COMID %s: invalid length or insufficient hydraulic data.', comid)
         representative_groups.append(group)
 
     representative_df = pd.concat(representative_groups, ignore_index=True)
-    representative_df = representative_df[REPRESENTATIVE_CROSS_SECTION_COLUMNS]
+    representative_df = representative_df[columns]
 
     int_columns = ['COMID', 'Cross_Section_Count', 'Hydraulic_Sample_Count', 'Depth_Stage_Index']
     representative_df[int_columns] = representative_df[int_columns].astype(int)
@@ -415,7 +483,14 @@ class HydraulicData:
         self.s_xs_output_file: str = params['s_xs_output_file']
         self.build_representative_cross_section: bool = params['b_build_representative_cross_section']
         self.representative_cross_section_file: str = params['s_representative_cross_section_file']
+        self.representative_cross_section_coefficients_file = (
+            str(representative_cross_section_coefficients_path(self.representative_cross_section_file))
+            if self.representative_cross_section_file else ''
+        )
         self.b_modified_dem: bool = params['b_modified_dem']
+        self.stream_vector_file = params.get('s_strmshp_path', '')
+        self.stream_length_field = params.get('s_stream_length_field', '')
+        self.stream_id_field = params.get('s_flow_file_id') or params.get('s_reach_id_field') or 'COMID'
 
     def associate_with_cross_section(self, x_section: CrossSection):
         """Attach the current :class:`~arc.cross_section.CrossSection` instance."""
@@ -937,18 +1012,24 @@ class HydraulicData:
         LOG.info('Finished writing ' + str(self.s_xs_output_file))
 
     def save_representative_cross_section_file(self):
-        """Save the reach-level representative cross-section export as CSV.
+        """Save representative hydraulics and a companion per-COMID coefficients CSV.
 
         The representative cross section is now a long-format hydraulic summary
         with one row per reach and 0.10 m depth stage. Each row stores the
         mean hydraulic properties rebuilt from the sampled cross sections up
         to a 25 meter maximum depth, plus the representative dimensions
         derived from staged top width and staged area.
+        Power-law A and signed p are written once per COMID to the companion
+        filename with '_exponents' inserted before the extension.
         """
         cross_section_data = list(self.xs_data) if getattr(self, "xs_data", None) is not None else []
+        reach_lengths = self._representative_reach_lengths(cross_section_data)
         df = build_representative_cross_section_dataframe(
-            cross_section_data, self.k_decay, self.shallow_factor, self.deep_factor, self.slope_adjustment_factor
+            cross_section_data, self.k_decay, self.shallow_factor, self.deep_factor, self.slope_adjustment_factor,
+            reach_lengths_m=reach_lengths,
         )
+        coefficients_df = df[REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS].drop_duplicates('COMID')
+        df = df[REPRESENTATIVE_CROSS_SECTION_COLUMNS].copy()
         if not df.empty:
             numeric_columns = [
                 col
@@ -958,6 +1039,37 @@ class HydraulicData:
             df[numeric_columns] = df[numeric_columns].round(6)
         df.to_csv(self.representative_cross_section_file, index=False)
         LOG.info('Finished writing ' + str(self.representative_cross_section_file))
+        coefficients_df.to_csv(self.representative_cross_section_coefficients_file, index=False)
+        LOG.info('Finished writing ' + str(self.representative_cross_section_coefficients_file))
+
+    def _representative_reach_lengths(self, cross_section_data):
+        """Read the configured length column once, matching exported COMIDs to the vector."""
+        comids = {int(record['COMID']) for record in cross_section_data if record is not None}
+        if not comids:
+            return {}
+        if not self.stream_vector_file:
+            raise ValueError('StrmShp_File is required to read representative reach lengths.')
+        if not self.stream_length_field:
+            raise ValueError('Stream_Length_m must name a reach-length column in StrmShp_File.')
+        import geopandas as gpd
+
+        streams = gpd.read_file(self.stream_vector_file, ignore_geometry=True)
+        id_field = 'COMID' if 'COMID' in streams.columns else self.stream_id_field
+        if id_field not in streams.columns or self.stream_length_field not in streams.columns:
+            raise ValueError(f'StrmShp_File must contain {id_field} and the Stream_Length_m '
+                             f'column {self.stream_length_field}.')
+        ids = pd.to_numeric(streams[id_field], errors='coerce')
+        lengths = pd.to_numeric(streams[self.stream_length_field], errors='coerce')
+        selected = pd.DataFrame({'COMID': ids, 'Length': lengths}).loc[ids.isin(comids)]
+        if selected.COMID.duplicated().any():
+            raise ValueError('Duplicate stream IDs prevent an unambiguous celerity K reach-length lookup.')
+        missing = comids - set(selected.COMID)
+        if missing:
+            raise ValueError(f'No stream-length record in StrmShp_File for COMIDs {sorted(missing)}.')
+        if not (np.isfinite(selected.Length) & (selected.Length > 0)).all():
+            raise ValueError(f'Stream_Length_m column {self.stream_length_field} must contain '
+                             'finite positive lengths in meters for every representative reach.')
+        return dict(zip(selected.COMID.astype(int), selected.Length))
 
 @njit(cache=True)
 def add_hydraulic_data(output_data: np.ndarray, n: int, wse: float, t: float, p: float, q: float, v: float, i_entry_cell: int, b_modified_dem: bool):

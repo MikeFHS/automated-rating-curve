@@ -210,6 +210,7 @@ def test_representative_baseflow_inputs_take_precedence_over_powerlaw() -> None:
             "AROutBATHY": "bathy.tif",
             "Build_Representative_Cross_Section": True,
             "Representative_Cross_Section_File": "representative.csv",
+            "Stream_Length_m": "LengthGeodesicMeters",
             "drainage_area_field": "DA",
             "coefficient_depth": 0.5,
             "exponent_depth": 0.25,

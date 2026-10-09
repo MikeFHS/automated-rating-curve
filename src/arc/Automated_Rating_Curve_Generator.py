@@ -900,6 +900,17 @@ def read_main_input_file(s_mif_name: str, args: dict):
         raise ValueError(
             'Build_Representative_Cross_Section requires Representative_Cross_Section_File.'
         )
+    s_stream_length_field = get_parameter_name(sl_lines, 'Stream_Length_m')
+    if b_build_representative_cross_section:
+        if (not isinstance(s_stream_length_field, str) or not s_stream_length_field.strip()
+                or s_stream_length_field.strip().lower() in ('none', 'null')):
+            raise ValueError('Build_Representative_Cross_Section requires Stream_Length_m, '
+                             'the name of the reach-length column in StrmShp_File (meters).')
+        if (not isinstance(s_strmshp_path, str) or not s_strmshp_path.strip()
+                or s_strmshp_path.strip().lower() in ('none', 'null')):
+            raise ValueError('Build_Representative_Cross_Section requires StrmShp_File '
+                             'to read the Stream_Length_m column.')
+    s_stream_length_field = s_stream_length_field.strip() if isinstance(s_stream_length_field, str) else ''
 
     # Bathymetry can now be driven by either a discharge column (legacy path) or
     # a drainage-area power law (new optional path). Parse the power-law
@@ -1018,6 +1029,7 @@ def read_main_input_file(s_mif_name: str, args: dict):
         's_xs_output_file': get_parameter_name(sl_lines,  'XS_Out_File'), # Find the path to the output cross-section file (JLG added this to recalculate top-width and velocity)
         'b_build_representative_cross_section': b_build_representative_cross_section,
         's_representative_cross_section_file': s_representative_cross_section_file,
+        's_stream_length_field': s_stream_length_field,
         's_reach_id_field': s_reach_id_field,
         's_downstream_reach_id_field': s_downstream_reach_id_field,
         's_manual_cross_section_file': get_parameter_name(sl_lines, 'Manual_Cross_Sections_File'),
