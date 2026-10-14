@@ -13,12 +13,18 @@ theme:
 
 docs_dir: docs
 site_dir: site
+exclude_docs: |
+  figures/
 
 markdown_extensions:
   - admonition
   - toc:
       permalink: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.details
   - pymdownx.snippets:
       base_path: .
@@ -42,11 +48,11 @@ nav:
     - Outputs: outputs.md
     - API: api.md
   - Technical Details:
+    - Key Concepts: miscellaneous.md
     - Bathymetry: bathymetry.md
     - Stream Slope Methods: stream_slope_methods.md
-    - Synthetic Unit Tests: testing_unit_tests.md
-    - Miscellaneous: miscellaneous.md
-  - Examples: 
+    - Running the Tests: testing_unit_tests.md
+  - Examples:
     - Produce Streamflow Inputs: produce_streamflow_inputs.md
     - Produce Geospatial Inputs: produce_geospatial_inputs.md
     - Running ARC: running_arc.md

@@ -1,17 +1,12 @@
 """How deep a cross section's channel is below its reference level, from baseflow or a drainage-area power law.
 
-The reference level is the water surface the DEM shows at the stream cell, or with bank elevations
-(Bathy_Use_Banks) the bank elevation given. The channel carries the baseflow with its water at the reference level,
-by Manning's equation with the roughness given: arc.pipeline gives the water class's n from the Manning's n table,
-which is the n the channel has between its banks. Legacy ARC used a fixed 0.03 whatever the table said
-(LEGACY_MANNINGS_N), which is still the default here. It is a trapezoid as wide as its banks at the
-reference level, whose sloping sides each take up trapezoid_height of that width, whatever the depth: however wide it
-is, narrower than a cell included. A channel without valid banks is taken to be one cell wide (single_cell_banks).
-
-Legacy ARC stepped the depth up until the discharge passed the baseflow, in steps down to 1 cm for a trapezoid
-(stopping just short of the answer). This solves for the depth exactly. Legacy's single-cell channel was a triangle
-reaching the ordinates either side, stepped 10 cm at a time; a single cell here is a trapezoid like any other channel
-(see the package notes).
+The reference level is the water surface the DEM shows at the stream cell, or with bank elevations (Bathy_Use_Banks)
+the smoothed bank elevation. The channel is a trapezoid as wide as its banks at the reference level, whose sloping
+sides each take up trapezoid_height (Bathy_Trap_H) of that width, however wide it is, narrower than a cell included.
+A channel without valid banks is one cell wide (single_cell_banks). Its depth is the one at which it carries the
+baseflow by Manning's equation, with its water at the reference level and the n the channel has between its banks
+(arc.pipeline gives the water class's n from the Manning's n table). A drainage-area depth, where there is one, is
+used as it is instead.
 """
 from __future__ import annotations
 
@@ -22,16 +17,27 @@ import numpy as np
 from numba import njit
 
 from arc.bathymetry.banks import Banks, single_cell_banks
-from arc.hydraulics import _newton_or_bisect
 from arc.xsection.xsection import XSection
 
-LEGACY_MANNINGS_N = 0.03  # legacy ARC's roughness for the bathymetry depth, whatever the land cover; the default here
+DEFAULT_MANNINGS_N = 0.03  # the channel's roughness when none is given
 
 
 class BathymetryDepth(NamedTuple):
     depth: float
     apply: bool  # whether to carve the channel at all
     source: str  # "target_depth" or "baseflow_manning"
+
+
+@njit(cache=True, error_model="numpy")
+def _newton_or_bisect(u, step, lo, hi):
+    """The next u after a Newton step from u, bisecting if the step leaves the bracket [lo, hi], and whether that
+    is close enough. Newton's method converges quadratically, so a step under 1e-9 leaves an error of about 1e-18; a
+    bisection needs the bracket itself small. A step too small to move u stays in the bracket."""
+    newton = u - step
+    if lo <= newton <= hi:
+        return newton, abs(step) <= 1e-9 * (1.0 + abs(u))
+    middle = 0.5 * (lo + hi)
+    return middle, hi - lo <= 1e-12 * (1.0 + abs(middle))
 
 
 @njit(cache=True, error_model="numpy")
@@ -47,8 +53,8 @@ def _log_conveyance(y, bottom, top):
 
 @njit(cache=True, error_model="numpy")
 def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
-    """The depth at which a trapezoid with these bottom and top widths carries q by Manning's equation (legacy
-    find_depth_of_bathymetry): 0 for no flow, NaN for no slope or widths that aren't a trapezoid's."""
+    """The depth at which a trapezoid with these bottom and top widths carries q by Manning's equation: 0 for no
+    flow, NaN for no slope or widths that aren't a trapezoid's."""
     if not top_width > 0.0 or not 0.0 <= bottom_width <= top_width:
         return math.nan
     if not q > 0.0:
@@ -81,7 +87,7 @@ def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
 
 
 def channel_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezoid_height: float,
-                  mannings_n: float = LEGACY_MANNINGS_N) -> float:
+                  mannings_n: float = DEFAULT_MANNINGS_N) -> float:
     """How deep the channel is below its reference level to carry the baseflow q (see the notes above), which
     doesn't depend on what the reference level is.
 
@@ -98,7 +104,7 @@ def channel_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezo
 
 
 def bathymetry_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezoid_height: float,
-                     target_depth: float | None = None, mannings_n: float = LEGACY_MANNINGS_N) -> BathymetryDepth:
+                     target_depth: float | None = None, mannings_n: float = DEFAULT_MANNINGS_N) -> BathymetryDepth:
     """The depth to carve the channel to: a drainage-area target depth if there's a valid one, which always applies,
     or otherwise channel_depth for the baseflow, which applies only with baseflow."""
     if target_depth is not None and math.isfinite(target_depth) and target_depth > 0.0:

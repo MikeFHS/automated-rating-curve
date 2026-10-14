@@ -1,63 +1,20 @@
-"""Filling in and smoothing the channel depths along the reaches of a stream network.
+"""Filling in and smoothing the channel depths along each reach.
 
-These are legacy ARC's reach and network steps between working out each cross section's bathymetry depth
-(bathymetry_depth) and carving it (carve_channel): _smooth_reach_bathymetry_depths and
-_smooth_reach_excavated_bed_elevations. smooth_channel_depths does both, taking each reach's cross sections from
-upstream to downstream in the order the bank smoothing put them in (smooth_bank_elevations):
+This step comes between working out each cross section's depth (bathymetry_depth) and carving it (carve_channel).
+smooth_channel_depths does it all, taking each reach's cross sections from upstream to downstream in the order the bank
+smoothing put them in (smooth_bank_elevations):
 
-1. A depth that isn't above 0 and at most 25 m is filled in with the one before it along the stream. The first in a
-   reach takes the shallowest of the last depths of the reaches flowing into it, or failing that 0.5 m
-   (fill_reach_depths).
+1. A depth that isn't above 0 and at most 25 m is replaced by the one before it along the stream. The first in a
+   reach takes the shallowest last depth of the reaches flowing into it, or failing that 0.5 m (fill_reach_depths).
 2. The bed, each cross section's reference level less its depth, is smoothed with a running median of five cross
-   sections, two either side and fewer at a reach's ends. With the bed cap on it then rises or falls no more than
-   MAX_BED_GRADE metres per metre along the stream, starting within that of the lowest bed flowing into the reach
-   (smooth_reach_bed). The depth to carve is the reference level's height above the smoothed bed, or 0 where the
-   bed is above it.
+   sections (fewer at a reach's ends). With the bed cap on (Bathy_Bed_Cap), it then rises or falls no more than
+   MAX_BED_GRADE metres per metre along the stream, starting from the lowest bed flowing into the reach
+   (smooth_reach_bed). The depth carved is the reference level's height above the smoothed bed, or 0 where the bed is
+   above it.
 
-The reference level is the smoothed bank elevation with Bathy_Use_Banks, and otherwise the stream cell's elevation,
-as for bathymetry_depth and carve_channel.
-
-The bed cap
------------
-The cap is MAX_SLOPE, 0.5 m per metre, the steepest stream slope ARC allows: a bed may be as steep as a stream.
-Legacy ARC's was 1 cm per metre (LEGACY_BED_GRADE), which kept the bed from following the banks down any reach
-falling faster than 1%, so the channel filled in: on a reach of 10 m cells falling 2%, a 1 m channel was 0.2 m deep
-after 100 m and gone after 120 m. At a confluence it kept a reach's first bed near the lowest bed flowing in, so
-where the banks dropped 3 m the reach below had no channel for its first 210 m, and on the Du Page River site, below
-a bed 10 m higher (with legacy's bank smoothing), for its first 880 m. The other way, it held a reach's bed down near a
-lower bed flowing in, carving the channel deeper. On the 51 FIM sites a cap of 0.5 changes the carved depth at 9% of
-the cross sections (2% with legacy's bank smoothing, whose network step kept each reach's banks below those flowing
-in), as turning it off does. max_bed_grade=None turns it off, along the reaches and across the confluences, leaving
-the running median; max_bed_grade=LEGACY_BED_GRADE is legacy's.
-
-The running median has fewer cross sections to one side at a reach's ends, so on a sloping bed it comes out low at
-the upstream end and high at the downstream end: on that 2% reach, the first cross section is 0.2 m deeper and the
-last 0.2 m shallower. Legacy's did the same.
-
-Errors in the legacy code, not repeated here
---------------------------------------------
-- A NaN depth wasn't filled in, and the next depth to fill in after one got 0.5 m, not the depth before the NaN.
-- A reach with no reach next to it that had cross sections was put in the order its cells came in, row by row, with
-  stations 0, 1, 2 and so on rather than metres. So its median ran across the raster rather than along the stream,
-  and the cap let its bed fall only 1 cm per cross section: on a reach falling 0.5%, a 1 m channel was 0.05 m deep
-  250 m along and gone by 490 m. Here the order and the stations are the bank smoothing's, along the stream in
-  metres.
-- Without Bathy_Use_Banks the bed was the smoothed bank elevation less the depth, but the channel was carved that
-  depth below the stream cell, so the bed smoothed wasn't the bed carved. Where the stream cells rise and fall more
-  than the smoothed banks, as they usually do, the carved bed kept all of that. Here the bed is the stream cell's
-  elevation less the depth.
-- A reach's first bed was held to the lowest bed flowing into it by the cap per metre of its own station, which is
-  always 0, so by legacy's shortest step of 0.1 m: to within 1 mm. Here it's per metre from the cross section that
-  bed came from.
-- A missing bed (a NaN bank elevation or stream cell) made the running median NaN within two cross sections of it,
-  and the cap then made every bed downstream of that in the reach NaN, which carves nothing: one missing bank
-  elevation took the channel out of 49 of a reach's 50 cross sections. Here a missing bed is left out, and its cross
-  section keeps its depth.
-- A loop in the stream network raised networkx's NetworkXUnfeasible. Here it's a ValueError.
-
-What isn't here
----------------
-- Legacy then ran the cap back upstream, which after the pass downstream has nothing left to change.
+The reference level is the smoothed bank elevation with Bathy_Use_Banks, and otherwise the stream cell's elevation.
+The cap is MAX_SLOPE (0.5 m per metre), so a bed may be as steep as a stream. A missing bed (no reference level) is
+left out of the median and the cap, and its cross section keeps its depth.
 """
 from __future__ import annotations
 
@@ -75,7 +32,6 @@ from arc.xsection.slope import MAX_SLOPE
 DEFAULT_DEPTH = 0.5  # the depth filled in with none before it to take
 MEDIAN_WINDOW = 5  # how many cross sections the running median of the bed takes in
 MAX_BED_GRADE = MAX_SLOPE  # the bed cap: how much the bed may rise or fall per metre along the stream
-LEGACY_BED_GRADE = 0.01  # legacy ARC's bed cap
 SHORTEST_STEP = 0.1  # metres: the cap allows at least this much distance between cross sections
 
 
@@ -96,7 +52,7 @@ def _upstream_to_downstream(network: nx.DiGraph) -> list:
 def fill_reach_depths(network: nx.DiGraph, depths: Mapping[int, Sequence[float]],
                       orders: Mapping[int, np.ndarray]) -> dict[int, np.ndarray]:
     """Each reach's depths, in the order given, with those that aren't above 0 and at most 25 m (NaN included)
-    filled in (legacy _smooth_reach_bathymetry_depths).
+    filled in.
 
     orders holds each reach's cross sections from upstream to downstream, as indices into its depths. Going
     downstream, a depth is filled in with the one before it, the first in a reach with the shallowest last depth of the
@@ -158,8 +114,7 @@ def _smooth_bed(beds, stations, window, max_grade, inflow_bed, inflow_distance):
 
 def smooth_reach_bed(beds, stations, *, window: int = MEDIAN_WINDOW, max_bed_grade: float | None = MAX_BED_GRADE,
                      inflow_bed: float | None = None, inflow_distance: float = 0.0) -> np.ndarray:
-    """A reach's bed elevations, in order from upstream to downstream, smoothed (legacy
-    _smooth_reach_excavated_bed_elevations, for one reach).
+    """A reach's bed elevations, in order from upstream to downstream, smoothed.
 
     Each bed becomes the median of those within window // 2 cross sections of it. A cross section without a bed
     (NaN) is left out, and stays NaN. With max_bed_grade, the beds then change from each to the next by no more than

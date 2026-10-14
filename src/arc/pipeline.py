@@ -1,80 +1,41 @@
 """ARC's main workflow, from its input rasters to its rating curves, cross sections and bathymetry.
 
-It does what legacy Automated_Rating_Curve_Generator.main did, with the overhaul's modules, in one process and with
-nothing kept between runs:
-
     from arc.config import Configs
     from arc.pipeline import run
     results = run(Configs.from_file("ARC_Input_File.yaml"))
 
-or from the command line, ``python -m arc.pipeline ARC_Input_File.yaml``.
+or from the command line, ``python -m arc.pipeline ARC_Input_File.yaml`` (or ``arc ARC_Input_File.yaml``).
 
 The steps
 ---------
-1. Inputs: the flow file, the DEM, stream and land cover rasters, which must share one grid, and the stream network
-   where the bathymetry, the slopes or the drainage-area power laws need it.
+1. Inputs: the flow file, and the DEM, stream and land cover rasters and the water mask (BathyWaterMask), which must
+   share one grid (north-up or south-up, not rotated, in metres or degrees). The stream network (StrmShp_File), if
+   given, serves the bathymetry, the slopes and the drainage-area power laws. DEM cells without data are walls, like
+   the ground beyond the raster's edge.
 2. Stream cells: the stream raster's cells whose ID is in the flow file (every stream cell for representative cross
-   sections built without flows), in the raster's row order, or the manual cross sections' cells.
-3. Slopes, by Stream_Slope_Method (arc.xsection.slope). The cells of reaches whose slope can't be resolved are
-   skipped, as legacy skipped them.
-4. Roughness: the stream cells become water in the land cover, and each land cover class takes its n from the
-   Manning's n table.
+   sections built without flows), or the manual cross sections' cells.
+3. Slopes, by Stream_Slope_Method (arc.xsection.slope). A reach the method can't give a slope takes its
+   neighbours' in the stream network, and the cells of a reach left without one are skipped.
+4. Roughness: the stream cells become water in the land cover (and in the water mask), and each land cover class
+   takes its n from the Manning's n table.
 5. Cross sections (arc.xsection): the stream's direction at each stream cell, the low spot, the direction where the
    channel is narrowest, and the cross section there.
-6. Banks (arc.bathymetry.find_banks), and the water's n between them.
-7. Bathymetry, if Bathy_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed along the
-   network, each channel's depth, the depths and beds smoothed along the network, and the channel carved into each
-   cross section and burned into the bathymetry raster, whose gaps are then filled.
-8. Rating curves (arc.rating_curve), and the representative cross sections (arc.outputs.representative) when they're
-   asked for. A run that only builds representative cross sections (one asked for no output of the rating curves)
-   doesn't make rating curves, and doesn't need a flow file unless it carves for the baseflow.
-9. Outputs (arc.outputs).
+6. Banks (arc.bathymetry.find_banks): where the water mask's water ends, if there is a mask, or where the land cover's
+   does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then the water's n between them.
+7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed, each
+   channel's depth found, the depths and beds smoothed along the network, and the channel carved into each cross
+   section and burned into the bathymetry raster, whose gaps are then filled. A channel whose banks nothing resolved
+   is carved as wide as its width prior, where it has one, and otherwise one cell wide.
+8. Rating curves (arc.rating_curve), linked along the stream network by the standard step with Standard_Step
+   (arc.standard_step), and the representative cross sections (arc.outputs.representative) when they're asked for.
+9. Outputs (arc.outputs), on the DEM's grid.
 
-The modules' notes list how each step differs from legacy ARC. These are the workflow's own differences.
-
-Representative cross sections and rating curves in one run
------------------------------------------------------------
-Legacy built either the rating curves or the representative cross sections. Here a run asked for both makes them
-from the same cross sections, those of the flow file's reaches, carved as they would be for the rating curves alone,
-so that asking for the representative cross sections doesn't change the rating curves. So the depth power law goes
-ahead of the baseflow, where a run that only builds representative cross sections carves for the baseflow when it
-has the flow file, its ID and its baseflow column, as legacy's did (arc.config).
-
-Where legacy used its own markers
----------------------------------
-- DEM cells without data are walls, like the ground beyond the raster's edge (arc.xsection.sampling). Legacy read
-  them as elevations of -9999 m, deep pits the water fell into.
-- Legacy raised a DEM with any elevation below 0 m by 100 m, and took the 100 m off again in its outputs, so that its
-  checks for elevations above 0 m worked. Nothing here needs that, so elevations are as they are.
-
-Channels nothing resolves
--------------------------
-- A channel whose banks neither the DEM, the land cover nor its reach's widths resolved is carved as wide as its
-  width prior, where it has one, and otherwise one cell wide. Legacy carved one cell either way.
-
-Errors in the legacy code, not repeated here
---------------------------------------------
-- Legacy flipped south-up rasters to north-up but kept their geotransform, so their rows and columns in the VDT
-  database, and the rasters it wrote, were upside down. Here rasters stay as they are, whichever way up.
-- On rasters of different shapes, or in units other than metres or degrees, legacy logged an error and returned as
-  if it had finished, writing nothing. Here it raises, and it also raises for rasters on different grids or rotated.
-- A reach whose end-point slope couldn't be measured, a stream ID missing from the stream network's table, or a
-  Reach_Average_Curve_File without a Print_VDT_Database made legacy fail with a KeyError or an AttributeError. Here
-  the first two are skipped with a warning, and the third works.
-- For a cell without a usable cross section, the reach-average curve file's metadata came from the cell before it.
-  Here it's the cell's own.
-- A reach without a smoothed bank elevation was dropped from the bathymetry and the rating curves even without
-  Bathy_Use_Banks, where the bathymetry doesn't use it (arc.bathymetry.bed_smoothing). Here only with it.
-- Legacy solved the bathymetry depth with a fixed Manning's n of 0.03, whatever the Manning's n table gave the
-  channel, so a channel carved to carry the baseflow didn't carry it in the channel's own rating curve unless the
-  table's water n was 0.03. Here it's solved with the water class's n, the n the channel has between its banks.
-- Representative cross sections carved for the baseflow were built for every reach in the stream raster, and a reach
-  the flow file had no flows for raised a KeyError. Here they're built for the reaches in both.
-
-Not here
---------
-- Legacy's INFLECT curves and the reach bank and terrace depths it took from them: nothing it wrote used them.
-- Its temporary INFLECT plots, and its processes and shared memory.
+Representative cross sections and rating curves
+-----------------------------------------------
+A run asked for both makes them from the same cross sections, carved as they would be for the rating curves alone, so
+that asking for the representative cross sections doesn't change the rating curves. A run that only builds
+representative cross sections (one that asks for no output of the rating curves) makes no rating curves, and needs a
+flow file only to carve its channels for the baseflow (see arc.config).
 """
 from __future__ import annotations
 
@@ -105,21 +66,22 @@ from arc.outputs import (CrossSectionRecord, RatingCurves, RepresentativeSample,
                          representative_cross_section_dataframe, vdt_dataframe, write_ap, write_cross_sections,
                          write_curve_file, write_reach_average_curve_file, write_representative_cross_sections,
                          write_vdt)
-from arc.outputs.rating_curves import BASE_ELEV, COL, COMID, ELEV, ROW, SLOPE, XS_ANGLE
+from arc.outputs.rating_curves import COL, COMID, ELEV, ROW, SLOPE, XS_ANGLE
 from arc.rating_curve import rating_curve
+from arc.standard_step import apply_standard_step
 from arc.xsection.low_spot import low_spot_cell
 from arc.xsection.orientation import angle_offsets, narrowest_direction, stream_direction
 from arc.xsection.sampling import OFF_RASTER_ELEVATION, sample_elevations
-from arc.xsection.slope import (MIN_SLOPE, corrected_local_slopes, end_point_slope, fill_unresolved_reach_slopes,
+from arc.xsection.slope import (corrected_local_slopes, end_point_slope, fill_unresolved_reach_slopes,
                                 local_average_slopes, reach_median_slope)
 from arc.xsection.stream_path import along_stream_stations, stream_cells_by_reach
 from arc.xsection.xsection import XSection
 
-FLOODED_CELL = 3  # the flood raster's value at each stream cell that reached the rating curves, as legacy wrote it
+FLOODED_CELL = 3  # the flood raster's value at the centre cell of each cross section used
 _REQUIRED_MANUAL_COLUMNS = ("Row", "Col", "Ordinate_Dist", "XS1_Profile", "XS2_Profile", "LC1_Profile",
                             "LC2_Profile", "XS1_Row", "XS1_Col", "XS2_Row", "XS2_Col")
 _ALONG_A_ROW = 1e-12  # a cross section whose direction's sine is smaller than this runs along a row
-_METADATA_BUT_BASEFLOW = [COMID, ROW, COL, ELEV, SLOPE, XS_ANGLE, BASE_ELEV]
+_METADATA_BUT_BASEFLOW = [COMID, ROW, COL, ELEV, SLOPE, XS_ANGLE]
 
 
 # --- What a run works with ------------------------------------------------------------------------------------------
@@ -133,6 +95,7 @@ class Grid(NamedTuple):
     land_cover: np.ndarray  # uint8
     dx: float  # the cells' width and height in metres
     dy: float
+    water_mask: np.ndarray | None = None  # uint8, 1 where BathyWaterMask has water and 0 elsewhere; None without one
 
 
 @dataclass(frozen=True)
@@ -157,13 +120,13 @@ class Section:
     xs: XSection
     row: int  # the cell it's centred on, which the low spot may have moved from the stream cell
     col: int
-    direction: float  # the stream direction it was sampled in (arc.xsection.sampling)
-    xs_angle: float  # legacy's XS_Angle: the cross section's own direction, from 0 up to pi
+    direction: float  # the stream direction it was sampled in (see arc.xsection.sampling for the convention)
+    xs_angle: float  # XS_Angle: the cross section's own direction, from 0 up to pi, towards the higher rows
     rows: np.ndarray  # each ordinate's cell
     cols: np.ndarray
-    side_one: int  # which half of the cross section, +1 or -1, legacy numbered side 1
-    dem_low_point: float  # the elevation at its centre before any bathymetry
-    land_cover: np.ndarray | None = None
+    side_one: int  # which half of the cross section, +1 or -1, is side 1 in the cross-section file
+    dem_low_point: float  # the elevation at its centre before any bathymetry, from the DEM or a manual profile
+    land_cover: np.ndarray | None = None  # a manual cross section's land cover
     banks: Banks | None = None  # as found
     hydraulic_banks: Banks | None = None  # as the hydraulics use them: after the width filter with bathymetry
     bank_elevation: float = math.nan  # the smoothed bank elevation, with bathymetry
@@ -193,8 +156,8 @@ class Results:
 
 
 def read_flows(configs: Configs) -> pd.DataFrame | None:
-    """The flow file's baseflow and maximum-flow columns, indexed by its IDs (legacy read_flow_file). None for a run
-    that only builds representative cross sections without baseflow bathymetry, which needs no flows."""
+    """The flow file's baseflow and maximum-flow columns, indexed by its IDs. None for a run that only builds
+    representative cross sections without baseflow bathymetry, which needs no flows."""
     if not configs.makes_rating_curves and not configs.use_representative_baseflow_bathymetry:
         return None
     if not configs.flow_file or not configs.flow_file_id:
@@ -213,9 +176,12 @@ def read_flows(configs: Configs) -> pd.DataFrame | None:
 
 
 def read_grid(configs: Configs) -> Grid:
-    """The DEM, stream and land cover rasters, checked to be on one grid in metres or degrees."""
-    rasters = {name: Raster(path) for name, path in (("DEM", configs.dem_file), ("stream", configs.stream_file),
-                                                     ("land cover", configs.lu_raster_sameres))}
+    """The DEM, stream and land cover rasters, and the water mask if there is one, checked to be on one grid in
+    metres or degrees."""
+    paths = [("DEM", configs.dem_file), ("stream", configs.stream_file), ("land cover", configs.lu_raster_sameres)]
+    if configs.bathywatermask:
+        paths.append(("water mask", configs.bathywatermask))
+    rasters = {name: Raster(path) for name, path in paths}
     reference = rasters["DEM"]
     for name, raster in rasters.items():
         if raster.is_rotated:
@@ -241,40 +207,45 @@ def read_grid(configs: Configs) -> Grid:
     streams[streams < 0] = 0
 
     land_cover = rasters["land cover"].read_array().astype(np.uint8)
+
+    water_mask = None
+    if "water mask" in rasters:
+        mask = rasters["water mask"].read_array(np.float64)
+        water = np.isfinite(mask) & (mask != 0.0)
+        if rasters["water mask"].nodata_value is not None:
+            water &= mask != rasters["water mask"].nodata_value
+        water_mask = water.astype(np.uint8)
+
     dx, dy = reference.cell_size_in_metres()
     LOG.info(f"Cell size {dx} m by {dy} m")
-    return Grid(reference, dem, streams, land_cover, dx, dy)
+    return Grid(reference, dem, streams, land_cover, dx, dy, water_mask)
 
 
 def read_stream_layer(configs: Configs):
-    """The stream network's features, or None if the run doesn't need them or there's no StrmShp_File."""
-    needs = bool(configs.bathy_out_file) or configs.use_bathymetry_powerlaw or configs.use_bathymetry_powerlaw_width \
-        or configs.stream_slope_method in ("reach_average", "local_average_corrected", "end_points")
-    if not needs or not configs.strmshp_file:
+    """The stream network's features, or None if there's no StrmShp_File."""
+    if not configs.strmshp_file:
         return None
     return Vector(configs.strmshp_file).to_geopandas()
 
 
 def stream_network(configs: Configs, layer):
-    """The reach network from the stream layer (legacy _build_reach_network_graph), with lengths in metres. None
-    without the layer, or without its reach_id and downstream_reach_id fields when there's no bathymetry to need them
-    (they then only fill in slopes that couldn't be resolved, which legacy only read them for)."""
+    """The reach network from the stream layer. None without the layer, or without its reach_id and
+    downstream_reach_id fields when neither the bathymetry nor the standard step needs them (they then only give
+    slopes to the reaches the slope method can't)."""
     if layer is None:
         return None
     for column in (configs.reach_id, configs.downstream_reach_id):
         if not column or column not in layer.columns:
-            if configs.bathy_out_file:
+            if configs.bathy_out_file or configs.standard_step:
                 raise ValueError(f"The stream network {configs.strmshp_file} has no field {column!r}.")
-            LOG.warning(f"The stream network {configs.strmshp_file} has no field {column!r}, so slopes that can't "
-                        "be resolved can't be filled in from the network.")
+            LOG.warning(f"The stream network {configs.strmshp_file} has no field {column!r}, so a reach without a "
+                        "slope can't take its neighbours'.")
             return None
-    return reach_network(layer[configs.reach_id].tolist(), layer[configs.downstream_reach_id].tolist(),
-                         Vector.lengths_in_metres(layer))
+    return reach_network(layer[configs.reach_id].tolist(), layer[configs.downstream_reach_id].tolist())
 
 
 def power_law_targets(configs: Configs, layer) -> dict[int, tuple[float | None, float | None]]:
-    """Each reach's drainage-area bankfull depth and width, where configured (legacy
-    build_bathymetry_geometry_dict)."""
+    """Each reach's drainage-area bankfull depth and width, where configured."""
     if not (configs.use_bathymetry_powerlaw or configs.use_bathymetry_powerlaw_width):
         return {}
     if layer is None:
@@ -293,7 +264,7 @@ def power_law_targets(configs: Configs, layer) -> dict[int, tuple[float | None, 
     for reach, area in zip(reach_ids, areas):
         reach = int(reach)
         if reach in targets:
-            continue  # a reach's first feature counts, as legacy took it
+            continue  # a reach's first feature counts
         area = float(area)
         if not math.isfinite(area) or area <= 0.0:
             raise ValueError(f"Drainage area for reach {reach} must be positive in field {field_name}.")
@@ -326,8 +297,7 @@ def _parse_array(value, dtype) -> np.ndarray:
 
 
 def read_manual_sections(configs: Configs) -> dict[int, dict]:
-    """The manual cross sections, by the ID they share with the flow file (legacy
-    load_manual_cross_section_records)."""
+    """The manual cross sections, by the ID they share with the flow file."""
     path = str(configs.manual_cross_sections_file)
     if path.endswith(".parquet"):
         df = pd.read_parquet(path)
@@ -360,8 +330,8 @@ def read_manual_sections(configs: Configs) -> dict[int, dict]:
 
 
 def manual_section(record: dict) -> Section:
-    """A manual cross section as a Section: side 2 on the left, side 1 on the right, the shorter padded with walls
-    (legacy apply_manual_cross_section_data)."""
+    """A manual cross section as a Section: side 2 on the left, side 1 on the right, the shorter padded with
+    walls."""
     half = max(record["xs1_profile"].size, record["xs2_profile"].size) - 1
 
     def both_sides(key, fill, dtype):
@@ -386,8 +356,8 @@ def manual_section(record: dict) -> Section:
 
 
 def stream_cells(configs: Configs, grid: Grid, flows: pd.DataFrame | None, manual: dict | None) -> Cells:
-    """The cells to work on, in the stream raster's row order or the manual cross sections' (legacy _main): those of
-    the flow file's reaches, or without flows, every stream cell."""
+    """The cells to work on, in the stream raster's row order or the manual cross sections': those of the flow
+    file's reaches, or without flows, every stream cell."""
     if flows is None:
         ids = np.unique(grid.streams)
         ids = ids[ids > 0]
@@ -414,9 +384,9 @@ def _cells_by_reach(cells: Cells) -> dict[int, list[int]]:
     return by_reach
 
 
-def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> np.ndarray:
-    """The local average slope at each of cells ks, over their reach's stream cells (rows, cols). A manual cross
-    section's cell off the reach's cells joins them for this."""
+def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[np.ndarray, np.ndarray]:
+    """The local average slope at each of cells ks, and at every cell of their reach (its stream cells, rows and cols,
+    and any of cells ks off them, as a manual cross section's can be)."""
     have = {(int(r), int(c)): i for i, (r, c) in enumerate(zip(rows, cols))}
     extra = list(dict.fromkeys((int(cells.rows[k]), int(cells.cols[k])) for k in ks
                                if (int(cells.rows[k]), int(cells.cols[k])) not in have))
@@ -426,80 +396,106 @@ def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> np.ndar
         have = {(int(r), int(c)): i for i, (r, c) in enumerate(zip(rows, cols))}
     stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
     values = local_average_slopes(grid.dem[rows, cols], rows, cols, stations, grid.dx, grid.dy, distance)
-    return np.array([values[have[(int(cells.rows[k]), int(cells.cols[k]))]] for k in ks])
+    return np.array([values[have[(int(cells.rows[k]), int(cells.cols[k]))]] for k in ks], dtype=np.float64), values
 
 
-def cell_slopes(configs: Configs, grid: Grid, cells: Cells, network, layer) -> tuple[np.ndarray, np.ndarray]:
-    """Each cell's slope by the configured method, and which cells to keep: those whose reach's slope was resolved
-    (legacy initialize_stream_slope_dictionaries and _get_cell_bathymetry_inputs)."""
+def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict) -> tuple[dict, dict]:
+    """By a method that measures slopes between stream cells: each reach's slope, NaN where the DEM gives none, and
+    the slopes of the run's cells, by reach, NaN where a cell has none. Every reach on the stream raster gets a slope,
+    so that a reach without one can take its neighbours'."""
     method = configs.stream_slope_method
+    distance = configs.gen_slope_dist
     stream_reaches = stream_cells_by_reach(grid.streams)
     empty = (np.empty(0, np.int64), np.empty(0, np.int64))
-    distance = configs.gen_slope_dist
-    slopes = np.full(cells.count, np.nan)
-    keep = np.ones(cells.count, dtype=bool)
-    by_reach = _cells_by_reach(cells)
-
-    local = {}
-    if method in ("local_average", "local_average_corrected"):
-        for reach, ks in by_reach.items():
-            local[reach] = _local_slopes(grid, *stream_reaches.get(reach, empty), cells, ks, distance)
+    reach_slopes, cell_values = {}, {}
+    for reach in sorted(set(stream_reaches) | set(by_reach)):
+        rows, cols = stream_reaches.get(reach, empty)
+        ks = by_reach.get(reach, [])
+        if method in ("local_average", "local_average_corrected"):
+            local, everywhere = _local_slopes(grid, rows, cols, cells, ks, distance)
         if method == "local_average":
-            for reach, ks in by_reach.items():
-                slopes[ks] = local[reach]
-            return slopes, keep
+            measured = everywhere[~np.isnan(everywhere)]
+            reach_slopes[reach] = float(np.median(measured)) if measured.size else math.nan
+            cell_values[reach] = local
+            continue
+        stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
+        median, lower, upper = reach_median_slope(grid.dem[rows, cols], rows, cols, stations, grid.dx, grid.dy,
+                                                  distance, configs.slope_low_percentile,
+                                                  configs.slope_high_percentile)
+        reach_slopes[reach] = median
+        cell_values[reach] = np.full(len(ks), median) if method == "reach_average" \
+            else corrected_local_slopes(local, lower, upper)
+    return reach_slopes, {reach: cell_values[reach] for reach in by_reach}
 
-    if method in ("reach_average", "local_average_corrected"):
-        median, lower, upper = {}, {}, {}
-        for reach, (rows, cols) in stream_reaches.items():
-            stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
-            median[reach], lower[reach], upper[reach] = reach_median_slope(
-                grid.dem[rows, cols], rows, cols, stations, grid.dx, grid.dy, distance, configs.slope_low_percentile,
-                configs.slope_high_percentile)
-        if network is not None:
-            unresolved = fill_unresolved_reach_slopes(network, median, lower, upper)
-        else:
-            unresolved = {reach for reach in median if lower[reach] == upper[reach]}
-            if unresolved:
-                LOG.error(f"Bad streams found: {sorted(unresolved)}. Please provide a stream vector file to calculate "
-                          "slopes.")
-        for reach, ks in by_reach.items():
-            if reach in unresolved or reach not in median:
-                keep[ks] = False
-            elif method == "reach_average":
-                slopes[ks] = median[reach]
-            else:
-                slopes[ks] = corrected_local_slopes(local[reach], lower[reach], upper[reach])
-        skipped = int(np.count_nonzero(~keep))
-        if skipped:
-            LOG.info(f"Bypassing {skipped} stream cells from {len(unresolved & set(by_reach))} streams with "
-                     "unresolved slope estimates.")
-        return slopes, keep
 
-    # end_points
+def _end_point_slopes(configs: Configs, grid: Grid, layer, by_reach: dict) -> dict:
+    """Each reach's end-point slope, NaN where it can't be measured, for every reach on the stream raster or in the
+    run, so that a reach without one can take its neighbours'."""
     if layer is None:
         raise ValueError("The 'end_points' stream slope method requires a strmshp_file.")
     id_field = configs.flow_file_id if configs.makes_rating_curves else configs.reach_id
     if id_field not in layer.columns:
         raise KeyError(f"The stream network {configs.strmshp_file} has no field {id_field!r}.")
     dem = np.where(grid.dem >= OFF_RASTER_ELEVATION, np.nan, grid.dem)
-    for reach, ks in by_reach.items():
-        features = layer[layer[id_field] == reach]
+    ids = layer[id_field]
+    slopes = {}
+    for reach in sorted(set(np.unique(grid.streams[grid.streams > 0]).tolist()) | set(by_reach)):
+        matches = np.flatnonzero((ids == reach).to_numpy())
         slope = math.nan
-        if len(features) > 0:
-            length = float(features.to_crs(features.estimate_utm_crs()).length.iloc[0])
-            slope = end_point_slope(features.to_crs(grid.reference.crs).geometry.iloc[0], length, dem,
+        if matches.size:
+            feature = layer.iloc[matches[:1]]  # a reach's first feature counts
+            length = float(feature.to_crs(feature.estimate_utm_crs()).length.iloc[0])
+            slope = end_point_slope(feature.to_crs(grid.reference.crs).geometry.iloc[0], length, dem,
                                     grid.reference.geotransform)
-        if math.isfinite(slope):
-            slopes[ks] = max(slope, MIN_SLOPE)
-        else:
+        slopes[int(reach)] = slope
+    return slopes
+
+
+def _listed(reaches) -> str:
+    reaches = sorted(reaches)
+    return ", ".join(map(str, reaches[:10])) + (" and others" if len(reaches) > 10 else "")
+
+
+def cell_slopes(configs: Configs, grid: Grid, cells: Cells, network, layer) -> tuple[np.ndarray, np.ndarray]:
+    """Each cell's slope by Stream_Slope_Method, and which cells to keep (see arc.xsection.slope). Whatever the
+    method, a reach it can't give a slope takes its neighbours' in the stream network, and a cell without one takes
+    its reach's. The cells of a reach left without a slope are skipped."""
+    by_reach = _cells_by_reach(cells)
+    if configs.stream_slope_method == "end_points":
+        reach_slopes = _end_point_slopes(configs, grid, layer, by_reach)
+        cell_values = {reach: np.full(len(ks), reach_slopes[reach]) for reach, ks in by_reach.items()}
+    else:
+        reach_slopes, cell_values = _dem_slopes(configs, grid, cells, by_reach)
+    measured = {reach for reach, slope in reach_slopes.items() if not math.isnan(slope)}
+    if network is not None:
+        left = fill_unresolved_reach_slopes(network, reach_slopes)
+    else:
+        left = set(reach_slopes) - measured
+
+    slopes = np.full(cells.count, np.nan)
+    keep = np.ones(cells.count, dtype=bool)
+    for reach, ks in by_reach.items():
+        if reach in left:
             keep[ks] = False
-            LOG.warning(f"Reach {reach}'s end-point slope couldn't be measured, so its cells are skipped.")
+        elif reach in measured:
+            slopes[ks] = np.where(np.isnan(cell_values[reach]), reach_slopes[reach], cell_values[reach])
+        else:
+            slopes[ks] = reach_slopes[reach]  # its neighbours'
+    filled = (set(by_reach) - measured) - left
+    if filled:
+        LOG.info(f"Reaches {_listed(filled)} have no slope of their own, and take their neighbours' in the stream "
+                 "network.")
+    skipped = left & set(by_reach)
+    if skipped:
+        hint = "" if network is not None else \
+            " (give StrmShp_File, with reach_id and downstream_reach_id, to take them from the stream network)"
+        LOG.warning(f"Skipping the {int(np.count_nonzero(~keep))} stream cells of reaches {_listed(skipped)}: neither "
+                    f"the DEM nor their neighbours give them a slope{hint}.")
     return slopes, keep
 
 
 def cell_flows(configs: Configs, flows: pd.DataFrame | None, cells: Cells) -> tuple[np.ndarray, np.ndarray]:
-    """Each cell's baseflow and maximum flow (legacy _build_flow_arrays), 0 where there are none."""
+    """Each cell's baseflow and maximum flow, 0 where there are none."""
     baseflow = np.zeros(cells.count)
     max_flow = np.zeros(cells.count)
     if flows is None:
@@ -536,16 +532,15 @@ def cell_targets(targets: dict, cells: Cells) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _bounded(n: np.ndarray) -> np.ndarray:
-    # legacy's corrections: n above 10 is 0.035, and n at or below 0 is 0.005
+    # n above 10 is taken as 0.035, and n at or below 0 as 0.005
     n[n > 10] = 0.035
     n[n <= 0.0] = 0.005
     return n
 
 
 def mannings_n_raster(configs: Configs, land_cover: np.ndarray) -> tuple[np.ndarray, float]:
-    """Each cell's Manning's n from its land cover class (legacy read_manning_table), and the water class's n
-    (legacy _set_in_bank_mannings_n_to_water), bounded as legacy bounded them, and with float32's precision as
-    legacy's raster held them."""
+    """Each cell's Manning's n from its land cover class, and the water class's n, both bounded (see _bounded) and
+    at float32's precision."""
     path = str(configs.lu_manning_n)
     table = pd.read_parquet(path) if path.endswith('.parquet') else pd.read_csv(path, sep='\t')
     lookup = np.zeros(256, dtype=np.float32)
@@ -564,8 +559,8 @@ def mannings_n_raster(configs: Configs, land_cover: np.ndarray) -> tuple[np.ndar
 
 
 def _side_one(direction: float) -> int:
-    """Which half of a cross section sampled in this stream direction legacy numbered side 1: the half towards
-    the higher rows, or along a row towards the higher columns."""
+    """Which half of a cross section sampled in this stream direction is side 1: the half towards the higher rows,
+    or along a row towards the higher columns."""
     xs_direction = direction - np.pi / 2
     sin, cos = math.sin(xs_direction), math.cos(xs_direction)
     return 1 if sin > _ALONG_A_ROW or (abs(sin) <= _ALONG_A_ROW and cos > 0.0) else -1
@@ -573,9 +568,8 @@ def _side_one(direction: float) -> int:
 
 def sample_section(configs: Configs, grid: Grid, row: int, col: int, offsets: np.ndarray,
                    length: float) -> Section | None:
-    """A stream cell's cross section (legacy _sample_cross_section_for_cell), with its elevations and land cover
-    but not yet its roughness: centred on the low spot and turned to where the channel is narrowest. None if its
-    centre has no data."""
+    """A stream cell's cross section, with its elevations but not yet its roughness: centred on the low spot and
+    turned to where the channel is narrowest. None if its centre has no data."""
     direction = stream_direction(grid.streams, row, col, configs.gen_dir_dist, grid.dx, grid.dy)
     if configs.low_spot_range > 0:
         row, col = low_spot_cell(grid.dem, row, col, direction, length, grid.dx, grid.dy, configs.low_spot_range)
@@ -585,11 +579,35 @@ def sample_section(configs: Configs, grid: Grid, row: int, col: int, offsets: np
     if not elevations[center] < OFF_RASTER_ELEVATION:
         return None
     rows, cols = ordinate_cells(row, col, direction, length, grid.dx, grid.dy)
-    land_cover = sample_land_cover(grid.land_cover, row, col, direction, length, grid.dx, grid.dy) \
-        if configs.findbanksbasedonlandcover else None
     return Section(XSection(elevations, np.empty(0), float(spacing)), int(row), int(col), float(direction),
-                   float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(direction), float(elevations[center]),
-                   land_cover)
+                   float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(direction), float(elevations[center]))
+
+
+def bank_water(configs: Configs, grid: Grid) -> tuple[np.ndarray | None, int | None]:
+    """The raster whose water's end gives the banks, and the water's value in it: the water mask if there is one,
+    whatever FindBanksBasedOnLandCover says, or else with FindBanksBasedOnLandCover, the land cover. None and None if
+    neither, when the banks come from the DEM alone."""
+    if grid.water_mask is not None:
+        return grid.water_mask, 1
+    if configs.findbanksbasedonlandcover:
+        return grid.land_cover, configs.lc_water_value
+    return None, None
+
+
+def water_along(section: Section, water: np.ndarray | None, grid: Grid, length: float) -> np.ndarray | None:
+    """The bank_water raster at each ordinate of a cross section, NaN off the raster, or None without one. A manual
+    cross section takes the water mask at its ordinates' cells, or its own land cover."""
+    if water is None:
+        return None
+    if not section.manual:
+        return sample_land_cover(water, section.row, section.col, section.direction, length, grid.dx, grid.dy)
+    if water is not grid.water_mask:
+        return section.land_cover
+    rows, cols = section.rows, section.cols
+    on_raster = (rows >= 0) & (rows < water.shape[0]) & (cols >= 0) & (cols < water.shape[1])
+    values = np.full(rows.size, np.nan)
+    values[on_raster] = water[rows[on_raster], cols[on_raster]]
+    return values
 
 
 def sample_roughness(section: Section, grid: Grid, mannings_n: np.ndarray, length: float) -> None:
@@ -609,7 +627,7 @@ def sample_roughness(section: Section, grid: Grid, mannings_n: np.ndarray, lengt
 
 def unresolved_banks(xs: XSection, target_width: float) -> Banks:
     """The banks of a channel that neither the DEM nor its reach resolved: as wide as its width prior if it has
-    one, and otherwise one cell wide (legacy's one-cell fallback)."""
+    one, and otherwise one cell wide."""
     if math.isfinite(target_width) and target_width > 0.0:
         banks = banks_for_width(xs, target_width)
         if banks.valid:
@@ -619,12 +637,13 @@ def unresolved_banks(xs: XSection, target_width: float) -> Banks:
 
 def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list, network, slopes, baseflow,
                      target_depth, target_width, water_n: float) -> np.ndarray:
-    """Smooth the banks, find, smooth and carve each channel, and return the filled bathymetry raster. With
-    Bathy_Use_Banks, the sections of a reach given no bank elevation become unusable, as legacy dropped them (which
-    the bank smoothing now does only where the site has no bank observation at all). A channel whose banks are still
-    unresolved after the width filter is carved at its width prior, or one cell wide (unresolved_banks). The depth
-    that carries the baseflow is solved with water_n, the water class's Manning's n, which is the n the channel has
-    between its banks."""
+    """Smooth the banks, find, smooth and carve each channel, and return the filled bathymetry raster.
+
+    With Bathy_Use_Banks, the sections of a reach given no bank elevation become unusable (which happens only where
+    the whole site has no bank observation). A channel whose banks are still unresolved after the width filter is
+    carved at its width prior, or one cell wide (unresolved_banks). The depth that carries the baseflow is solved with
+    water_n, the water class's Manning's n, which is the n the channel has between its banks.
+    """
     if network is None:
         raise ValueError("Bathymetry needs the stream network, from StrmShp_File, reach_id and downstream_reach_id.")
     use_banks = configs.bathy_use_banks
@@ -687,7 +706,9 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
 
 def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, slopes, baseflow, max_flow,
                   roughness: DepthRoughness | None, quiet: bool = True) -> RatingCurves:
-    """Each cell's rating curve and metadata (legacy calculate_hydraulic_data_for_cell), NaN where it has none."""
+    """Each cell's rating curve and metadata, NaN where it has none. The elevation is that of the centre of the cross
+    section the rating curve is worked out on: the carved bed with bathymetry, and otherwise the DEM's (or a manual
+    cross section's own)."""
     increments = int(configs.vdt_database_numiterations)
     curves = RatingCurves.empty(cells.count, max(increments, 0))
     reach_average = configs.reach_average_curve_file
@@ -697,30 +718,30 @@ def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, sl
         if section is None or not section.usable:
             if reach_average:
                 # A cell without a usable cross section still gets metadata for the reach-average curve file
-                row, col = (int(cells.rows[k]), int(cells.cols[k])) if section is None else (section.row, section.col)
-                elevation = float(grid.dem[row, col])
-                curves.metadata[k, _METADATA_BUT_BASEFLOW] = \
-                    [comid, row, col, elevation, 0.0, np.nan if section is None else section.xs_angle, elevation]
+                if section is None:
+                    row, col, xs_angle = int(cells.rows[k]), int(cells.cols[k]), np.nan
+                    elevation = float(grid.dem[row, col])
+                else:
+                    row, col, xs_angle, elevation = section.row, section.col, section.xs_angle, _centre(section)
+                curves.metadata[k, _METADATA_BUT_BASEFLOW] = [comid, row, col, elevation, 0.0, xs_angle]
             continue
-        elevation = float(grid.dem[section.row, section.col])
-        thalweg = float(section.xs.elevations[section.xs.elevations.size // 2])
+        elevation = _centre(section)
         curve = rating_curve(section.xs, float(max_flow[k]), float(slopes[k]), increments,
                              baseflow=float(baseflow[k]), roughness=roughness,
                              slope_factor=configs.slope_adjustment_factor)
-        if curve is None:
-            if reach_average:
-                curves.metadata[k, _METADATA_BUT_BASEFLOW] = \
-                    [comid, section.row, section.col, elevation, slopes[k], section.xs_angle, elevation]
-            continue
-        if curve.valid:
+        if curve is not None and curve.valid:
             curves.increments[k] = curve.increments
             curves.metadata[k] = [comid, section.row, section.col, elevation, baseflow[k], slopes[k],
-                                  section.xs_angle, thalweg]
-        # The curve file's metadata, with the elevation before any bathymetry (legacy set_non_vdt_data)
-        if reach_average or (configs.print_curve_file and curve.start >= 0 and curve.last > curve.start + 1):
+                                  section.xs_angle]
+        elif reach_average:
             curves.metadata[k, _METADATA_BUT_BASEFLOW] = \
-                [comid, section.row, section.col, section.dem_low_point, slopes[k], section.xs_angle, thalweg]
+                [comid, section.row, section.col, elevation, slopes[k], section.xs_angle]
     return curves
+
+
+def _centre(section: Section) -> float:
+    """The elevation of the centre of a section's cross section, as the hydraulics use it."""
+    return float(section.xs.elevations[section.xs.elevations.size // 2])
 
 
 # --- 9. Outputs -----------------------------------------------------------------------------------------------------
@@ -728,7 +749,7 @@ def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, sl
 
 def cross_section_record(section: Section, comid: int) -> CrossSectionRecord:
     """A section's row of the cross-section file: each side from its centre out to its last ordinate on the raster,
-    the sides as legacy numbered them (legacy _build_cross_section_export_record)."""
+    side 1 towards the higher rows (see _side_one)."""
     elevations, n = section.xs.elevations, section.xs.mannings_n
     center = elevations.size // 2
     sides = []
@@ -742,7 +763,7 @@ def cross_section_record(section: Section, comid: int) -> CrossSectionRecord:
 
 
 def write_outputs(configs: Configs, grid: Grid, results: Results, flows: pd.DataFrame | None) -> None:
-    """Write the outputs the configuration names, in legacy's order."""
+    """Write the outputs the configuration names."""
     curves = results.curves
     if curves is not None:
         if not curves.has_vdt_data() and configs.vdt_database_numiterations > 0:
@@ -801,19 +822,24 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
     cells = stream_cells(configs, grid, flows, manual)
     slopes, keep = cell_slopes(configs, grid, cells, network, layer)
     if not keep.any():
-        raise ValueError("No stream cells remain after bypassing streams with unresolved slope estimates.")
+        raise ValueError("No stream cells remain: no reach has a slope (see the warning above).")
     cells, slopes = cells.subset(keep), slopes[keep]
     baseflow, max_flow = cell_flows(configs, flows, cells)
     target_depth, target_width = cell_targets(targets, cells)
 
-    # The stream cells are water, whatever the land cover says
+    # The stream cells are water, whatever the land cover and the water mask say
     land_cover = grid.land_cover.copy()
     land_cover[cells.rows, cells.cols] = configs.lc_water_value
-    grid = grid._replace(land_cover=land_cover)
+    water_mask = None
+    if grid.water_mask is not None:
+        water_mask = grid.water_mask.copy()
+        water_mask[cells.rows, cells.cols] = 1
+    grid = grid._replace(land_cover=land_cover, water_mask=water_mask)
     mannings_n, water_n = mannings_n_raster(configs, land_cover)
 
     # Each cell's cross section and banks
     offsets = angle_offsets(configs.degree_manip, configs.degree_interval)
+    water, water_value = bank_water(configs, grid)
     sections: list[Section | None] = []
     for k in tqdm.tqdm(range(cells.count), disable=quiet):
         if manual:
@@ -822,14 +848,14 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
             section = sample_section(configs, grid, int(cells.rows[k]), int(cells.cols[k]), offsets, length)
         if section is not None:
             width = None if math.isnan(target_width[k]) else float(target_width[k])
-            land = section.land_cover if configs.findbanksbasedonlandcover else None
-            section.banks = find_banks(section.xs, target_width=width, land_cover=land,
-                                       water_value=configs.lc_water_value if land is not None else None)
+            along = water_along(section, water, grid, length)
+            section.banks = find_banks(section.xs, target_width=width, land_cover=along,
+                                       water_value=water_value if along is not None else None)
             section.hydraulic_banks = section.banks
         sections.append(section)
 
     # The water's n between each cross section's banks, put in the raster so that the cross sections crossing it get
-    # it too (legacy _set_in_bank_mannings_n_to_water), and then each cross section's n
+    # it too, and then each cross section's n
     for section in sections:
         if section is not None:
             wet = in_bank(section.xs, section.banks)
@@ -855,6 +881,12 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         if configs.depth_varying_n else None
     if configs.makes_rating_curves:
         results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet)
+        if configs.standard_step:
+            summary = apply_standard_step(network, cells.rows, cells.cols, cells.reaches, sections, slopes, max_flow,
+                                          baseflow, results.curves, grid.dx, grid.dy, roughness=roughness,
+                                          slope_factor=configs.slope_adjustment_factor)
+            LOG.info(f"Standard step: {summary.cells} rating curves linked, {summary.critical} of {summary.steps} "
+                     "steps at critical depth")
     if configs.build_representative_cross_section:
         samples = [RepresentativeSample(int(cells.comids[k]), s.xs, float(s.xs.elevations[s.xs.elevations.size // 2]),
                                         float(slopes[k])) for k, s in usable]

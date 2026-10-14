@@ -11,11 +11,10 @@ __all__ = ['Arc']
 
 class Arc():
     """
-    High-level ARC runner.
+    Run ARC from Python, as the ``arc`` command does.
 
-    This class provides a lightweight interface for running ARC from Python and
-    is used by the ``arc`` console script. It runs :func:`arc.pipeline.run`;
-    the legacy :mod:`arc.Automated_Rating_Curve_Generator` is no longer called.
+    Give it an input file or a dictionary of the same keys, then call `run`. See the Model Input File page of
+    the documentation for the keys.
     """
     _mifn: str = ""
     _args: dict = {}
@@ -26,18 +25,14 @@ class Arc():
         Parameters
         ----------
         mifn : str, optional
-            Path to an ARC model input file (MIF), YAML or tab-separated text.
+            Path to an ARC model input file (MIF): YAML, or text with a key and its value on each line.
         args : dict or None, optional
-            Dictionary of key-value pairs corresponding to ARC input-file arguments. Will only be used if `mifn` is not provided.
+            The input file's keys and values, used only if `mifn` isn't given.
         quiet : bool, optional
-            If True, suppress progress bars and non-error log output.
+            If True, hide the progress bars and every log message but errors.
         processes : int or {"auto"}, optional
-            Kept for compatibility with the legacy runner. The pipeline runs in one process, so any other value is
-            ignored with a warning.
-
-        Returns
-        -------
-        None
+            Kept so that older scripts still run. ARC runs in one process, so any value but 1 or "auto" is ignored
+            with a warning.
         """
         self._mifn = mifn
         self._args = args or {}
@@ -48,12 +43,12 @@ class Arc():
 
     def run(self) -> Results:
         """
-        Run ARC.
+        Run ARC, writing the outputs the inputs name.
 
         Returns
         -------
         Results
-            What the run made. Outputs are also written to disk based on input-file arguments.
+            What the run made (see `arc.pipeline.Results`).
         """
         if self._mifn:
             LOG.info(f'Main Input File Given: {self._mifn}')
@@ -99,7 +94,7 @@ class Arc():
             LOG.setLevel(logging.WARNING)
             handler.setLevel(logging.WARNING)
             LOG.warning('Invalid log level. Defaulting to warning.')
-            return
+            return self
 
         LOG.info('Log Level set to ' + log_level)
         return self

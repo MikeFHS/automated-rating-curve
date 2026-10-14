@@ -1,24 +1,16 @@
 """
 Automated Rating Curve (ARC).
 
-This package exposes the public entry points for running ARC from Python or the
-command line.
+ARC builds a rating curve (discharge, velocity, top width and water surface elevation) for every stream cell of a
+DEM, from cross sections sampled across the stream.
 
-Primary entry points
---------------------
-- :class:`arc.arc.Arc`: High-level runner for ARC simulations.
-- :func:`arc.process_geospatial_data.Process_ARC_Geospatial_Data`: Utilities for preparing
-  geospatial inputs.
-- :func:`arc.streamflow_processing.Create_ARC_Streamflow_Input`: Utilities for preparing
-  streamflow inputs.
-- :func:`arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector`: Convert ARC
-  outputs to GeoJSON.
-
-Notes
------
-:class:`arc.arc.Arc` runs :func:`arc.pipeline.run`, which drives the modules
-under :mod:`arc.xsection`, :mod:`arc.bathymetry` and :mod:`arc.outputs`. The
-legacy :mod:`arc.Automated_Rating_Curve_Generator` is kept but no longer run.
+Entry points
+------------
+- arc.Arc, or the ``arc`` command: run ARC from an input file or a dictionary (arc.pipeline.run).
+- arc.streamflow_processing.Create_ARC_Streamflow_Input: make ARC's flow file from GEOGLOWS data.
+- arc.process_geospatial_data.Process_ARC_Geospatial_Data: make ARC's input rasters and input file.
+- arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector: turn ARC's curve file into GeoJSON for flood
+  mapping.
 """
 
 from ._log import LOG

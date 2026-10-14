@@ -1,3 +1,24 @@
+"""Sampling a cross section from rasters: the values at evenly spaced points (ordinates) across the stream, centred
+on a stream cell.
+
+ARC's convention for directions and sides, used throughout (the stream's direction, the cross section's XS_Angle in
+the outputs, and a manual cross section's XS_Angle):
+
+- A direction is an angle on the raster's grid, in radians from the +column axis towards the +row axis. 0 runs along a
+  row towards the higher columns (east), and pi / 2 along a column towards the higher rows (south on a north-up
+  raster, north on a south-up one), so on a north-up raster the angle turns clockwise from east.
+- A cross section runs from its left end to its right, as seen looking back along the stream direction on the grid
+  drawn with row 0 at the top (on a north-up raster, as on the map), so its right end lies in the direction
+  stream direction - pi / 2. That is looking upstream when the direction is the way the water flows, but
+  arc.pipeline's stream directions run from 0 up to pi and don't say which way that is, so its left and right
+  aren't the river's. The outputs use sides instead: side 1 of the cross-section file is the half towards the
+  higher rows.
+
+The ordinates step one cell along whichever axis the cross section crosses fastest, so every ordinate lands on a row or
+column of cell centres and consecutive ordinates are in different cells. Values are interpolated linearly between the
+four cells around each ordinate, as scipy.ndimage.map_coordinates does with order=1. Ordinates beyond the raster's edge
+get OFF_RASTER_ELEVATION (9999), which the hydraulics treat as a wall.
+"""
 import numpy as np
 from numba import njit, types
 from numba.extending import overload
@@ -17,17 +38,12 @@ def sample_cross_section(
         dx: float,
         dy: float) -> XSection:
     """
-    Sample a cross section from a DEM and Manning's n raster. We assume that left and right are defined
-    looking upstream
+    Sample a cross section from a DEM and a Manning's n raster.
 
-    The cross section is centered on (row, col) and runs perpendicular to the stream. stream_direction is
-    the direction the water flows, in radians, measured in map units from the +column axis toward the +row
-    axis (rows increase downward, so this is clockwise on a north-up raster). The sampled values run from
-    the left end of the cross section to the right end, with the stream cell in the middle.
-
-    Each value is interpolated linearly between the four cells around its ordinate, exactly as
-    scipy.ndimage.map_coordinates does with order=1, mode='constant' and cval=9999, so ordinates off the
-    raster are 9999. The values are float32 for a float32 raster and float64 for any other.
+    The cross section is centred on cell (row, col) and runs square to the stream, cross_section_length metres long.
+    stream_direction is the stream's direction (see the notes above for the convention). dx and dy are the cells'
+    width and height in metres. The values run from the left end of the cross section to the right, with the
+    stream cell in the middle. They are float32 for a float32 raster and float64 for any other.
     """
     elevations, mannings_n_values, ordinate_distance = _sample(
         dem, manning_n, int(row), int(col), float(stream_direction), float(cross_section_length), float(dx), float(dy))
@@ -41,10 +57,8 @@ def _compute_dem_coordinates(
         dx: float,
         dy: float):
     """
-    Compute the coordinates of the DEM grid points for a given cross section.
-
-    Returns the column and row coordinates of the ordinates, ordered from the left end of the cross
-    section to the right end looking upstream, and the distance between ordinates.
+    The column and row coordinates of a cross section's ordinates, from its left end to its right (see the notes
+    above), and the distance between ordinates in metres.
     """
     # The cross section runs perpendicular to the stream, from the left bank to the right bank
     xs_direction = stream_direction - np.pi / 2

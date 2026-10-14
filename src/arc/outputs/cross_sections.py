@@ -1,10 +1,9 @@
-"""The cross-section file (XS_Out_File): each stream cell's cross section, as legacy HydraulicData's
-save_cross_section_file wrote it, or as Parquet.
+"""The cross-section file (XS_Out_File): each stream cell's cross section, as tab-separated text or as Parquet.
 
-The file has a row per cross section. Its profiles and Manning's n run out from the stream cell on each side, the
-two sides as legacy ARC numbered them. The tab-separated file prints them as numpy prints arrays, as legacy wrote
-them with np.array2string(..., precision=6, floatmode='fixed'). A .parquet file keeps them as lists of float64,
-exactly as ARC used them: nothing to parse, and not rounded to 6 decimals.
+The file has a row per cross section. Its profiles and Manning's n run out from the stream cell on each side; side 1
+is towards the higher rows (or, along a row, the higher columns). The text file prints them as numpy prints arrays,
+to 6 decimals. A .parquet file keeps them as lists of float64, exactly as ARC used them: nothing to parse, and not
+rounded.
 """
 from __future__ import annotations
 
@@ -54,12 +53,11 @@ class CrossSectionRecord(NamedTuple):
 
 def format_array(values: np.ndarray) -> str:
     """The text np.array2string(values, precision=6, max_line_width=np.inf, threshold=np.inf, floatmode='fixed')
-    gives, as legacy ARC wrote its cross sections, built directly for a 1-D float array without exponents.
+    gives, built directly for a 1-D float array without exponents, which is several times faster.
 
-    np.array2string took most of legacy's time writing the file. Every number is rounded to 6 decimals and padded
-    on the left to the widest whole part, as numpy does. Arrays numpy would print with exponents (values of 1e8 or
-    more, or a smallest non-zero value below 0.0001 or under a thousandth of the largest), or without any finite
-    values, go to np.array2string itself.
+    Every number is rounded to 6 decimals and padded on the left to the widest whole part, as numpy does. Arrays
+    numpy would print with exponents (values of 1e8 or more, or a smallest non-zero value below 0.0001 or under a
+    thousandth of the largest), or without any finite values, go to np.array2string itself.
     """
     values = np.asarray(values)
     if values.ndim != 1 or not np.issubdtype(values.dtype, np.floating) or values.size == 0:

@@ -1,21 +1,14 @@
-"""Representative cross sections: each reach's hydraulics averaged over its cross sections, stage by stage
-(legacy hydraulic_data.build_representative_cross_section_dataframe).
+"""Representative cross sections: each reach's hydraulics averaged over its cross sections, stage by stage.
 
 Every 0.10 m above each cross section's stream cell, up to 25 m, the cross section's area, wetted perimeter, top
-width, discharge and velocity are worked out on its hydraulic profile (arc.rating_curve.section_hydraulics), which
-is a carved channel's exact shape where it has one. With banks, the velocity is the channel's (its discharge over
-its area); without them it's the whole section's. At each stage, the cross sections whose area, velocity and top
-width are all within two standard deviations of the reach's means are averaged. The representative cross section is
-then built from the averages: its area and top width kept from falling as the stage rises, and its depth at each
-stage the one that grows the width linearly from the stage below to give that area.
+width, discharge and velocity are worked out on its own profile, a carved channel's exact shape included. With banks,
+the velocity is the channel's (its discharge over its area); without them it's the whole section's. At each stage,
+the cross sections whose area, velocity and top width are all within two standard deviations of the reach's means are
+averaged, and a reach stops at the first stage where any cross section's hydraulics aren't finite. The
+representative cross section is then built from the averages: its area and top width kept from falling as the stage
+rises, and its depth at each stage the one that grows the width linearly from the stage below to give that area.
 
-The stages are worked out compiled, a reach at a time (_staged_means), with the means and standard deviations summed
-as numpy sums them, so that they are what numpy's nanmean and nanstd give, to the bit.
-
-Numerical differences
----------------------
-- The hydraulics aren't rounded. Legacy rounded area, perimeter, top width, discharge and velocity to 3 decimals, and
-  each water surface elevation to the millimetre.
+The means are summed as numpy sums them, so they are numpy's nanmean and nanstd to the bit.
 """
 from __future__ import annotations
 
@@ -55,7 +48,7 @@ class RepresentativeSample(NamedTuple):
 
 
 def monotonic_cumulative_max(values: np.ndarray) -> np.ndarray:
-    """values made non-decreasing, skipping NaNs (legacy _monotonic_cumulative_max)."""
+    """values made non-decreasing, skipping NaNs."""
     result = np.asarray(values, dtype=np.float64).copy()
     running_max = -np.inf
     for i in range(result.size):
@@ -69,8 +62,7 @@ def monotonic_cumulative_max(values: np.ndarray) -> np.ndarray:
 
 
 def depths_from_width_and_area(widths: np.ndarray, areas: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Each stage's depth increment and depth, growing the width linearly between stages to give each area
-    (legacy _derive_depths_from_width_and_area)."""
+    """Each stage's depth increment and depth, growing the width linearly between stages to give each area."""
     increments = np.zeros(widths.size)
     depths = np.zeros(widths.size)
     previous_width = previous_area = previous_depth = 0.0
@@ -150,7 +142,7 @@ def _sum(values, start, count):
 @njit(cache=True, error_model="numpy")
 def _keep_within_two_deviations(values, count, keep, squares):
     """Leave kept only those of values[:count] within two standard deviations of their mean, or equal to it where
-    they don't vary (legacy _filter_stage_samples_to_two_standard_deviations, with numpy's nanmean and nanstd)."""
+    they don't vary."""
     mean = _sum(values, 0, count) / count
     for i in range(count):
         difference = values[i] - mean
@@ -166,12 +158,11 @@ def _keep_within_two_deviations(values, count, keep, squares):
 @njit(cache=True, error_model="numpy")
 def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, rights, thalwegs, slopes, k_decay,
                   shallow_factor, deep_factor, slope_factor, stage_count):
-    """A reach's stages (legacy _build_representative_hydraulic_rows_for_reach): for each stage from the first, how
-    many of its cross sections were averaged, 0 for none and no row, and their mean discharge, velocity, top width,
-    area and water surface elevation. The cross sections' profiles are end to end in stations, elevations and
-    mannings_n, cross section j's from starts[j] to starts[j + 1], and only those with a slope above 0 count. At the
-    first stage where one's hydraulics aren't all finite, the reach stops, and only the stages before it are
-    returned."""
+    """A reach's stages: for each stage from the first, how many of its cross sections were averaged (0 for none, and
+    no row), and their mean discharge, velocity, top width, area and water surface elevation. The cross sections'
+    profiles are end to end in stations, elevations and mannings_n, cross section j's from starts[j] to
+    starts[j + 1], and only those with a slope above 0 count. At the first stage where one's hydraulics aren't all
+    finite, the reach stops, and only the stages before it are returned."""
     count = centers.size
     averaged = np.zeros(stage_count, np.int64)
     means = np.zeros((stage_count, 5))
@@ -190,7 +181,7 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
             area, perimeter, top_width, k, channel_area, channel_k = section_hydraulics(
                 stations[start:end], elevations[start:end], mannings_n[start:end], centers[j], lefts[j], rights[j],
                 wse, k_decay, shallow_factor, deep_factor)
-            # Legacy _calculate_all with channel_velocity=True: with banks, the velocity is the channel's
+            # With banks, the velocity is the channel's
             scale = np.sqrt(slope) * slope_factor
             if area <= 0.0 or perimeter <= 0.0 or k <= 0.0:
                 area = perimeter = velocity = discharge = 0.0
@@ -290,7 +281,7 @@ def representative_cross_section_dataframe(samples: Sequence[RepresentativeSampl
                                            roughness: DepthRoughness | None = None,
                                            slope_factor: float = 1.0) -> pd.DataFrame:
     """Each reach's representative cross section, one row per 0.10 m stage (see the notes above). The reaches are
-    the samples' COMIDs, in order."""
+    the samples' COMIDs, in increasing order."""
     parameters = (1.0, 1.0, 1.0) if roughness is None else _check_roughness(roughness)
     slope_factor = _check_slope_factor(slope_factor)
     grouped: dict[int, list[RepresentativeSample]] = {}
@@ -306,8 +297,8 @@ def representative_cross_section_dataframe(samples: Sequence[RepresentativeSampl
 
 
 def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLike) -> pd.DataFrame:
-    """Write the representative cross sections rounded to 6 decimals (legacy save_representative_cross_section_file),
-    as CSV or, for a .parquet path, Parquet (arc.outputs.tables), and return them."""
+    """Write the representative cross sections rounded to 6 decimals, as CSV or, for a .parquet path, Parquet
+    (arc.outputs.tables), and return them."""
     if df is None or df.empty:
         # typed, so that an empty Parquet file still has integer and float columns
         df = pd.DataFrame({col: pd.Series(dtype=np.int64 if col in _INTEGER_COLUMNS else np.float64)

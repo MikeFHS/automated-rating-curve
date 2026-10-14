@@ -1,3 +1,4 @@
+"""ARC's inputs: the model input file (MIF), as YAML, as text, or as a dictionary."""
 import os
 import difflib
 from pathlib import Path
@@ -15,12 +16,19 @@ StreamSlopeMethod = Literal["local_average", "local_average_corrected", "reach_a
 _CURVE2FLOOD_KEYS = {'comid_flow_file', 'make_output_gpkg', 'strmorder_field', 'outfld', 'outdep', 'outvel', 'outwse', 'mapper', 'topwidthplausiblelimit', 'tw_multfact', 'set_depth', 'localfloodoption', 'fsoutbathy', 'flood_waterlc_and_strm_cells', 'flow_direction_file', 'filled_dem_file', 'stream_info_file', 'fldpln_library', 'max_wse_rise', 'fldpln_median_filter_size', 'fldpln_max_drop_below_source', 'fs_adjust_flow_by_fraction',
                      # curve2flood's aliases, and the keys nencarta writes into the ARC input files it shares with curve2flood
                      'floodspreader_specifydepth', 'floodlocalonly', 'land_watervalue', 'fldpln_max_wse_rise', 'median_filter_size', 'max_drop_below_source', 'outshp'}
-# Keys that legacy ARC wrote into its input files (Create_ARC_Model_Input_File) or read, but never used
-_UNUSED_LEGACY_KEYS = {'spatial_units', 'str_limit_val', 'print_vdt', 'bathywatermask'}
+# Keys that ARC input files often carry (Create_ARC_Model_Input_File writes some of them) but ARC doesn't use
+_IGNORED_KEYS = {'spatial_units', 'str_limit_val', 'print_vdt'}
 
 
 @dataclass(kw_only=True, frozen=True)
 class Configs:
+    """ARC's inputs, checked and typed.
+
+    Make one with from_file (YAML, or text with a key and its value on each line) or from_mapping (a dictionary).
+    Keys are case-insensitive, so DEM_File and dem_file are the same. Keys that curve2flood reads from the same file
+    are allowed and ignored; any other unknown key raises ValueError, naming the closest known key. The fields after
+    compression are worked out from the others, by validate_options.
+    """
     # Inputs files
     dem_file: os.PathLike | None = None
     stream_file: os.PathLike | None = None
@@ -29,6 +37,9 @@ class Configs:
     lu_raster_sameres: os.PathLike | None = None
     lu_manning_n: os.PathLike | None = None
     manual_cross_sections_file: os.PathLike | None = None
+    # Where the water is (its non-zero cells), on the DEM's grid: the banks are where its water ends. curve2flood
+    # reads it too, and keeps the bathymetry only inside it.
+    bathywatermask: os.PathLike | None = None
 
     # Input file field names
     reach_id: str = "Reach_ID"
@@ -56,8 +67,8 @@ class Configs:
 
     # Discharge adjustments
     slope_adjustment_factor: float = 1.0
-    # Scale Manning's n with the depth of the water by k_decay, shallow_factor and deep_factor, as legacy ARC always
-    # did (arc.hydraulics.DepthRoughness). False keeps each land cover's n at every depth.
+    # Scale Manning's n with the depth of the water by k_decay, shallow_factor and deep_factor
+    # (arc.hydraulics.DepthRoughness). False keeps each land cover's n at every depth.
     depth_varying_n: bool = True
     k_decay: float = 6.0
     shallow_factor: float = 2.0
@@ -66,14 +77,16 @@ class Configs:
     # Bathymetry configuration
     bathy_trap_h: float = 0.2
     bathy_use_banks: bool = False
-    # Hold the smoothed channel bed to rising or falling no more than MAX_SLOPE (0.5 m) per metre along the stream,
-    # where legacy ARC held it to 1 cm (arc.bathymetry.smooth_channel_depths' max_bed_grade, MAX_BED_GRADE when on
-    # and None when off)
+    # Hold the smoothed channel bed to rising or falling no more than MAX_SLOPE (0.5 m) per metre along the stream
+    # (arc.bathymetry.smooth_channel_depths)
     bathy_bed_cap: bool = True
     findbanksbasedonlandcover: bool = False
 
     # Synthetic rating curve configuration
     vdt_database_numiterations: int = 15
+    # Link the water surfaces along the stream network by the standard-step method (arc.standard_step), instead of
+    # each cross section's normal depth
+    standard_step: bool = False
 
     # Output files
     print_vdt_database: os.PathLike | None = None
@@ -87,7 +100,7 @@ class Configs:
     bathy_out_file: os.PathLike | None = None
     aroutflood: os.PathLike | None = None
 
-    compression: str = "LZW"
+    compression: str = "ZSTD"
 
     # Derived by validate_options(), so they cannot be set from the inputs
     makes_rating_curves: bool = field(init=False, default=True)
@@ -102,14 +115,16 @@ class Configs:
 
     @classmethod
     def from_mapping(cls, params: dict):
+        """The inputs from a dictionary of the input file's keys and values."""
         return cls(**cls._normalize_keys(params))
 
     @classmethod
     def from_file(cls, file_path: os.PathLike):
+        """The inputs from an input file: YAML for a .yaml or .yml file, and otherwise text."""
         if Path(file_path).suffix.lower() in ('.yaml', '.yml'):
             return cls.from_yaml(file_path)
         else:
-            return cls.from_legacy_text_file(file_path)
+            return cls.from_text_file(file_path)
 
 
     @classmethod
@@ -119,7 +134,9 @@ class Configs:
         return cls.from_mapping(params or {})
 
     @classmethod
-    def from_legacy_text_file(cls, mif_name: os.PathLike):
+    def from_text_file(cls, mif_name: os.PathLike):
+        """The inputs from a text file with a key, a space or tab, and its value on each line. Blank lines and lines
+        starting with # are skipped."""
         with open(mif_name, 'r') as o_input_file:
             params = {}
             for line in o_input_file:
@@ -135,10 +152,10 @@ class Configs:
 
     @classmethod
     def _normalize_keys(cls, params: dict) -> dict:
-        # Keys are case-insensitive, so legacy names such as DEM_File map to dem_file
+        # Keys are case-insensitive, so DEM_File is dem_file
         params = {str(k).lower(): v for k, v in params.items()}
 
-        # AROutBATHY is the legacy name for bathy_out_file, and wins when both are given
+        # AROutBATHY is another name for BATHY_Out_File, and wins when both are given
         aroutbathy = params.pop("aroutbathy", None)
         if aroutbathy:
             params["bathy_out_file"] = aroutbathy
@@ -148,14 +165,14 @@ class Configs:
                 raise ValueError(f'{obsolete_name} has been replaced by shallow_factor and deep_factor; update your ARC inputs.')
 
         known = {f.name for f in fields(cls) if f.init}
-        unknown = sorted(set(params) - known - _CURVE2FLOOD_KEYS - _UNUSED_LEGACY_KEYS)
+        unknown = sorted(set(params) - known - _CURVE2FLOOD_KEYS - _IGNORED_KEYS)
         if unknown:
             described = []
             for key in unknown:
                 close = difflib.get_close_matches(key, sorted(known), n=1)
                 described.append(f'{key!r}' + (f' (did you mean {close[0]!r}?)' if close else ''))
             raise ValueError(f'Unrecognized config key(s): {", ".join(described)}')
-        # The curve2flood and unused legacy keys are allowed in the inputs, but aren't fields
+        # The curve2flood and ignored keys are allowed in the inputs, but aren't fields
         return {key: value for key, value in params.items() if key in known}
 
     def _coerce_types(self) -> None:
@@ -166,6 +183,7 @@ class Configs:
                 object.__setattr__(self, f.name, _coerce(f.name, getattr(self, f.name), hints[f.name]))
 
     def validate_options(self):
+        """Check the inputs, and work out the bathymetry options and whether the run makes rating curves."""
         if self.stream_slope_method not in get_args(StreamSlopeMethod):
             raise ValueError(
                 f"stream_slope_method must be one of {', '.join(get_args(StreamSlopeMethod))}, "
@@ -173,6 +191,12 @@ class Configs:
             )
         if self.stream_slope_method == "end_points" and not self.strmshp_file:
             raise ValueError("The 'end_points' stream slope method requires a strmshp_file to be specified.")
+        if self.standard_step and not self.strmshp_file:
+            raise ValueError("The standard step needs the stream network: StrmShp_File, with reach_id and "
+                             "downstream_reach_id.")
+        if self.stream_slope_method != "end_points" and self.gen_slope_dist < 1:
+            raise ValueError(f"gen_slope_dist must be at least 1 for the {self.stream_slope_method!r} stream slope "
+                             "method, which measures slopes between stream cells that many cells apart or nearer.")
 
         if self.build_representative_cross_section and not self.representative_cross_section_file:
             raise ValueError("Building a representative cross section requires a representative_cross_section_file to be specified.")
@@ -221,7 +245,7 @@ class Configs:
             )
 
         # A run that only builds representative cross sections carves its channels for the baseflow when it has the
-        # flow file, its ID and its baseflow column, ahead of the depth power law, as legacy's representative runs did
+        # flow file, its ID and its baseflow column, ahead of the depth power law
         representative_baseflow_inputs = {
             'Flow_File': self.flow_file,
             'Flow_File_ID': self.flow_file_id,

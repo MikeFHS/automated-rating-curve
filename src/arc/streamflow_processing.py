@@ -13,12 +13,10 @@ MIF points ARC to the correct column names.
 # GEOGLOWS data can be downloaded from http://geoglows-v2.s3-website-us-west-2.amazonaws.com/
 
 # built-in imports
-import gc
 import os
 
 # third-party imports
 from osgeo import gdal
-from dask.diagnostics import ProgressBar
 import pandas as pd
 from shapely.geometry import box
 import s3fs
@@ -121,53 +119,6 @@ def GetMedianFlowValues(NetCDF_Directory):
         
     return overall_median_Qout
 
-def GetMaxFlowValues(NetCDF_Directory):
-    """
-    Estimates the maximum streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
-    estimating the yearly maximum, and then estimating a maximum of those yearly maximums
-
-    Parameters
-    ----------
-    NetCDF_Directory: str
-        The file path to a directory containing yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files
-    
-    Returns
-    -------
-    overall_median_Qout: Pandas series
-        A Pandas series of maximum streamflow values with the streams unique identifier used as the index
-
-    """
-    # create a list of all files in the NetCDF directory
-    file_list = os.listdir(NetCDF_Directory)
-    all_max_Qout_dfs = []
-    for f in file_list:
-        if f.endswith(".nc"):
-            qout_file_path = os.path.join(NetCDF_Directory, f)
-            qout_ds = xr.open_dataset(qout_file_path, engine='netcdf4')
-            
-            # Compute the max Qout value over the 'time' dimension for each rivid
-            max_Qout_all_rivids = qout_ds['Qout'].max(dim='time')
-
-            # Trigger the computation if using Dask (although not necessary here since the dataset is 335MB)
-            max_Qout_all_rivids_values = max_Qout_all_rivids.compute()
-
-            # Convert the xarray DataArray to a pandas DataFrame
-            max_Qout_df = max_Qout_all_rivids.to_dataframe(name='qout_max').reset_index()
-            
-            all_max_Qout_dfs.append(max_Qout_df)
-            
-    # Concatenate all DataFrames into a single DataFrame
-    if all_max_Qout_dfs:
-        all_max_Qout_df = pd.concat(all_max_Qout_dfs, ignore_index=True).round(3)
-    else:
-        print("No valid data found in the NetCDF files.")
-        return None
-    
-    # Compute overall average by rivid
-    overall_max_Qout = all_max_Qout_df.groupby('rivid')['qout_max'].max().round(3)
-        
-    return (overall_max_Qout)
-
 def GetReturnPeriodFlowValues(NetCDF_File_Path):
     """
     Estimates the maximum streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
@@ -250,115 +201,6 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
     
     return (combined_df)
 
-def Process_and_Write_Retrospective_Data(StrmShp_gdf, rivid_field, CSV_File_Name):
-    """Query retrospective GEOGLOWS data from S3 and write summary statistics.
-
-    Notes
-    -----
-    This function performs network I/O and requires optional dependencies used
-    for Dask/S3 access (``dask``, ``s3fs``, ``xarray``).
-    """
-    # Do a late lazy import since importing dask dataframe is heavy, which would slow down other code that just uses ARC and doesn't need this streamflow processing code
-    import dask.dataframe as dd
-
-    rivids = StrmShp_gdf[rivid_field].astype(int).values
-
-    # Set up the S3 connection
-    ODP_S3_BUCKET_REGION = 'us-west-2'
-    s3 = s3fs.S3FileSystem(anon=True, client_kwargs=dict(region_name=ODP_S3_BUCKET_REGION))
-
-    # Enable Dask progress bar
-    with ProgressBar():
-    
-        # Load retrospective data from S3 using Dask
-        retro_s3_uri = 's3://geoglows-v2-retrospective/retrospective.zarr'
-        retro_s3store = s3fs.S3Map(root=retro_s3_uri, s3=s3, check=False)
-        retro_ds = xr.open_zarr(retro_s3store, chunks='auto').sel(rivid=rivids)
-        
-        # Convert Xarray to Dask DataFrame
-        retro_ddf = retro_ds.to_dask_dataframe().reset_index()
-
-        # Perform groupby operations in Dask for mean, median, and max
-        mean_ddf = retro_ddf.groupby('rivid').Qout.mean().rename('qout_mean').reset_index()
-        median_ddf = retro_ddf.groupby('rivid').Qout.median().rename('qout_median').reset_index()
-        max_ddf = retro_ddf.groupby('rivid').Qout.max().rename('qout_max').reset_index()
-
-        # Set the index for alignment and repartition
-        mean_ddf = mean_ddf.set_index('rivid')
-        median_ddf = median_ddf.set_index('rivid')
-        max_ddf = max_ddf.set_index('rivid')
-
-        # Repartition to align the partitions
-        mean_ddf = mean_ddf.repartition(npartitions=10)
-        median_ddf = median_ddf.repartition(npartitions=10)
-        max_ddf = max_ddf.repartition(npartitions=10)
-
-        # Align partitions
-        combined_ddf = dd.concat([
-            mean_ddf,
-            median_ddf,
-            max_ddf
-        ], axis=1)
-
-    # Clean up memory
-    del retro_ds, retro_ddf, mean_ddf, median_ddf, max_ddf
-    gc.collect()
-
-    # Enable Dask progress bar
-    with ProgressBar():
-    
-        # Load return periods data from S3 using Dask
-        rp_s3_uri = 's3://geoglows-v2-retrospective/return-periods.zarr'
-        rp_s3store = s3fs.S3Map(root=rp_s3_uri, s3=s3, check=False)
-        rp_ds = xr.open_zarr(rp_s3store, chunks='auto').sel(rivid=rivids)
-        
-        # Convert Xarray to Dask DataFrame and pivot
-        rp_ddf = rp_ds.to_dask_dataframe().reset_index()
-
-        # Convert 'return_period' to category dtype
-        rp_ddf['return_period'] = rp_ddf['return_period'].astype('category')
-
-        # Ensure the categories are known
-        rp_ddf['return_period'] = rp_ddf['return_period'].cat.as_known()
-        
-        # Pivot the table
-        rp_pivot_ddf = rp_ddf.pivot_table(index='rivid', columns='return_period', values='return_period_flow', aggfunc='mean')
-
-        # Rename columns to indicate return periods
-        rp_pivot_ddf = rp_pivot_ddf.rename(columns={col: f'rp{int(col)}' for col in rp_pivot_ddf.columns})
-
-        # Set the index for rp_pivot_ddf and ensure known divisions
-        rp_pivot_ddf = rp_pivot_ddf.reset_index().set_index('rivid').repartition(npartitions=rp_pivot_ddf.npartitions)
-        rp_pivot_ddf = rp_pivot_ddf.set_index('rivid', sorted=True)
-
-    # Clean up memory
-    del rp_ds, rp_ddf
-    gc.collect()
-    
-    # # Align partitions
-    # aligned_dfs, divisions, result = dd.multi.align_partitions(combined_ddf, rp_pivot_ddf)
-
-    # # Extract aligned DataFrames
-    # aligned_combined_ddf = aligned_dfs[0]
-    # aligned_rp_pivot_ddf = aligned_dfs[1]
-
-    # Repartition to align the partitions
-    aligned_combined_ddf = combined_ddf.repartition(npartitions=10)
-    aligned_rp_pivot_ddf = rp_pivot_ddf.repartition(npartitions=10)
-
-    # Combine the results from retrospective and return periods data
-    final_ddf = dd.concat([aligned_combined_ddf, aligned_rp_pivot_ddf], axis=1)
-
-    # Write the final Dask DataFrame to CSV
-    final_ddf.to_csv(CSV_File_Name, single_file=True, index=False)
-
-    # Clean up memory
-    del rp_pivot_ddf, combined_ddf, final_ddf
-    gc.collect()
-    
-    # Return the combined DataFrame as a Dask DataFrame
-    return
-
 def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name):
     """Compute retrospective summary flows for a single DEM tile.
 
@@ -370,11 +212,9 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     raster_dataset = gdal.Open(DEM_Tile)
     gt = raster_dataset.GetGeoTransform()
 
-    # Get the bounds of the raster (xmin, ymin, xmax, ymax)
-    xmin = gt[0]
-    xmax = xmin + gt[1] * raster_dataset.RasterXSize
-    ymin = gt[3] + gt[5] * raster_dataset.RasterYSize
-    ymax = gt[3]
+    # Get the bounds of the raster (xmin, ymin, xmax, ymax), whichever way up it is
+    xmin, xmax = sorted((gt[0], gt[0] + gt[1] * raster_dataset.RasterXSize))
+    ymin, ymax = sorted((gt[3], gt[3] + gt[5] * raster_dataset.RasterYSize))
 
     # Create a bounding box
     raster_bbox = box(xmin, ymin, xmax, ymax)

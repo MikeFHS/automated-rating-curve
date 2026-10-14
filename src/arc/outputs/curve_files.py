@@ -1,8 +1,8 @@
 """The curve file: power laws fitted to each stream cell's rating curve, or to each reach's.
 
-Depth, top width and velocity are each fitted as a * Q**b by least squares (scipy's curve_fit), as legacy
-HydraulicData's save_curve_file and save_reach_average_curve_file did. qmax is the flow file's maximum-flow column,
-indexed by its IDs, whose values replace the baseflow in the metadata.
+Depth, top width and velocity are each fitted as a * Q**b by least squares (scipy's curve_fit). The depth is the
+water surface elevation less BaseElev, the elevation of the centre of the cross section (Elev in the VDT database).
+qmax is the flow file's maximum-flow column, indexed by its IDs, which goes in the QMax column.
 """
 from __future__ import annotations
 
@@ -15,26 +15,26 @@ from numba.core.errors import TypingError
 from scipy.optimize import curve_fit
 
 from arc import LOG
-from arc.outputs.rating_curves import Q, T, V, WSE, RatingCurves
+from arc.outputs.rating_curves import METADATA_COLUMNS, Q, T, V, WSE, RatingCurves
 from arc.outputs.tables import write_table
 
-FAILED_FIT = -9999.9  # legacy's coefficient, power and R² when a fit fails
-# Initial guesses for a and b, as legacy ARC made them
+FAILED_FIT = -9999.9  # the coefficient, power and R² when a fit fails
+# Initial guesses for a and b
 TOP_WIDTH_GUESS = (12.0, 0.3)
 VELOCITY_GUESS = (1.0, 0.3)
 DEPTH_GUESS = (0.2, 0.5)
-_FIRST_COLUMNS = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev']
+_METADATA = ['COMID', 'Row', 'Col', 'BaseElev', 'QBaseflow', 'Slope', 'XS_Angle']
 
 
 @njit(cache=True)
 def _power(d_value: np.ndarray, d_coefficient: float, d_power: float):
-    """a * x**b, compiled as legacy power_func was, so that the fits come out the same."""
+    """a * x**b, compiled."""
     return d_coefficient * (d_value ** d_power)
 
 
 def fit_power_law(x: np.ndarray, y: np.ndarray, init_guess=(1.0, 1.0)) -> tuple[float, float, float]:
-    """a, b and R² of y = a * x**b (legacy _linear_regression_power_function). R² isn't worked out, as legacy's
-    wasn't, so it's -9999.9, and so are a and b when the fit doesn't converge."""
+    """a, b and R² of y = a * x**b. R² isn't worked out, so it's -9999.9, and so are a and b when the fit doesn't
+    converge."""
     coefficient, power, r2 = FAILED_FIT, FAILED_FIT, FAILED_FIT
     try:
         (coefficient, power), _ = curve_fit(_power, x, y, p0=list(init_guess))
@@ -56,11 +56,8 @@ def _round_metadata(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def curve_file_dataframe(curves: RatingCurves, qmax: pd.Series) -> pd.DataFrame:
-    """Each cell's power laws (legacy save_curve_file), for the cells whose metadata is complete and whose
-    coefficients are all positive."""
-    df = pd.DataFrame(curves.metadata, columns=['COMID', 'Row', 'Col', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle',
-                                                'BaseElev'])
-    df = df[['COMID', 'Row', 'Col', 'BaseElev', 'DEM_Elev', 'QBaseflow', 'Slope', 'XS_Angle']]
+    """Each cell's power laws, for the cells whose metadata is complete and whose coefficients are all positive."""
+    df = pd.DataFrame(curves.metadata, columns=METADATA_COLUMNS).rename(columns={'Elev': 'BaseElev'})[_METADATA]
     df = df.dropna()
     for col in ['COMID', 'Row', 'Col']:
         df[col] = df[col].astype(int)
@@ -90,13 +87,13 @@ def curve_file_dataframe(curves: RatingCurves, qmax: pd.Series) -> pd.DataFrame:
 
 def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFrame, qmax: pd.Series) -> pd.DataFrame:
     """Each reach's power laws, fitted to all of its cells' rating curves in the VDT database, alongside each of
-    its cells' metadata (legacy save_reach_average_curve_file)."""
+    its cells' metadata."""
     n = curves.number_of_increments
-    df = pd.DataFrame(curves.metadata, columns=_FIRST_COLUMNS).dropna(how='all')
-    df = df[['COMID', 'Row', 'Col', 'BaseElev', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle']]
+    df = pd.DataFrame(curves.metadata, columns=METADATA_COLUMNS).dropna(how='all')
+    df = df.rename(columns={'Elev': 'BaseElev'})[_METADATA]
     for col in ['COMID', 'Row', 'Col']:
         df[col] = df[col].astype(int)
-    df = df.rename(columns={'QBaseflow': 'QMax', 'Elev': 'DEM_Elev'})
+    df = df.rename(columns={'QBaseflow': 'QMax'})
     df['QMax'] = df['COMID'].map(qmax)
     df = _round_metadata(df)
 

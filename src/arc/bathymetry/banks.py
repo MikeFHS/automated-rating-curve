@@ -1,11 +1,10 @@
 """Finding a cross section's banks, as distances from the stream cell.
 
 Every method gives the distance from the stream cell to each bank, which can fall between ordinates, and the
-channel's top width is the sum of the two. A search tries the methods in legacy ARC's order and keeps the first
-that resolves a channel at least two ordinate spacings wide, unless a drainage-area width prior says the channel is
-narrower than the DEM can resolve, when the channel is the prior's width. A channel whose width is given, by a prior
-or a reach's median width, can be any width, narrower than a cell included: its banks are wherever the width puts
-them. See the package notes for how this differs from the legacy bank indices.
+channel's top width is the sum of the two. find_banks tries the methods in turn and keeps the first that resolves a
+channel at least two ordinate spacings wide, unless a drainage-area width prior says the channel is narrower than the
+DEM can resolve, when the channel is the prior's width. A channel whose width is given, by a prior or a reach's median
+width, can be any width, narrower than a cell included: its banks are wherever the width puts them.
 """
 from __future__ import annotations
 
@@ -16,10 +15,9 @@ import numpy as np
 from numba import njit
 
 from arc.hydraulics import top_widths
+from arc.xsection.sampling import OFF_RASTER_ELEVATION
 from arc.xsection.xsection import XSection
 
-# Sampling gives ordinates off the raster this elevation, which makes them walls (see arc.xsection.sampling)
-OFF_RASTER_ELEVATION = 9999.0
 # Ground less than this far above the stream cell is flat water
 FLAT_WATER_DEPTH = 0.1
 # The width-to-depth search looks no higher than this above the stream cell
@@ -27,8 +25,8 @@ MAX_BANK_HEIGHT = 25.0
 # A width prior no wider than two ordinate spacings makes a single-cell channel, or one spacing from this spacing up
 COARSE_SPACING = 15.0
 
-METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width", "elevation")
-_NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH, _ELEVATION = range(7)
+METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width")
+_NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH = range(6)
 _NO_LAND_COVER = np.empty(0)
 
 
@@ -37,11 +35,10 @@ class Banks(NamedTuple):
 
     left and right are the distances in metres from the stream cell to the left and right banks (NaN if the method
     found none), and the elevations are the ground's there. A bank a width put within a spacing of the stream cell,
-    where the DEM can't show one, takes the ground at the neighbouring ordinate instead, as legacy's single-cell
-    banks did. A single-cell channel is one the DEM can't resolve: as wide as the width prior says, or else one
-    spacing, the stream cell's own width. valid says the banks can be used: a channel whose width was given (single
-    cell or target width) with the cross section on the raster either side, or one found at least two ordinate
-    spacings wide.
+    where the DEM can't show one, takes the ground at the neighbouring ordinate instead. A single-cell channel is one
+    the DEM can't resolve: as wide as the width prior says, or else one spacing, the stream cell's own width. valid
+    says the banks can be used: a channel whose width was given (single cell or target width) with the cross section
+    on the raster either side, or one found at least two ordinate spacings wide.
     """
     method: str
     left: float
@@ -165,7 +162,7 @@ def _width_to_depth_banks(elevations, spacing):
         heap[0] = heap[size]
         _sift_down(heap, 0, size)
         left, right = top_widths(elevations, spacing, thalweg + height)
-        # Legacy ARC rounds to the millimetre, and where the search stops depends on it
+        # The widths and the ratio are rounded to the millimetre, which decides where the search stops
         ratio = np.round((np.round(left, 3) + np.round(right, 3)) / height, 3)
         if ratio > last_ratio:
             return last_left, last_right, last_height
@@ -240,11 +237,11 @@ def _find_banks(elevations, spacing, land_cover, water, target_width):
 
 def find_banks(xs: XSection, *, target_width: float | None = None, land_cover: np.ndarray | None = None,
                water_value: float | None = None) -> Banks:
-    """Find a cross section's banks, trying in turn, as legacy ARC did:
+    """Find a cross section's banks, trying in turn:
 
     1. A single-cell channel as wide as a drainage-area width prior (target_width), if the prior is no wider than
        two ordinate spacings, or one for spacings of 15 m or more.
-    2. The land cover, if given (see banks_by_land_cover).
+    2. The land cover, or a water mask (water_value 1), if given (see banks_by_land_cover).
     3. The stage where the ratio of top width to depth stops falling (see banks_by_width_to_depth_ratio).
     4. The water's edges 0.1 m above the stream cell (see banks_by_flat_water).
 
@@ -285,12 +282,6 @@ def banks_by_flat_water(xs: XSection) -> Banks:
     """Banks at the water's edges 0.1 m above the stream cell, where the ground stops being flat water."""
     left, right = _flat_water_banks(xs.elevations, float(xs.ordinate_distance))
     return _banks(xs, _FLAT_WATER, left, right, _resolved(left, right, xs.ordinate_distance))
-
-
-def banks_at_elevation(xs: XSection, elevation: float) -> Banks:
-    """Banks at the water's edges with the water at an elevation, such as a reach-smoothed bank elevation."""
-    left, right = top_widths(xs.elevations, float(xs.ordinate_distance), float(elevation))
-    return _banks(xs, _ELEVATION, left, right, _resolved(left, right, xs.ordinate_distance))
 
 
 def banks_for_width(xs: XSection, width: float) -> Banks:

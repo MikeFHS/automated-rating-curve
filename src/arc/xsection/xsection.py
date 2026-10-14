@@ -1,3 +1,4 @@
+"""The cross section and its exact ground profile, as the hydraulics see them."""
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -16,6 +17,9 @@ class Profile(NamedTuple):
 
 @dataclass(eq=False, repr=False)
 class XSection:
+    """A cross section: its ground elevations and Manning's n at ordinates ordinate_distance metres apart, from its
+    left end to its right (see arc.xsection.sampling for the convention), with the stream cell in the middle. The bank
+    distances are -1 until banks are found (arc.bathymetry.set_bank_distances)."""
     elevations: np.ndarray
     mannings_n: np.ndarray
     ordinate_distance: float

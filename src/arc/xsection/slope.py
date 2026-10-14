@@ -1,44 +1,25 @@
 """Stream slopes from the DEM at a reach's stream cells.
 
 The slope between two stream cells is the difference in their elevations over the distance between them along the
-stream (see arc.xsection.stream_path), and never over less than the straight line between them. Legacy ARC used the
-straight line, which is shorter wherever the stream bends, so slopes on winding streams come out lower here. On a
-straight reach along a row, a column or a diagonal the two are the same. At other angles a path of whole cells is
-longer than the straight line, up to 8.2% at 22.5 degrees to the rows, so those slopes come out up to 7.6% lower.
+stream (see arc.xsection.stream_path), and never over less than the straight line between them.
 
-The slope methods are legacy ARC's Stream_Slope_Method options:
+The slope methods (Stream_Slope_Method), and when each can't give a slope:
+
 - local_average: each cell's slope is the mean of its slopes to the reach's other cells within Gen_Slope_Dist cells
-  of it along each axis, from 0.0001 to 0.5 (local_average_slopes).
+  of it along each axis, kept between 0.0001 and 0.5 (local_average_slopes). None for a cell with no other cell of
+  its reach that near, and the reach's slope is the median of its cells'.
 - reach_average: every cell takes its reach's median slope, from the slopes between all pairs of the reach's cells
-  that are within Gen_Slope_Dist cells of each other along each axis. The median is of the slopes between two
-  percentiles of them, 25 and 75 by default (reach_median_slope).
-- local_average_corrected: each cell's local average, limited to its reach's percentiles (corrected_local_slopes).
-- end_points: the drop between the ends of the reach's stream line over its length (end_point_slope).
-A reach whose two percentiles are equal, as one too short or too flat to measure, takes its neighbours' slope
-(fill_unresolved_reach_slopes).
+  within Gen_Slope_Dist cells of each other along each axis, leaving out level pairs. The median is of the slopes
+  between two percentiles of them, 25 and 75 by default (reach_median_slope). None for a reach without a pair of cells
+  that isn't level. A uniform slope, with both percentiles the same, is a slope like any other.
+- local_average_corrected (the default): each cell's local average, kept between its reach's two percentiles
+  (corrected_local_slopes). None for a reach without percentiles, as for reach_average.
+- end_points: the drop between the ends of the reach's stream line over its length (end_point_slope). None where the
+  ends can't be read on the DEM.
 
-Errors in the legacy code, not repeated here
---------------------------------------------
-- The local average looked at rows and columns from Gen_Slope_Dist before the cell to one less than Gen_Slope_Dist
-  after it, so one edge of its square was missing: going east, the cells 10 columns downstream never counted, but
-  the cells 10 columns upstream did. Here the square reaches the same distance on every side.
-- A reach with exactly two slopes between its cells has neither between its 25th and 75th percentiles, so legacy
-  gave it the default slope, 0.0002, while its percentiles held its real slopes: slopes of 0.05 and 0.1 made a reach
-  slope of 0.0002 between percentiles of 0.0625 and 0.0875. Here it's the median of the two.
-- Filling an unresolved reach from upstream took the upstream neighbour with the most reaches above it, even when
-  that neighbour had no slope (it wasn't on the raster). The reach was then filled from downstream only, or not at
-  all. Here the upstream neighbour is the one with the most reaches above it among those with a slope. Ties go to the
-  lower reach ID, where legacy took an arbitrary one.
-- The end-point slope:
-  - An end moved along the line to the raster only when the other end was on it. A line with both ends off the
-    raster got no slope, even where it crossed the raster, which failed later with a KeyError. Here each end moves
-    along the line to the first point with data, and a line without any has a slope of NaN.
-  - With both ends on the raster, an end was used even where the DEM had no data. Here an end without data is
-    treated like one off the raster.
-  - Of a line in several parts it measured the longest part's ends, but divided by the length of all of them. Here
-    it divides by the longest part's share of the length.
-  - A point less than a cell beyond the raster's left or top edge was read from the edge cell, since int() rounds
-    towards zero. Here it's off the raster.
+Whatever the method, a reach without a slope takes its neighbours' in the stream network
+(fill_unresolved_reach_slopes), and a cell without one takes its reach's. arc.pipeline skips the cells of a reach
+left without a slope.
 """
 from __future__ import annotations
 
@@ -52,8 +33,7 @@ from arc.xsection.stream_path import _columns_between, _row_index
 
 MIN_SLOPE = 1e-4
 MAX_SLOPE = 0.5
-UNRESOLVED_SLOPE = 0.0002  # legacy's reach slope, and its percentiles, when a reach has no slopes to take them from
-NO_DATA = -9999.0  # an elevation at or below this is missing, as in legacy ARC
+NO_DATA = -9999.0  # an elevation at or below this is missing
 
 
 @njit(cache=True, error_model="numpy")
@@ -85,7 +65,10 @@ def _local_average_slopes(z, rows, cols, stations, dx, dy, distance):
                 if length > 0.0:
                     total += abs(z[i] - z[k]) / length
                     count += 1
-        slope = total / count if count > 0 else 0.0
+        if count == 0:  # no other cell of the reach near enough to measure a slope to
+            slopes[i] = np.nan
+            continue
+        slope = total / count
         if slope <= MIN_SLOPE:
             slope = MIN_SLOPE
         if slope >= MAX_SLOPE:
@@ -126,7 +109,7 @@ def _pair_slopes(z, rows, cols, stations, dx, dy, distance):
 
 @njit(cache=True, error_model="numpy")
 def _round_significant(x, digits):
-    """Legacy ARC's round_sig."""
+    """x rounded to `digits` significant figures."""
     if x == 0.0:
         return 0.0
     if not np.isfinite(x):
@@ -138,11 +121,11 @@ def _round_significant(x, digits):
 @njit(cache=True, error_model="numpy")
 def _reach_median_slope(z, rows, cols, stations, dx, dy, distance, low, high):
     if rows.size < 2:
-        return UNRESOLVED_SLOPE, UNRESOLVED_SLOPE, UNRESOLVED_SLOPE
+        return np.nan, np.nan, np.nan
     slopes = _pair_slopes(z, rows, cols, stations, dx, dy, distance)
     if slopes.size == 0:
-        return UNRESOLVED_SLOPE, UNRESOLVED_SLOPE, UNRESOLVED_SLOPE
-    # Legacy rounded the slopes to 8 significant figures for the percentiles. That changes nothing below 1, where the
+        return np.nan, np.nan, np.nan
+    # The percentiles are of the slopes rounded to 8 significant figures. That changes nothing below 1, where the
     # slopes already have 8 decimals, so only those above need it
     rounded = slopes
     if slopes.max() >= 1.0:
@@ -176,7 +159,7 @@ def _reach_arrays(z, rows, cols, stations):
 
 def local_average_slopes(z, rows, cols, stations, dx: float, dy: float, distance: int) -> np.ndarray:
     """Each of a reach's cells' slope, the mean of its slopes to the reach's other cells within `distance` cells of
-    it along each axis, from 0.0001 to 0.5 (legacy get_local_average_stream_slope_information).
+    it along each axis, from 0.0001 to 0.5. NaN for a cell with no other cell that near.
 
     z is the DEM at the cells, rows and cols are the cells, which should be all of the reach's cells, and stations are
     their distances along the stream from one end (along_stream_stations).
@@ -189,38 +172,37 @@ def local_average_slopes(z, rows, cols, stations, dx: float, dy: float, distance
 
 def reach_median_slope(z, rows, cols, stations, dx: float, dy: float, distance: int, low_percentile: float = 25,
                        high_percentile: float = 75) -> tuple[float, float, float]:
-    """A reach's slope, and the percentiles its slope is taken between (legacy
-    get_reach_median_stream_slope_information).
+    """A reach's slope, and the percentiles its slope is taken between.
 
     The slopes are between each pair of the reach's cells within `distance` cells of each other along each axis,
     leaving out those that round to 0 at 1e-8. The reach's slope is the median of those between the two percentiles,
-    or of all of them if none is. A reach with fewer than two cells or no slopes has 0.0002 for all three. The
-    arguments are as for local_average_slopes.
+    or of all of them if none is. All three are NaN for a reach without slopes: fewer than two cells, no two within
+    the distance, or every pair level. The arguments are as for local_average_slopes.
     """
     z, rows, cols, stations = _reach_arrays(z, rows, cols, stations)
     if rows.size == 0:
-        return UNRESOLVED_SLOPE, UNRESOLVED_SLOPE, UNRESOLVED_SLOPE
+        return math.nan, math.nan, math.nan
     slope, lower, upper = _reach_median_slope(z, rows, cols, stations, float(dx), float(dy), int(distance),
                                               float(low_percentile), float(high_percentile))
     return float(slope), float(lower), float(upper)
 
 
 def corrected_local_slopes(local_slopes, lower: float, upper: float) -> np.ndarray:
-    """Local average slopes limited to their reach's percentiles (legacy local_average_corrected)."""
+    """Local average slopes kept between their reach's percentiles. A NaN stays NaN."""
     local_slopes = np.asarray(local_slopes, dtype=np.float64)
     return np.where(local_slopes < lower, lower, np.where(local_slopes > upper, upper, local_slopes))
 
 
-def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict, lower: dict, upper: dict) -> set:
-    """Give the reaches whose two percentiles are equal their neighbours' slope, in place, and return the reaches
-    still left without one.
+def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict) -> set:
+    """Give the reaches without a slope (NaN) their neighbours' slope, in place, and return the reaches still left
+    without one.
 
     A reach takes the mean of the slopes of its upstream neighbour with the most reaches above it and its downstream
-    neighbour, or the one of those it has, among neighbours with a slope of their own. Its percentiles become that
-    slope too. This repeats while any reach gets filled, each time from the reaches filled before. network runs from
-    each reach to the one downstream of it, and reaches not in it aren't filled.
+    neighbour, or the one of those it has, among neighbours with a slope. This repeats while any reach gets filled,
+    each time from the reaches filled before. network runs from each reach to the one downstream of it, and reaches
+    not in it aren't filled.
     """
-    unresolved = {reach for reach in slopes if lower[reach] == upper[reach]}
+    unresolved = {reach for reach, slope in slopes.items() if math.isnan(slope)}
     while True:
         filled = {}
         for reach in sorted(unresolved):
@@ -238,19 +220,19 @@ def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict, lower: dict,
                 filled[reach] = sum(neighbour_slopes) / len(neighbour_slopes)
         if not filled:
             return unresolved
-        for reach, slope in filled.items():
-            slopes[reach] = lower[reach] = upper[reach] = slope
+        slopes.update(filled)
         unresolved -= filled.keys()
 
 
 def end_point_slope(line, length: float, dem: np.ndarray, geotransform) -> float:
-    """The drop between the ends of a reach's line over its length in metres, at least 0.0001 (legacy
-    line_slope_from_dem, for the end_points method).
+    """The drop between the ends of a reach's line over its length in metres, at least 0.0001 (the end_points
+    method).
 
     line is a shapely LineString or MultiLineString in the DEM's coordinates, of which only the longest part counts.
-    geotransform is the DEM's GDAL geotransform, for a north-up raster. Each end is the DEM at the cell holding it,
-    and an end off the raster or without data (at or below -9999, or NaN) moves along the line, 2% of its length at
-    a time, to the first point with data, which shortens the length between them. NaN if no point has any.
+    geotransform is the DEM's GDAL geotransform, north-up or south-up but not rotated. Each end is the DEM at the
+    cell holding it, and an end off the raster or without data (at or below -9999, or NaN) moves along the line, 2% of
+    its length at a time, to the first point with data, which shortens the length between them. NaN if no point has
+    any.
     """
     from shapely.geometry import LineString, MultiLineString
 

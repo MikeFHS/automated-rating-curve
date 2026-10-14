@@ -1,8 +1,7 @@
 """A raster file on disk, read and written with GDAL.
 
-Modelled on nencarta's core Raster, without its metadata cache: a Raster reads its grid and georeferencing from the
-file when it's made, and its values whenever they're asked for. It doesn't keep the file open, so the file can be
-overwritten or deleted while the Raster is still around.
+A Raster reads its grid and georeferencing from the file when it's made, and its values whenever they're asked for.
+It doesn't keep the file open, so the file can be overwritten or deleted while the Raster is still around.
 """
 from __future__ import annotations
 
@@ -11,13 +10,12 @@ from functools import cached_property
 from pathlib import Path
 
 import numpy as np
-from osgeo import gdal, gdal_array, osr
-from pyproj import CRS, Geod, Transformer
+from osgeo import gdal, gdal_array
+from pyproj import CRS, Geod
 
 gdal.UseExceptions()
 
 _METRES = {"metre", "metres", "meter", "meters"}
-_DEGREES = {"degree", "degrees"}
 _TILE = 512  # the side of a compressed raster's tiles, in cells
 
 
@@ -77,12 +75,6 @@ class Raster:
         return abs(self._geotransform[1]), abs(self._geotransform[5])
 
     @property
-    def is_north_up(self) -> bool:
-        """Whether rows run from north to south with no rotation, as GDAL writes rasters by default."""
-        gt = self._geotransform
-        return gt[2] == 0.0 and gt[4] == 0.0 and gt[5] < 0.0
-
-    @property
     def is_rotated(self) -> bool:
         return self._geotransform[2] != 0.0 or self._geotransform[4] != 0.0
 
@@ -98,34 +90,12 @@ class Raster:
     def crs(self) -> CRS:
         return CRS.from_wkt(self._projection)
 
-    @cached_property
-    def epsg_4326_bbox(self) -> tuple[float, float, float, float]:
-        """The bounding box in longitude and latitude, including the curved edges of a projected raster."""
-        if self.crs == CRS.from_epsg(4326):
-            return self.bbox
-        transformer = Transformer.from_crs(self.crs, CRS.from_epsg(4326), always_xy=True)
-        return tuple(float(v) for v in transformer.transform_bounds(*self.bbox, densify_pts=21))
-
-    @property
-    def is_in_meters(self) -> bool:
-        srs = osr.SpatialReference()
-        srs.ImportFromWkt(self._projection)
-        return bool(srs.IsProjected()) and srs.GetLinearUnitsName().lower() in _METRES \
-            and abs(srs.GetLinearUnits() - 1.0) < 1e-6
-
-    @property
-    def is_in_degrees(self) -> bool:
-        srs = osr.SpatialReference()
-        srs.ImportFromWkt(self._projection)
-        return bool(srs.IsGeographic()) and srs.GetAngularUnitsName().lower() in _DEGREES \
-            and abs(srs.GetAngularUnits() - 0.017453292519943295) < 1e-9
-
     def axis_units(self) -> set[str]:
         """The units of the coordinate system's axes, in lower case."""
         return {(axis.unit_name or "").strip().lower() for axis in self.crs.axis_info if axis is not None} - {""}
 
     def cell_size_in_metres(self) -> tuple[float, float]:
-        """The cells' width and height in metres (legacy convert_cell_size).
+        """The cells' width and height in metres.
 
         A geographic raster's cells are measured along the geodesics of its ellipsoid at the latitude half way
         between its top and bottom edges. A projected raster's are its resolution, which must be in metres.
@@ -133,7 +103,6 @@ class Raster:
         size_x, size_y = self.resolution
         if self.crs.is_geographic:
             first_row_edge = self._geotransform[3]
-            # Legacy's arithmetic for a north-up raster, so the sizes match it exactly
             last_row_edge = first_row_edge + (-1.0 if self._geotransform[5] < 0.0 else 1.0) * self.nrows * size_y
             latitude = (last_row_edge + first_row_edge) / 2.0
             geod = self._geod()
@@ -148,7 +117,7 @@ class Raster:
         raise ValueError(f"The raster {self.filepath} is neither geographic nor projected.")
 
     def _geod(self) -> Geod:
-        # Legacy ARC built the geodesic from the ellipsoid's semi-major axis and inverse flattening, or WGS 84
+        # The geodesic on the raster's ellipsoid, from its semi-major axis and inverse flattening, or else WGS 84
         ellipsoid = self.crs.ellipsoid
         if ellipsoid is not None and ellipsoid.semi_major_metre:
             if ellipsoid.inverse_flattening:
@@ -162,13 +131,6 @@ class Raster:
             return False
         size = max(self.resolution)
         return all(abs(a - b) <= tolerance * size for a, b in zip(self._geotransform, other._geotransform))
-
-    @staticmethod
-    def bounds_intersect(bounds1: tuple[float, float, float, float],
-                         bounds2: tuple[float, float, float, float]) -> bool:
-        minx1, miny1, maxx1, maxy1 = bounds1
-        minx2, miny2, maxx2, maxy2 = bounds2
-        return not (maxx1 <= minx2 or maxx2 <= minx1 or maxy1 <= miny2 or maxy2 <= miny1)
 
     # --- Values ------------------------------------------------------------------------------------------------
 
@@ -184,11 +146,9 @@ class Raster:
                     nodata_value: float | None = None) -> Raster:
         """Write a single-band GeoTIFF on the reference raster's grid, and return it.
 
-        A compressed raster is written in 512x512 tiles, without a predictor. ARC's bathymetry and flood rasters are
-        almost all empty, and tiles hand the compressor whole empty blocks. Horizontal differencing (PREDICTOR=2),
-        which legacy ARC used with LZW, made them bigger with every compression once tiled. On the N14W089 tile, ZSTD
-        in tiles takes the bathymetry from legacy's 1.10 MB to 0.22 MB and the flood cells from 0.33 MB to 0.06 MB,
-        written and read as fast. A nodata value is only set if given.
+        A compressed raster is written in 512 x 512 tiles without a predictor, which suits ARC's bathymetry and flood
+        rasters: they are almost all empty, and tiles hand the compressor whole empty blocks. A nodata value is only
+        set if given.
         """
         array = np.asarray(array)
         if array.shape != reference.shape:

@@ -11,9 +11,6 @@ but are useful for downstream workflows and diagnostics.
 # built-in imports
 import argparse
 import os, sys
-import json
-from io import StringIO
-import time
 
 
 # third-party imports
@@ -52,12 +49,11 @@ def Get_Raster_Details(DEM_File):
     geoTransform = data.GetGeoTransform()
     ncols = int(data.RasterXSize)
     nrows = int(data.RasterYSize)
-    minx = geoTransform[0]
     dx = geoTransform[1]
-    maxy = geoTransform[3]
     dy = geoTransform[5]
-    maxx = minx + dx * ncols
-    miny = maxy + dy * nrows
+    # The raster's edges, whichever way up it is (dy is negative for a north-up raster, positive for a south-up one)
+    minx, maxx = sorted((geoTransform[0], geoTransform[0] + dx * ncols))
+    miny, maxy = sorted((geoTransform[3], geoTransform[3] + dy * nrows))
     Rast_Projection = data.GetProjectionRef()
     data = None
     return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
@@ -89,8 +85,8 @@ def Read_Raster_GDAL(InRAST_Name):
     nrows=band.YSize
     band = None
     cellsize = geotransform[1]
-    yll = geotransform[3] - nrows * np.fabs(geotransform[5])
-    yur = geotransform[3]
+    # The bottom and top edges, whichever way up the raster is
+    yll, yur = sorted((geotransform[3], geotransform[3] + nrows * geotransform[5]))
     xll = geotransform[0];
     xur = xll + (ncols)*geotransform[1]
     lat = np.fabs((yll+yur)/2.0)
@@ -105,6 +101,17 @@ def Read_Raster_GDAL(InRAST_Name):
     print('   xll = ' + str(xll))
     print('   xur = ' + str(xur))
     return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
+
+def Cell_Center_Coordinates(geo_transform, rows, cols):
+    """
+    The map coordinates (x, y) of the centres of cells (rows, cols), from the raster's geotransform, so that they are
+    right whichever way up the raster is.
+    """
+    rows = np.asarray(rows, dtype=float) + 0.5
+    cols = np.asarray(cols, dtype=float) + 0.5
+    x = geo_transform[0] + cols * geo_transform[1] + rows * geo_transform[2]
+    y = geo_transform[3] + cols * geo_transform[4] + rows * geo_transform[5]
+    return x, y
 
 def Get_Raster_CRS(raster_file, rast_projection):
     """
@@ -801,15 +808,8 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + DEM_Raster_File)
     (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
-    cellsize_x = abs(float(dx))
-    cellsize_y = abs(float(dy))
-    lat_base = float(maxy) - 0.5*cellsize_y
-    lon_base = float(minx) + 0.5*cellsize_x
     print('Geographic Information:')
-    print(lat_base)
-    print(lon_base)
-    print(cellsize_x)
-    print(cellsize_y)
+    print(geoTransform)
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
@@ -822,14 +822,14 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
     # Reading with pandas
     curve_data_df = pd.read_csv(CurveParam_File, 
                                 dtype={'COMID': 'int64', 'Row': 'int64', 'Col': 'int64',
-                                       'BaseElev': 'float64', 'DEM_Elev': 'float64', 'QMax': 'float64',
+                                       'BaseElev': 'float64', 'QMax': 'float64',
                                        'depth_a': 'float64', 'depth_b': 'float64', 
                                        'tw_a': 'float64', 'tw_b': 'float64',
                                        'vel_a': 'float64', 'vel_b': 'float64'})
     
     # Calculate Latitude and Longitude
-    curve_data_df['CP_LAT'] = lat_base - curve_data_df['Row'] * cellsize_y
-    curve_data_df['CP_LON'] = lon_base + curve_data_df['Col'] * cellsize_x
+    curve_data_df['CP_LON'], curve_data_df['CP_LAT'] = Cell_Center_Coordinates(geoTransform, curve_data_df['Row'],
+                                                                                curve_data_df['Col'])
 
     # Build the stream-cell points in the raster CRS, then move them into the
     # projected distance CRS only when the raster started in geographic units.
@@ -935,15 +935,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + DEM_Raster_File)
     (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
-    cellsize_x = abs(float(dx))
-    cellsize_y = abs(float(dy))
-    lat_base = float(maxy) - 0.5*cellsize_y
-    lon_base = float(minx) + 0.5*cellsize_x
     print('Geographic Information:')
-    print(lat_base)
-    print(lon_base)
-    print(cellsize_x)
-    print(cellsize_y)
+    print(geoTransform)
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
@@ -1019,8 +1012,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
     
     # Calculate Latitude and Longitude
     vdt_df = vdt_df.assign(
-        CP_LAT=lat_base - vdt_df['Row'] * cellsize_y,
-        CP_LON=lon_base + vdt_df['Col'] * cellsize_x,
+        CP_LAT=Cell_Center_Coordinates(geoTransform, vdt_df['Row'], vdt_df['Col'])[1],
+        CP_LON=Cell_Center_Coordinates(geoTransform, vdt_df['Row'], vdt_df['Col'])[0],
     )
 
     # Build the stream-cell points in the raster CRS, then move them into the
@@ -1088,7 +1081,7 @@ def Thin_Curve_data(gdf, use_depth=True):
     """
     Thins the stream cells out in two ways 
     
-    1. Removes stream cells that have depths that are greater than 3 times the average depth for the stream reach
+    1. Removes stream cells that have depths that are greater than 3 times the median depth for the stream reach (with use_depth)
     2. Removes stream cells that are within 50 meters of other streams and have water surface elevations that are within 0.05% of one another.
 
     Parameters
@@ -1231,8 +1224,7 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
             
             n = np.count_nonzero(B[r-1:r+2,c-1:c+2])
             if n<=2 or (r==0 or c==0 or c==ncols-1 or r==nrows-1):
-                lat_for_seed = float( yur - (0.5*dy) - ((r-1) * dy) )
-                lon_for_seed = float( xll + (0.5*dx) + ((c-1) * dx) )
+                lon_for_seed, lat_for_seed = (float(v) for v in Cell_Center_Coordinates(geotransform, r - 1, c - 1))
                 SEED_Lat.append( lat_for_seed )
                 SEED_Lon.append( lon_for_seed )
                 SEED_COMID.append(COMID)
@@ -1458,15 +1450,8 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + STRM_Raster_File)
     (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
-    cellsize_x = abs(float(dx))
-    cellsize_y = abs(float(dy))
-    lat_base = float(maxy) - 0.5*cellsize_y
-    lon_base = float(minx) + 0.5*cellsize_x
     print('Geographic Information:')
-    print(lat_base)
-    print(lon_base)
-    print(cellsize_x)
-    print(cellsize_y)
+    print(geoTransform)
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
@@ -1479,14 +1464,14 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     # Reading with pandas
     curve_data_df = pd.read_csv(CurveParam_File, 
                                 dtype={'COMID': 'int64', 'Row': 'int64', 'Col': 'int64',
-                                       'BaseElev': 'float64', 'DEM_Elev': 'float64', 'QMax': 'float64',
+                                       'BaseElev': 'float64', 'QMax': 'float64',
                                        'depth_a': 'float64', 'depth_b': 'float64', 
                                        'tw_a': 'float64', 'tw_b': 'float64',
                                        'vel_a': 'float64', 'vel_b': 'float64'})
     
     # Calculate Latitude and Longitude
-    curve_data_df['CP_LAT'] = lat_base - curve_data_df['Row'] * cellsize_y
-    curve_data_df['CP_LON'] = lon_base + curve_data_df['Col'] * cellsize_x
+    curve_data_df['CP_LON'], curve_data_df['CP_LAT'] = Cell_Center_Coordinates(geoTransform, curve_data_df['Row'],
+                                                                                curve_data_df['Col'])
 
     # Build the stream-cell points in the raster CRS, then move them into the
     # projected distance CRS only when the raster started in geographic units.
@@ -1581,15 +1566,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + STRM_Raster_File)
     (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
-    cellsize_x = abs(float(dx))
-    cellsize_y = abs(float(dy))
-    lat_base = float(maxy) - 0.5*cellsize_y
-    lon_base = float(minx) + 0.5*cellsize_x
     print('Geographic Information:')
-    print(lat_base)
-    print(lon_base)
-    print(cellsize_x)
-    print(cellsize_y)
+    print(geoTransform)
 
     # Determine the stream raster CRS once so every point created from raster
     # row and column indices is tagged with the raster's true source CRS.
@@ -1665,8 +1643,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     
     # Calculate Latitude and Longitude
     vdt_df = vdt_df.assign(
-        CP_LAT=lat_base - vdt_df['Row'] * cellsize_y,
-        CP_LON=lon_base + vdt_df['Col'] * cellsize_x,
+        CP_LAT=Cell_Center_Coordinates(geoTransform, vdt_df['Row'], vdt_df['Col'])[1],
+        CP_LON=Cell_Center_Coordinates(geoTransform, vdt_df['Row'], vdt_df['Col'])[0],
     )
 
     # Build the stream-cell points in the raster CRS, then move them into the

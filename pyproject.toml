@@ -8,10 +8,10 @@ description = "Wrapper package for using ARC, by Mike Follum -> https://github.c
 dynamic = ["version"]
 dependencies = [
   "numpy",
-  "matplotlib",
   "pandas",
   "pyarrow",
   "geopandas",
+  "pyogrio",
   "gdal",
   "pip",
   "netCDF4",

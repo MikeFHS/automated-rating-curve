@@ -1,4 +1,4 @@
-"""ARC's output files, written as legacy ARC wrote them:
+"""ARC's output files:
 
 - the VDT and AP databases, from each stream cell's rating curve (arc.outputs.rating_curves),
 - the curve file and the reach-average curve file (arc.outputs.curve_files),

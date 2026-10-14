@@ -1,10 +1,12 @@
 """Each stream cell's rating curve, and the VDT and AP databases written from them.
 
-A RatingCurves holds what legacy ARC's output array held: per stream cell its metadata (COMID, row, column, DEM
-elevation, baseflow, slope, cross-section angle and the channel bed's elevation), and per flow increment its
-discharge, velocity, top width, water surface elevation and wetted perimeter. A cell without a rating curve is NaN
-throughout. The writers make the same tables from it that legacy HydraulicData's save_vdt and save_ap did, written
-as arc.outputs.tables writes them.
+A RatingCurves holds, per stream cell, its metadata (COMID, row, column, elevation, baseflow, slope and
+cross-section angle), and per flow increment its discharge, velocity, top width, water surface elevation and wetted
+perimeter. A cell without a rating curve is NaN throughout.
+
+The elevation (Elev) is that of the centre of the cross section the rating curve was worked out on: the carved
+channel bed with bathymetry, and otherwise the DEM (or a manual cross section's own). So a water surface elevation
+less Elev is the depth of the water there. The curve file calls it BaseElev.
 """
 from __future__ import annotations
 
@@ -17,15 +19,15 @@ import pandas as pd
 from arc import LOG
 from arc.outputs.tables import write_table
 
-METADATA_COLUMNS = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev']
+METADATA_COLUMNS = ['COMID', 'Row', 'Col', 'Elev', 'QBaseflow', 'Slope', 'XS_Angle']
 INCREMENT_FIELDS = ['q', 'v', 't', 'wse', 'p']
-(COMID, ROW, COL, ELEV, QBASEFLOW, SLOPE, XS_ANGLE, BASE_ELEV) = range(8)
+(COMID, ROW, COL, ELEV, QBASEFLOW, SLOPE, XS_ANGLE) = range(7)
 (Q, V, T, WSE, P) = range(5)
 
 
 class RatingCurves(NamedTuple):
     """Each stream cell's rating curve (see the notes above)."""
-    metadata: np.ndarray  # (cells, 8), in the order of METADATA_COLUMNS
+    metadata: np.ndarray  # (cells, 7), in the order of METADATA_COLUMNS
     increments: np.ndarray  # (cells, increments, 5), in the order of INCREMENT_FIELDS
 
     @classmethod
@@ -42,20 +44,20 @@ class RatingCurves(NamedTuple):
                                    for prefix in INCREMENT_FIELDS]
 
     def output_array(self) -> np.ndarray:
-        """Legacy ARC's output array: the metadata, then q, v, t, wse and p for each increment in turn."""
+        """One row per cell: the metadata, then q, v, t, wse and p for each increment in turn."""
         return np.concatenate([self.metadata, self.increments.reshape(self.increments.shape[0], -1)], axis=1)
 
     def has_vdt_data(self) -> bool:
-        """Whether any cell has its last increment (legacy HydraulicData.has_vdt_data)."""
+        """Whether any cell has its last increment."""
         return bool(np.any(~np.isnan(self.increments[:, -1, P]))) if self.number_of_increments else False
 
 
 def vdt_dataframe(curves: RatingCurves) -> pd.DataFrame:
-    """The VDT database (legacy save_vdt): the cells with complete rating curves, without their wetted perimeters
-    or bed elevations, rounded as legacy ARC rounded them, and without rows that repeat or have a negative
-    discharge, velocity or top width."""
+    """The VDT database: the cells with complete rating curves, without their wetted perimeters, and without rows
+    that repeat or have a negative discharge, velocity or top width. Values are rounded to 3 decimals, but the slope
+    to 8 and the cross-section angle to 7."""
     vdt_df = pd.DataFrame(curves.output_array(), columns=curves.columns())
-    vdt_df = vdt_df.drop(columns=[col for col in vdt_df.columns if col.startswith('p_') or col == 'BaseElev'])
+    vdt_df = vdt_df.drop(columns=[col for col in vdt_df.columns if col.startswith('p_')])
     vdt_df = vdt_df.dropna()
     vdt_df = vdt_df.drop_duplicates()
     for col in ['COMID', 'Row', 'Col']:
@@ -78,12 +80,11 @@ def write_vdt(curves: RatingCurves, path: os.PathLike) -> pd.DataFrame:
 
 
 def ap_dataframe(curves: RatingCurves) -> pd.DataFrame:
-    """The AP database (legacy save_ap): each complete rating curve's discharge, area (discharge over velocity, 0
-    where the velocity is 0) and wetted perimeter, rounded to 3 decimals, without rows that repeat or have a
-    negative value."""
+    """The AP database: each complete rating curve's discharge, area (discharge over velocity, 0 where the velocity
+    is 0) and wetted perimeter, rounded to 3 decimals, without rows that repeat or have a negative value."""
     n = curves.number_of_increments
     ap_df = pd.DataFrame(curves.output_array(), columns=curves.columns())
-    ap_df = ap_df.drop(columns=['Elev', 'QBaseflow', 'Slope', 'XS_Angle', 'BaseElev']
+    ap_df = ap_df.drop(columns=['Elev', 'QBaseflow', 'Slope', 'XS_Angle']
                        + [col for col in ap_df.columns if col.startswith('t_') or col.startswith('wse_')])
     ap_df = ap_df.dropna()
     ap_df = ap_df.drop_duplicates()

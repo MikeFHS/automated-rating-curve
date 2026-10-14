@@ -17,215 +17,11 @@ https://github.com/MikeFHS/automated-rating-curve/wiki/Processing-ARC-Geospatial
 # built-in imports
 import sys
 import os
+import shutil
 
 # third-party imports
-import shutil
-try:
-    import gdal 
-except: 
-    from osgeo import gdal
+from osgeo import gdal
 import numpy as np
-import netCDF4
-import geopandas as gpd
-
-from shapely.geometry import shape
-from shapely.geometry import Point, LineString, MultiLineString, MultiPoint
-from shapely.ops import transform
-from pyproj import Transformer
-
-from numba import njit
-import json
-
-def Process_AutoRoute_Geospatial_Data_for_testing(test_case, id_field, flow_field, baseflow_field, medium_flow_field, low_flow_field, dem_cleaner, use_clean_dem):
-    #Input Dataset
-    if use_clean_dem is False:
-        Main_Directory = ''
-        ARC_Folder = os.path.join(test_case, 'ARC_InputFiles')
-        ARC_FileName = os.path.join(test_case, ARC_Folder, 'ARC_Input_File.txt')
-        DEM_File = os.path.join(test_case,'DEM', 'DEM.tif')
-        LandCoverFile = os.path.join(test_case,'LandCover', 'LandCover.tif')
-        ManningN = os.path.join(test_case, 'LAND', 'AR_Manning_n_for_NLCD_MED.txt')
-        StrmSHP = os.path.join(test_case,'StrmShp', 'StreamShapefile.shp')
-        FlowNC = os.path.join(test_case,'FlowData', 'returnperiods_714.nc')
-        VDT_Test_File = os.path.join(test_case, 'VDT', 'VDT_FS.csv')
-        
-        #Datasets to be Created
-        STRM_File = os.path.join(test_case, 'STRM', 'STRM_Raster.tif')
-        STRM_File_Clean = STRM_File.replace('.tif','_Clean.tif')
-        LAND_File = os.path.join(test_case, 'LAND', 'LAND_Raster.tif')
-        FLOW_File = os.path.join(test_case, 'FLOW', 'FlowFile.txt')
-        FlowFileFolder = os.path.join(test_case, 'FlowFile')
-        BathyFileFolder = os.path.join(test_case, 'Bathymetry')
-        FloodFolder = os.path.join(test_case, 'FloodMap')
-        STRMFolder = os.path.join(test_case, 'STRM') 
-        ARC_Folder = os.path.join(test_case, 'ARC_InputFiles')
-        XSFileFolder = os.path.join(test_case, 'XS')
-        LandFolder = os.path.join(test_case, 'LAND')
-        FlowFolder = os.path.join(test_case, 'FLOW')
-        VDTFolder = os.path.join(test_case, 'VDT')
-        VDT_File = os.path.join(test_case, 'VDT', 'VDT_Database.txt')
-        Curve_File = os.path.join(test_case, 'VDT', 'CurveFile.csv')
-        FloodMapFile = os.path.join(FloodFolder,'ARC_Flood.tif')
-        DepthMapFile = os.path.join(FloodFolder, 'ARC_Depth.tif')
-        ARC_BathyFile = os.path.join(BathyFileFolder,'ARC_Bathy.tif')
-        XS_Out_File = os.path.join(XSFileFolder, 'XS_File.txt')
-    else:
-        Main_Directory = ''
-        dem_cleaned_text = "Modified_DEM"
-        ARC_Folder = os.path.join(test_case, f'ARC_InputFiles_{dem_cleaned_text}')
-        ARC_FileName = os.path.join(test_case, ARC_Folder, f'ARC_Input_File.txt')
-        DEM_File = os.path.join(test_case,'DEM_Updated', f'{dem_cleaned_text}.tif')
-        LandCoverFile = os.path.join(test_case,'LandCover', 'LandCover.tif')
-        ManningN = os.path.join(test_case, 'LAND', 'AR_Manning_n_for_NLCD_MED.txt')
-        StrmSHP = os.path.join(test_case,'StrmShp', 'StreamShapefile.shp')
-        FlowNC = os.path.join(test_case,'FlowData', 'returnperiods_714.nc')
-        VDT_Test_File = os.path.join(test_case, f'VDT_{dem_cleaned_text}', 'VDT_FS.csv')
-        
-        #Datasets to be Created
-        STRM_File = os.path.join(test_case, f'STRM_{dem_cleaned_text}', 'STRM_Raster.tif')
-        STRM_File_Clean = STRM_File.replace('.tif',f'_Clean_{dem_cleaned_text}.tif')
-        LAND_File = os.path.join(test_case, 'LAND', 'LAND_Raster.tif')
-        FLOW_File = os.path.join(test_case, 'FLOW', 'FlowFile.txt')
-        FlowFileFolder = os.path.join(test_case, 'FlowFile')
-        BathyFileFolder = os.path.join(test_case, f'Bathymetry_{dem_cleaned_text}')
-        FloodFolder = os.path.join(test_case, f'FloodMap_{dem_cleaned_text}')
-        STRMFolder = os.path.join(test_case, f'STRM_{dem_cleaned_text}') 
-        ARC_Folder = os.path.join(test_case, f'ARC_InputFiles_{dem_cleaned_text}')
-        XSFileFolder = os.path.join(test_case, f'XS_{dem_cleaned_text}')
-        LandFolder = os.path.join(test_case, 'LAND')
-        FlowFolder = os.path.join(test_case, 'FLOW')
-        VDTFolder = os.path.join(test_case, f'VDT_{dem_cleaned_text}')
-        VDT_File = os.path.join(VDTFolder, 'VDT_Database.txt')
-        Curve_File = os.path.join(VDTFolder, 'CurveFile.csv')
-        FloodMapFile = os.path.join(FloodFolder,'ARC_Flood.tif')
-        DepthMapFile = os.path.join(FloodFolder, 'ARC_Depth.tif')
-        ARC_BathyFile = os.path.join(BathyFileFolder,'ARC_Bathy.tif')
-        XS_Out_File = os.path.join(XSFileFolder, 'XS_File.txt')
-    
-    #Create Folders
-    Create_Folder(STRMFolder)
-    Create_Folder(LandFolder)
-    Create_Folder(FlowFolder)
-    Create_Folder(VDTFolder)
-    Create_Folder(FloodFolder)
-    Create_Folder(FlowFileFolder)
-    Create_Folder(ARC_Folder)
-    Create_Folder(BathyFileFolder)
-    Create_Folder(XSFileFolder)
-    
-    
-    
-    #Get the Spatial Information from the DEM Raster
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, dem_geoTransform, dem_projection) = Get_Raster_Details(DEM_File)
-    projWin_extents = [minx, maxy, maxx, miny]
-    outputBounds = [minx, miny, maxx, maxy]  #https://gdal.org/api/python/osgeo.gdal.html
-    
-    
-    #Create Land Dataset
-    if os.path.isfile(LAND_File):
-        print(LAND_File + ' Already Exists')
-    else: 
-        print('Creating ' + LAND_File) 
-        Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows)
-    
-    #Create Stream Raster
-    if os.path.isfile(STRM_File):
-        print(STRM_File + ' Already Exists')
-    else:
-        print('Creating ' + STRM_File)
-        Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, id_field)
-    
-    #Clean Stream Raster
-    if os.path.isfile(STRM_File_Clean):
-        print(STRM_File_Clean + ' Already Exists')
-    else:
-        print('Creating ' + STRM_File_Clean)
-        Clean_STRM_Raster(STRM_File, STRM_File_Clean)
-    
-    #Read all of the flow information for each stream reach
-    stream_gdf = gpd.read_file(StrmSHP)
-    ID = stream_gdf[id_field].array
-    QMax = stream_gdf[flow_field].array
-    QBaseflow = stream_gdf[baseflow_field].array
-    
-    #Get the unique values for all the stream ids
-    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat, dem_geotransform, dem_projection) = Read_Raster_GDAL(STRM_File_Clean)
-    (RR,CC) = S.nonzero()
-    # (RR, CC) = np.where(S > 0)
-    num_strm_cells = len(RR)
-    COMID_Unique = np.unique(S)
-    COMID_Unique = COMID_Unique[COMID_Unique > 0]
-    print(COMID_Unique)
-    # COMID_Unique = np.delete(COMID_Unique, 0)  #We don't need the first entry of zero
-    COMID_Unique = np.sort(COMID_Unique).astype(int)
-    num_comids = len(COMID_Unique)
-    
-    #Organize the recurrence interval flow data so it easily links with stream raster data
-    print('Linking data from ' + STRM_File_Clean + '  with  ' + FlowNC)
-    print('\n\nCreating COMID Flow Files in the folder ' + FlowFileFolder)
-    MinCOMID = int(COMID_Unique.min())
-    MaxCOMID = int(COMID_Unique.max())
-    Create_COMID_Flow_Files(stream_gdf, COMID_Unique, num_comids, MinCOMID, MaxCOMID, FlowFileFolder, id_field, baseflow_field, flow_field, medium_flow_field, low_flow_field)
-    
-    #Write the Flow File for ARC
-    num_unique_comid = len(COMID_Unique)
-    print('Writing ' + FLOW_File + ' for ' + str(num_unique_comid) + ' unique ID values')
-    out_file = open(FLOW_File,'w')
-    out_str = f'COMID,{baseflow_field},{flow_field}'
-    out_file.write(out_str)
-    for i, row in stream_gdf.iterrows():
-        out_str = '\n' + str(row[id_field]) + ',' + str(row[baseflow_field]) + ',' + str(row[flow_field])
-        out_file.write(out_str)
-    out_file.close()
-
-    if dem_cleaner is True:
-        DEM_Cleaner_File = os.path.join(FlowFileFolder, "dem_cleaner_flow.txt")
-        out_file = open(DEM_Cleaner_File,'w')
-        out_str = f'COMID,{baseflow_field},{flow_field}'
-        out_file.write(out_str)
-        for i, row in stream_gdf.iterrows():
-            out_str = f'COMID,{baseflow_field},{flow_field}'
-            out_str = '\n' + str(row[id_field]) + ',' + str(row[baseflow_field]) + ',' + str(row[baseflow_field])
-            out_file.write(out_str)
-    else:
-        DEM_Cleaner_File = False
-    
-    #Create a Baseline Manning N File
-    print('Creating Manning n file: ' + ManningN)
-    Create_BaseLine_Manning_n_File(ManningN)
-    
-    #Create a Starting AutoRoute Input File
-    ARC_FileName = os.path.join(ARC_Folder,'ARC_Input_File.txt')
-    print('Creating ARC Input File: ' + ARC_FileName)
-    COMID_Q_File = FlowFileFolder + '/' + 'COMID_Q_qout_max.txt'
-    Create_ARC_Model_Input_File(
-        ARC_FileName,
-        DEM_File,
-        id_field,
-        flow_field,
-        baseflow_field,
-        STRM_File_Clean,
-        LAND_File,
-        FLOW_File,
-        VDT_File,
-        Curve_File,
-        ManningN,
-        FloodMapFile,
-        DepthMapFile,
-        ARC_BathyFile,
-        XS_Out_File,
-        DEM_Cleaner_File,
-        False,
-        False,
-        STRM_SHP_File=StrmSHP,
-    )
-    
-    
-    print('\n\n')
-    print('Next Step is to Run Automated_Rating_Curve_Generator.py by copying the following into the Command Prompt:')
-    print('python Automated_Rating_Curve_Generator.py ' + Main_Directory + ARC_Folder + '/' + 'ARC_Input_File.txt')
-    
-    return
 
 def Create_Folder(F):
     """
@@ -272,6 +68,9 @@ def Create_ARC_Model_Input_File(
     exponent_depth=None,
     coefficient_width=None,
     exponent_width=None,
+    reach_id_field='',
+    downstream_reach_id_field='',
+    lc_water_value=None,
 ):
     """
     Creates an input text file for the Automated Rating Curve (ARC) tool
@@ -323,6 +122,13 @@ def Create_ARC_Model_Input_File(
     coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
         Power-law coefficients and exponents used by ARC when ``Flow_File_BF``
         is intentionally omitted for bathymetry estimation.
+    reach_id_field, downstream_reach_id_field: str, optional
+        The fields in ``STRM_SHP_File`` holding each reach's ID and the ID of the
+        reach downstream of it (``reach_id`` and ``downstream_reach_id``). The
+        bathymetry needs both.
+    lc_water_value: int, optional
+        The water class in ``LAND_File`` and ``ManningN`` (``LC_Water_Value``).
+        ARC defaults to 80, ESA WorldCover's water class.
 
     Returns
     -------
@@ -335,8 +141,14 @@ def Create_ARC_Model_Input_File(
     out_file.write('\n' + 'Stream_File	' + STRM_File_Clean)
     if STRM_SHP_File:
         out_file.write('\n' + 'StrmShp_File\t' + STRM_SHP_File)
+        if reach_id_field:
+            out_file.write('\n' + 'reach_id\t' + reach_id_field)
+        if downstream_reach_id_field:
+            out_file.write('\n' + 'downstream_reach_id\t' + downstream_reach_id_field)
     out_file.write('\n' + 'LU_Raster_SameRes	' + LAND_File)
     out_file.write('\n' + 'LU_Manning_n	' + ManningN)
+    if lc_water_value is not None:
+        out_file.write('\n' + 'LC_Water_Value\t' + str(lc_water_value))
     out_file.write('\n' + 'Flow_File	' + FLOW_File)
     out_file.write('\n' + 'Flow_File_ID	' + COMID_Param)
     if Q_BF_Param:
@@ -426,81 +238,6 @@ def Create_BaseLine_Manning_n_File(ManningN):
     out_file.close()
 
     return
-
-def Create_COMID_Flow_Files(stream_gdf, COMID_Unique, num_comids, MinCOMID, MaxCOMID, FlowFileFolder, id_field, baseflow_field, flow_field, medium_flow_field, low_flow_field):
-    fmax = open(str(FlowFileFolder) + '/COMID_Q_qout_max.txt', 'w')
-    fmax.write('COMID,qout')
-    fmed = open(str(FlowFileFolder) + '/COMID_Q_qout_med.txt', 'w')
-    fmed.write('COMID,qout')
-    flow = open(str(FlowFileFolder) + '/COMID_Q_qout_low.txt', 'w')
-    flow.write('COMID,qout')
-    fbaseflow = open(str(FlowFileFolder) + '/COMID_Q_baseflow.txt', 'w')
-    fbaseflow.write('COMID,qout')
-    for i, row in stream_gdf.iterrows():
-        out_str = '\n' + str(row[id_field]) + ',' + str(row[flow_field])
-        fmax.write(out_str)
-        out_str = '\n' + str(row[id_field]) + ',' + str(row[medium_flow_field])
-        fmed.write(out_str)
-        out_str = '\n' + str(row[id_field]) + ',' + str(row[low_flow_field])
-        flow.write(out_str)
-        out_str = '\n' + str(row[id_field]) + ',' + str(row[baseflow_field])
-        fbaseflow.write(out_str)
-    fmax.close()
-    fmed.close()
-    flow.close()
-    fbaseflow.close()
-    return
-
-def PullNetCDFInfo(infilename, id_index, q_max, q_2, q_5, q_10, q_25, q_50, q_100):
-    print('Opening ' + infilename)
-    
-    #For NetCDF4
-    file2read = netCDF4.Dataset(infilename) 
-    temp = file2read.variables[id_index]
-    ID = temp[:]*1 
-    
-    temp = file2read.variables[q_max]
-    QMax = temp[:]*1 
-    
-    temp = file2read.variables[q_2]
-    Q2 = temp[:]*1 
-    
-    temp = file2read.variables[q_5]
-    Q5 = temp[:]*1 
-    
-    temp = file2read.variables[q_10]
-    Q10 = temp[:]*1 
-    
-    temp = file2read.variables[q_25]
-    Q25 = temp[:]*1 
-    
-    temp = file2read.variables[q_50]
-    Q50 = temp[:]*1 
-    
-    temp = file2read.variables[q_100]
-    Q100 = temp[:]*1 
-    
-    file2read.close()
-    print('Closed ' + infilename)
-    
-    #This is for NetCDF3
-    '''
-    file2read = netcdf.NetCDFFile(infilename,'r') 
-    
-    ID = []
-    Q = []
-    rivid = file2read.variables[id_index] # var can be 'Theta', 'S', 'V', 'U' etc..
-    q = file2read.variables[q_index] # var can be 'Theta', 'S', 'V', 'U' etc..
-    n=-1
-    for i in rivid:
-        n=n+1
-        #min_val = min(q[n])
-        max_val = max(q[n])
-        ID.append(i)
-        Q.append(max_val)
-    file2read.close()
-    '''
-    return ID, QMax, Q2, Q5, Q10, Q25, Q50, Q100
 
 def Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows):
     """
@@ -644,12 +381,11 @@ def Get_Raster_Details(DEM_File):
     geoTransform = data.GetGeoTransform()
     ncols = int(data.RasterXSize)
     nrows = int(data.RasterYSize)
-    minx = geoTransform[0]
     dx = geoTransform[1]
-    maxy = geoTransform[3]
     dy = geoTransform[5]
-    maxx = minx + dx * ncols
-    miny = maxy + dy * nrows
+    # The raster's edges, whichever way up it is (dy is negative for a north-up raster, positive for a south-up one)
+    minx, maxx = sorted((geoTransform[0], geoTransform[0] + dx * ncols))
+    miny, maxy = sorted((geoTransform[3], geoTransform[3] + dy * nrows))
     Rast_Projection = data.GetProjectionRef()
     data = None
     return minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection
@@ -702,8 +438,8 @@ def Read_Raster_GDAL(InRAST_Name):
     nrows=band.YSize
     band = None
     cellsize = geotransform[1]
-    yll = geotransform[3] - nrows * np.fabs(geotransform[5])
-    yur = geotransform[3]
+    # The bottom and top edges, whichever way up the raster is
+    yll, yur = sorted((geotransform[3], geotransform[3] + nrows * geotransform[5]))
     xll = geotransform[0];
     xur = xll + (ncols)*geotransform[1]
     lat = np.fabs((yll+yur)/2.0)
@@ -718,6 +454,32 @@ def Read_Raster_GDAL(InRAST_Name):
     print('   xll = ' + str(xll))
     print('   xur = ' + str(xur))
     return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
+
+def Match_DEM_Orientation(raster_file, dem_geotransform):
+    """
+    GDAL writes the land cover and stream rasters north-up. For a south-up DEM, turn a raster's rows round and give it
+    the DEM's geotransform, so that it is on the DEM's grid, which ARC needs.
+
+    Parameters
+    ----------
+    raster_file: str
+        The path and file name of a raster covering the DEM's extent with the DEM's number of rows and columns
+    dem_geotransform: list
+        The DEM's GDAL geotransform
+
+    Returns
+    -------
+    None
+    """
+    if not dem_geotransform[5] > 0:
+        return
+    dataset = gdal.Open(raster_file, gdal.GA_Update)
+    band = dataset.GetRasterBand(1)
+    band.WriteArray(band.ReadAsArray()[::-1].copy())
+    dataset.SetGeoTransform(tuple(dem_geotransform))
+    band = None
+    dataset = None
+    return
 
 def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
     """
@@ -829,6 +591,7 @@ def Process_ARC_Geospatial_Data(
     exponent_depth=None,
     coefficient_width=None,
     exponent_width=None,
+    downstream_id_field='',
 ):
     """
     Create DEM-aligned ARC geospatial inputs and a starter MIF. Assumes that you've stored your inputs in a specific way. In the same directory where you're planning to store your inputs should be:
@@ -861,6 +624,9 @@ def Process_ARC_Geospatial_Data(
     coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
         Power-law parameters used to estimate bathymetry depth and fallback
         width from the drainage area field.
+    downstream_id_field: str, optional
+        Name of the field in the stream shapefile holding the ID of the reach
+        downstream of each reach. The bathymetry needs it.
 
     Returns
     -------
@@ -922,6 +688,7 @@ def Process_ARC_Geospatial_Data(
     else: 
         print('Creating ' + LAND_File) 
         Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows)
+        Match_DEM_Orientation(LAND_File, dem_geoTransform)
     
     #Create Stream Raster
     if os.path.isfile(STRM_File):
@@ -929,6 +696,7 @@ def Process_ARC_Geospatial_Data(
     else:
         print('Creating ' + STRM_File)
         Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, id_field)
+        Match_DEM_Orientation(STRM_File, dem_geoTransform)
     
     #Clean Stream Raster
     if os.path.isfile(STRM_File_Clean):
@@ -969,345 +737,12 @@ def Process_ARC_Geospatial_Data(
         exponent_depth=exponent_depth,
         coefficient_width=coefficient_width,
         exponent_width=exponent_width,
+        reach_id_field=id_field,
+        downstream_reach_id_field=downstream_id_field,
+        lc_water_value=11,  # the water class of the NLCD Manning's n table written above
     )
     
     
     print('\n\n')
     print('Inputs created. You are now ready to run ARC!')    
     return
-
-def Calculate_Stream_Angles_From_Shapefile_for_each_LineSegment(streams_shapefile, COMID_str, STRM_ANGLE_str, output_angles_txt):
-    # Load the shapefile
-    gdf = gpd.read_file(streams_shapefile)
-
-    # Function to calculate angle between start and end points
-    def calculate_angle_rad(start_point, end_point):
-        x1, y1 = start_point
-        x2, y2 = end_point
-
-        # Compute differences
-        delta_x = x2 - x1
-        delta_y = y2 - y1
-
-        # Compute angle in radians and convert to degrees
-        angle_rad = np.arctan2(delta_y, delta_x)
-        return angle_rad
-
-    # Function to extract start and end points of a LineString or MultiLineString
-    def get_endpoints(geometry):
-        if isinstance(geometry, LineString):
-            coords = list(geometry.coords)
-            return coords[0], coords[-1]  # Start and end points
-        elif isinstance(geometry, MultiLineString):
-            # Get start and end of the first and last LineString in the MultiLineString
-            first_line = geometry.geoms[0]
-            last_line = geometry.geoms[-1]
-            return list(first_line.coords)[0], list(last_line.coords)[-1]
-        else:
-            return None, None  # For non-line geometries
-
-    # Add start and end points to the GeoDataFrame
-    gdf["start_point"], gdf["end_point"] = zip(*gdf.geometry.apply(get_endpoints))
-
-    # Optional: Convert to Point geometries for easy visualization/analysis
-    gdf["start_point_geom"] = gdf["start_point"].apply(lambda x: Point(x) if x else None)
-    gdf["end_point_geom"] = gdf["end_point"].apply(lambda x: Point(x) if x else None)
-
-    # Calculate angles
-    gdf[STRM_ANGLE_str] = gdf.apply(
-        lambda row: calculate_angle_rad(row["start_point"], row["end_point"]) if row["start_point"] and row["end_point"] else None,
-        axis=1,
-    )
-
-    # Save to a new shapefile if needed
-    #output_path = "path/to/output_with_endpoints.shp"
-    #gdf.to_file(output_path)
-
-    # Print the GeoDataFrame with start and end points
-    print(gdf[[COMID_str, "geometry", STRM_ANGLE_str, "start_point", "end_point"]])
-
-    #Print Stream Angles for each stream reach
-    export_df = gdf[[COMID_str, STRM_ANGLE_str]]
-    export_df[COMID_str] = export_df[COMID_str].astype(int)
-    export_df.to_csv(output_angles_txt, sep="\t", index=False, header=True)
-    return
-
-
-
-def Create_GeoJSON_Points(x_values, y_values, z_values, EPSG_number_str, output_file):
-    # Create GeoJSON feature collection with CRS
-    geojson_data = {
-    "type": "FeatureCollection",
-    "crs": {
-        "type": "name",
-        "properties": {
-            "name": f"urn:ogc:def:crs:EPSG::{EPSG_number_str}"
-        }
-    },
-    "features": []
-    }
-
-    # Populate features
-    for x, y, z in zip(x_values, y_values, z_values):
-        feature = {
-            "type": "Feature",
-            "geometry": {
-                "type": "Point",
-                "coordinates": [float(x), float(y), float(z)]
-            },
-            "properties": {}  # Add any additional properties here if needed
-        }
-        geojson_data["features"].append(feature)
-    
-    # Write GeoJSON to a file
-    with open(output_file, "w") as f:
-        json.dump(geojson_data, f, indent=2)
-    
-    print(f"GeoJSON file created with CRS EPSG:{EPSG_number_str}: {output_file}")
-
-# This code was a grand idea to find stream angles by using the shapefile.  It never worked well.
-def Calculate_Stream_Angle_Raster(streams_shapefile, dem_filename, strm_raster, COMID_str, strm_angle_raster_deg, crs_for_angle_calculation):
-    
-    #Get Coordinate Information from the DEM Raster
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, dem_geotransform, dem_projection) = Get_Raster_Details(dem_filename)
-    
-    #Read Stream Raster (and create the Stream Raster if needed)
-    if os.path.exists(strm_raster):
-        print('Opening ' + str(strm_raster))
-    else:
-        print('Creating ' + str(strm_raster))
-        outputBounds = [minx, miny, maxx, maxy]  #https://gdal.org/api/python/osgeo.gdal.html
-        Create_ARC_StrmRaster(streams_shapefile, strm_raster, outputBounds, ncols, nrows, COMID_str)
-    (S, strm_ncols, strm_nrows, strm_cellsize, strm_yll, strm_yur, strm_xll, strm_xur, strm_lat, strm_geotransform, strm_projection) = Read_Raster_GDAL(strm_raster)
-
-    #Create a 2d array for the Angle Values
-    A = np.zeros((nrows,ncols))
-
-    # Find where the stream cells are located
-    indices = np.where(S > 0)
-    num_strm_cells = len(indices[0])
-    print(f"Number of Stream Cells: {num_strm_cells}")
-
-    # Compute X and Y coordinates of the stream cells
-    R = indices[0]
-    C = indices[1]
-    Y = maxy + 0.5 * dy + indices[0] * dy   #Typically for rows I would subtract, but I think dy is negative
-    X = minx + 0.5 * dx + indices[1] * dx
-
-    # Convert to list of tuples
-    points_to_evaluate = list(zip(X, Y))
-
-    # Load the shapefile
-    print(f"Loading {streams_shapefile}")
-    gdf = gpd.read_file(streams_shapefile)
-
-    # Function to find closest above and below vertices
-    def find_closest_above_below_using_hypotnuse(x_use, y_use, VX, VY):
-        distances = (x_use - VX) ** 2 + (y_use - VY) ** 2
-
-        #closest_index = np.argsort(distances)[:2]  # Index of the closest 2 vertices
-        closest_index = np.argpartition(distances, 2)[:2]
-
-        # Compute vector components
-        delta_x = VX[closest_index[0]] - VX[closest_index[1]]
-        delta_y = VY[closest_index[0]] - VY[closest_index[1]]
-
-        # Calculate angle in radians and convert to degrees
-        angle_rad = np.arctan2(delta_y, delta_x)
-        angle_deg = np.degrees(angle_rad)
-        # Normalize angle to [0, 360)
-        return (VX[closest_index[0]],VY[closest_index[0]]), (VX[closest_index[1]],VY[closest_index[1]]), angle_deg % 360
-    
-    # Function to find closest above and below vertices
-    @njit
-    def find_closest_above_below_using_hypotnuse_njit(x_use, y_use, VX, VY, num_angles):
-        """
-        Find the closest points using hypotenuse and calculate the mean angle.
-
-        Args:
-            x_use (float): X coordinate of the reference point.
-            y_use (float): Y coordinate of the reference point.
-            VX (np.ndarray): Array of X coordinates of points.
-            VY (np.ndarray): Array of Y coordinates of points.
-            num_angles (int): Number of closest points to consider.
-
-        Returns:
-            float: Mean angle in degrees.
-        """
-        # Calculate squared distances (avoiding sqrt for efficiency)
-        distances = (x_use - VX) ** 2 + (y_use - VY) ** 2
-
-        # Use np.argpartition to efficiently find the indices of the closest points
-        closest_indices = np.argpartition(distances, num_angles)[:num_angles]
-
-        # Calculate angles for the closest points
-        angles = np.arctan2(VY[closest_indices] - y_use, VX[closest_indices] - x_use)
-
-        # Compute the mean angle using the circular mean
-        mean_angle = np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))
-
-        # Convert mean angle to degrees
-        mean_angle_degrees = np.degrees(mean_angle)
-
-        return mean_angle_degrees
-    
-    @njit
-    def find_closest_above_below_using_hypotnuse_njit_v2(x_use, y_use, VX, VY, num_angles):
-        """
-        Find the closest points using hypotenuse and calculate the mean angle.
-
-        Args:
-            x_use (float): X coordinate of the reference point.
-            y_use (float): Y coordinate of the reference point.
-            VX (np.ndarray): Array of X coordinates of points.
-            VY (np.ndarray): Array of Y coordinates of points.
-            num_angles (int): Number of closest points to consider.
-
-        Returns:
-            float: Mean angle in degrees.
-        """
-        # Calculate squared distances
-        distances = (x_use - VX) ** 2 + (y_use - VY) ** 2
-
-        # Find the indices of the closest points manually
-        closest_indices = np.empty(num_angles, dtype=np.int64)
-        for i in range(num_angles):
-            min_index = np.argmin(distances)  # Find index of the smallest distance
-            closest_indices[i] = min_index
-            distances[min_index] = np.inf  # Exclude this index for the next iteration
-
-        # Calculate angles to the closest points
-        angles = np.empty(num_angles-1, dtype=np.float64)
-        for i in range(1,num_angles):
-            dx = VX[closest_indices[i]] - x_use
-            dy = VY[closest_indices[i]] - y_use
-            angles[i-1] = np.arctan2(dy, dx)
-
-        # Compute the mean angle using circular mean
-        sin_sum = 0.0
-        cos_sum = 0.0
-        for angle in angles:
-            sin_sum += np.sin(angle)
-            cos_sum += np.cos(angle)
-        mean_angle = np.arctan2(sin_sum / num_angles, cos_sum / num_angles)
-
-        # Convert mean angle to degrees
-        mean_angle_degrees = np.degrees(mean_angle)
-
-        return mean_angle_degrees
-
-
-    def extract_vertices_and_nodes(geometry):
-        """
-        Extract all vertex and node coordinates from a Shapely geometry object.
-
-        Args:
-            geometry (shapely.geometry): Geometry object (LineString, Polygon, etc.).
-
-        Returns:
-            tuple: A tuple containing two lists:
-                - vertices: List of (x, y) tuples for all vertices.
-                - nodes: List of (x, y) tuples for start and end points (nodes).
-        """
-        vertices = []
-        nodes = []
-        
-        if geometry.geom_type == "LineString":
-            coords = list(geometry.coords)
-            vertices.extend(coords)
-            nodes.extend([coords[0], coords[-1]])  # Start and end nodes
-        elif geometry.geom_type == "Polygon":
-            coords = list(geometry.exterior.coords)
-            vertices.extend(coords)
-            nodes.extend([coords[0], coords[-1]])  # Start and end nodes of the exterior
-        elif geometry.geom_type in ["MultiLineString", "MultiPolygon"]:
-            for part in geometry.geoms:
-                part_vertices, part_nodes = extract_vertices_and_nodes(part)
-                vertices.extend(part_vertices)
-                nodes.extend(part_nodes)
-        return vertices, nodes
-    
-    current_crs = gdf.crs
-    transformer = Transformer.from_crs(current_crs, crs_for_angle_calculation, always_xy=True)
-
-    # Initialize lists for all vertices and nodes
-    all_vertices = []
-    all_nodes = []
-
-    def reproject_geometry(geometry, transformer):
-        """
-        Reproject a Shapely geometry into the target CRS.
-
-        Args:
-            geometry (shapely.geometry): Geometry to reproject.
-            transformer (pyproj.Transformer): Transformer object for CRS conversion.
-
-        Returns:
-            shapely.geometry: Reprojected geometry.
-        """
-        return transform(transformer.transform, geometry)
-
-    gdf = gpd.read_file(streams_shapefile)
-
-    for geometry in gdf.geometry.dropna():
-        vertices, nodes = extract_vertices_and_nodes(geometry)
-        all_vertices.extend(vertices)
-        all_nodes.extend(nodes)
-        
-    # Remove duplicate nodes for uniqueness
-    unique_nodes = list(set(all_nodes))
-
-    # Separate x and y coordinates for vertices and nodes
-    vertex_x_coords = [v[0] for v in all_vertices]
-    vertex_y_coords = [v[1] for v in all_vertices]
-    vertex_x_coords_int = [int(round(v[0])) for v in all_vertices]
-    vertex_y_coords_int = [int(round(v[1])) for v in all_vertices]
-
-    node_x_coords = [n[0] for n in unique_nodes]
-    node_y_coords = [n[1] for n in unique_nodes]
-    node_x_coords_int = [int(round(n[0])) for n in unique_nodes]
-    node_y_coords_int = [int(round(n[1])) for n in unique_nodes]
-
-    # List of tuples for vertices
-    vertex_coordinates = list(zip(vertex_x_coords, vertex_y_coords))
-    vertex_coordinates_int = list(zip(vertex_x_coords_int, vertex_y_coords_int))
-
-    # List of tuples for unique nodes
-    node_coordinates = list(zip(node_x_coords, node_y_coords))
-    node_coordinates_int = list(zip(node_x_coords_int, node_y_coords_int))
-
-    #Combine vertex and nodes, remove duplicates
-    combined_coordinates = list(set(vertex_coordinates + node_coordinates))
-    combined_coordinates_int = list(set(vertex_coordinates_int + node_coordinates_int))
-    unique_combined_coordinates = list(set(combined_coordinates))
-    unique_combined_coordinates_int = list(set(combined_coordinates_int))
-
-    print(unique_combined_coordinates_int [:10])
-    VX, VY = np.array(unique_combined_coordinates).T
-
-    #streams_shapefile
-    # Evaluate each stream cell location against the shapefile vertices
-    print('Vertice number: ' + str(len(VX)))
-    print("Evaluating each stream cell location against the shapefile vertices...")
-
-    num_adjacent_angles_to_evaluate = 5
-
-    for i in range(num_strm_cells):
-        #x_use, y_use = transformer.transform(X[i], Y[i])
-        #below, above, angle1 = find_closest_above_below_using_hypotnuse(x_use, y_use, VX, VY)
-        #below, above, angle = find_closest_above_below_using_hypotnuse_njit(x_use, y_use, VX, VY)
-        #angle = find_closest_above_below_using_hypotnuse_njit(X[i], Y[i], VX, VY, num_adjacent_angles_to_evaluate)
-        angle = find_closest_above_below_using_hypotnuse_njit_v2(X[i], Y[i], VX, VY, num_adjacent_angles_to_evaluate)
-
-        A[R[i]][C[i]] = round(angle)
-
-        # Calculate and print percentage completion every 5%
-        if i % (num_strm_cells // 20) == 0 or i == num_strm_cells - 1:  # Adjust 20 for smaller intervals
-            percentage = (i + 1) / num_strm_cells * 100
-            print(f"Progress: {percentage:.1f}% complete")
-    
-
-    #Write Stream Angle Raster in DEGREES!!!
-    Write_Output_Raster(strm_angle_raster_deg, A, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)  
-    
-    return 
