@@ -12,6 +12,9 @@ smoothing put them in (smooth_bank_elevations):
    (smooth_reach_bed). The depth carved is the reference level's height above the smoothed bed, or 0 where the bed is
    above it.
 
+With Bathy_Smooth_Bed off, the pipeline passes a window of 1 and no cap: only the depths are filled in, and each cross
+section keeps its own bed.
+
 The reference level is the smoothed bank elevation with Bathy_Use_Banks, and otherwise the stream cell's elevation.
 The cap is MAX_SLOPE (0.5 m per metre), so a bed may be as steep as a stream. A missing bed (no reference level) is
 left out of the median and the cap, and its cross section keeps its depth.

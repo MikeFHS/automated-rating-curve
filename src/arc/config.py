@@ -80,6 +80,10 @@ class Configs:
     # Hold the smoothed channel bed to rising or falling no more than MAX_SLOPE (0.5 m) per metre along the stream
     # (arc.bathymetry.smooth_channel_depths)
     bathy_bed_cap: bool = True
+    # Smooth each reach's channel widths and bank elevations (arc.bathymetry.smooth_bank_elevations), and its bed
+    # (arc.bathymetry.smooth_channel_depths). False leaves each cross section's own.
+    bathy_smooth_banks: bool = True
+    bathy_smooth_bed: bool = True
     findbanksbasedonlandcover: bool = False
 
     # Synthetic rating curve configuration

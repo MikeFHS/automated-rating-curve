@@ -16,6 +16,10 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
 
 So the bank elevation follows the shape of the stream, and only its height comes from the banks: a few low banks can't
 pull a whole reach down. Only a site without any observation gets no bank elevations (NaN).
+
+With smooth=False (Bathy_Smooth_Banks off), each cross section keeps its own banks and its own observation as its bank
+elevation, none left out. One without an observation takes its stream cell's elevation plus the reach's bank height
+(the 10th percentile of its observations' heights), or the whole site's. The cross sections are still put in order.
 """
 from __future__ import annotations
 
@@ -54,8 +58,8 @@ class ReachSections(NamedTuple):
 class SmoothedReach(NamedTuple):
     """A reach after smoothing. The arrays are in the order the cross sections were given, except order and
     stations, which are in order from upstream to downstream."""
-    banks: list[Banks]  # after the width filter
-    bank_elevations: np.ndarray  # the smoothed bank elevations, NaN if there are none
+    banks: list[Banks]  # after the width filter (as given, unsmoothed)
+    bank_elevations: np.ndarray  # the smoothed bank elevations (each cross section's own), NaN if there are none
     observations: np.ndarray  # each cross section's observation, NaN for none or an outlier
     order: np.ndarray  # the cross sections from upstream to downstream
     stations: np.ndarray  # how far each is along the stream from the upstream one, in metres
@@ -275,8 +279,9 @@ def reach_bank_levels(thalwegs, observations, stations, fallback_height: float, 
 
 
 def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSections], dx: float,
-                           dy: float) -> dict[int, SmoothedReach]:
-    """Smooth the bank elevations of every reach's cross sections (see the notes above).
+                           dy: float, *, smooth: bool = True) -> dict[int, SmoothedReach]:
+    """Smooth the bank elevations of every reach's cross sections (see the notes above), or with smooth=False, give
+    each its own.
 
     network runs from each reach to the one downstream of it (reach_network), and orders each reach's cross sections.
     Every reach with cross sections must be in it. dx and dy are the cells' width and height in metres.
@@ -292,10 +297,15 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
     for reach, sections in reaches.items():
         if len(sections.sections) == 0:
             continue
-        banks, widths = filter_reach_widths(sections.sections, sections.banks)
-        observations, _, _ = reach_bank_observations(sections.sections, banks)
-        order, stations = order_reach(network, reach, sections.rows, sections.cols, dx, dy, cells, observations)
         thalwegs = np.array([float(xs.elevations[xs.elevations.size // 2]) for xs in sections.sections])
+        if smooth:
+            banks, widths = filter_reach_widths(sections.sections, sections.banks)
+            observations, _, _ = reach_bank_observations(sections.sections, banks)
+        else:
+            banks, widths = list(sections.banks), None
+            observations = np.array([bank_control_elevation(b, z) if b.valid else math.nan
+                                     for b, z in zip(banks, thalwegs)], dtype=np.float64)
+        order, stations = order_reach(network, reach, sections.rows, sections.cols, dx, dy, cells, observations)
         prepared[reach] = (banks, widths, observations, order, stations, thalwegs)
 
     # The whole site's bank height, for reaches without observations of their own
@@ -306,7 +316,13 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
 
     smoothed = {}
     for reach, (banks, widths, observations, order, stations, thalwegs) in prepared.items():
-        bank_elevations = np.full(observations.size, math.nan)
-        bank_elevations[order] = reach_bank_levels(thalwegs[order], observations[order], stations, site_height)
+        if smooth:
+            bank_elevations = np.full(observations.size, math.nan)
+            bank_elevations[order] = reach_bank_levels(thalwegs[order], observations[order], stations, site_height)
+        else:
+            reach_heights = observations - thalwegs
+            reach_heights = reach_heights[reach_heights > 0.0]
+            height = float(np.quantile(reach_heights, BANK_HEIGHT_QUANTILE)) if reach_heights.size else site_height
+            bank_elevations = np.where(np.isfinite(observations), observations, thalwegs + height)
         smoothed[reach] = SmoothedReach(banks, bank_elevations, observations, order, stations, widths)
     return smoothed

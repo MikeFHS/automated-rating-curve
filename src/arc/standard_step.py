@@ -11,8 +11,9 @@ the stream:
 with Sf = ((Q_u + Q_d) / ((K_u + K_d) f))^2, the average-conveyance friction slope (K the conveyance, f the
 slope_adjustment_factor), a the velocity-head coefficient of the channel and the overbanks, and C 0.1 where the flow
 speeds up going downstream and 0.3 where it slows. The upstream water surface is the subcritical root, the lowest above
-critical depth, or critical depth where there's none (where the water below is supercritical, or the cross section above
-needs more energy even at critical depth).
+critical depth and above the cross section's water at the flow before (so that it never falls as the flow rises, which
+the lowest root can in a compound channel), or critical depth where there's none (where the water below is
+supercritical, or the cross section above needs more energy even at critical depth).
 
 Each reach's rated cells are put in order along the stream (arc.bathymetry.order_reach), and their rating curves are
 worked out again at flows common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N
@@ -179,13 +180,17 @@ class HydraulicTable:
 
 
 def step_up(down: HydraulicTable, wse_down: float, q_down: float, up: HydraulicTable, q_up: float, length: float,
-            slope_factor: float = 1.0) -> tuple[float, bool]:
+            slope_factor: float = 1.0, floor: float = -math.inf) -> tuple[float, bool]:
     """The water surface at the cross section `up`, `length` metres upstream of `down`, by the energy equation (see
     the notes above), and whether it is critical depth for want of a subcritical root. up's table brackets the root,
-    and the exact hydraulics then find it."""
+    and the exact hydraulics then find it.
+
+    The water surface is the lowest root at or above floor (the cross section's water at a smaller flow), or floor
+    itself if the energy there is already enough: a compound channel can have more than one root, and the lowest can
+    otherwise drop as the flow rises."""
     if wse_down < down.critical(q_down):
         # The water below is supercritical, and no subcritical water surface steps up from it
-        return up.critical(q_up), True
+        return max(up.critical(q_up), floor), True
     area_d, conveyance_d, alpha_d = down.state(wse_down)
     head_d = alpha_d * (q_down / area_d) ** 2 / (2.0 * G)
     head = up.alpha * (q_up / up.area) ** 2 / (2.0 * G)
@@ -193,18 +198,19 @@ def step_up(down: HydraulicTable, wse_down: float, q_down: float, up: HydraulicT
     loss = np.where(head_d > head, CONTRACTION, EXPANSION) * np.abs(head - head_d)
     friction = ((q_up + q_down) / np.maximum((conveyance_d + up.conveyance) * slope_factor, 1e-9)) ** 2
     excess = energy - (wse_down + head_d + length * friction + loss)
-    critical = int(np.argmin(energy))
-    if excess[critical] >= 0.0:
-        return float(up.levels[critical]), True
-    above = np.flatnonzero(excess[critical:] >= 0.0)
+    critical = float(up.levels[int(np.argmin(energy))])
     arguments = (float(q_up), wse_down + head_d, head_d, conveyance_d, float(q_up + q_down), float(length),
                  float(slope_factor))
+    lowest = max(critical, float(floor))
+    if _excess(*up.section, *up.parameters, lowest, *arguments) >= 0.0:
+        return lowest, lowest == critical
+    above = np.flatnonzero((excess >= 0.0) & (up.levels > lowest))
     if above.size:
-        i1 = critical + int(above[0])
-        low, high = float(up.levels[i1 - 1]), float(up.levels[i1])
+        i1 = int(above[0])
+        low, high = max(float(up.levels[i1 - 1]), lowest), float(up.levels[i1])
     else:
         # The water below stands higher than the table reaches, backing water up beyond it: look higher
-        low = float(up.levels[-1])
+        low = max(float(up.levels[-1]), lowest)
         rise = max(wse_down + head_d - low, 0.0) + 0.5
         high = low + rise
         for _ in range(60):
@@ -213,7 +219,7 @@ def step_up(down: HydraulicTable, wse_down: float, q_down: float, up: HydraulicT
             low, rise = high, 2.0 * rise
             high = low + rise
         else:
-            return float(up.levels[critical]), True
+            return lowest, lowest == critical
     return float(_root(*up.section, *up.parameters, low, high, *arguments)), False
 
 
@@ -282,10 +288,12 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                                           roughness=roughness, slope_factor=slope_factor)
                 if not math.isfinite(start):
                     start = last.normal(flows[-1, j], float(slopes[ks[-1]]), slope_factor)
-            wse[-1, j] = max(start, last.critical(flows[-1, j]))
+            # No cross section's water falls as the flow rises
+            floors = wse[:, j - 1] if j > 0 else np.full(ks.size, -math.inf)
+            wse[-1, j] = max(start, last.critical(flows[-1, j]), floors[-1])
             for m in range(ks.size - 2, -1, -1):
                 wse[m, j], critical = step_up(tables[m + 1], wse[m + 1, j], flows[m + 1, j], tables[m], flows[m, j],
-                                              abs(stations[m + 1] - stations[m]), slope_factor)
+                                              abs(stations[m + 1] - stations[m]), slope_factor, floors[m])
                 steps += 1
                 critical_steps += int(critical)
         upstream_wse[reach] = wse[0]

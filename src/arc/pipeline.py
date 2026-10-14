@@ -22,9 +22,10 @@ The steps
    channel is narrowest, and the cross section there.
 6. Banks (arc.bathymetry.find_banks): where the water mask's water ends, if there is a mask, or where the land cover's
    does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then the water's n between them.
-7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed, each
-   channel's depth found, the depths and beds smoothed along the network, and the channel carved into each cross
-   section and burned into the bathymetry raster, whose gaps are then filled. A channel whose banks nothing resolved
+7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed (unless
+   Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
+   (unless Bathy_Smooth_Bed is off), and the channel carved into each cross section and burned into the bathymetry
+   raster, whose gaps are then filled. A channel whose banks nothing resolved
    is carved as wide as its width prior, where it has one, and otherwise one cell wide.
 8. Rating curves (arc.rating_curve), linked along the stream network by the standard step with Standard_Step
    (arc.standard_step), and the representative cross sections (arc.outputs.representative) when they're asked for.
@@ -57,7 +58,7 @@ from arc.bathymetry import (Banks, ReachSections, banks_for_width, bathymetry_de
                             sample_land_cover, set_bank_distances, set_in_bank_roughness, single_cell_banks,
                             smooth_bank_elevations, smooth_channel_depths)
 from arc.bathymetry.banks import _on_raster_ordinates
-from arc.bathymetry.bed_smoothing import MAX_BED_GRADE
+from arc.bathymetry.bed_smoothing import MAX_BED_GRADE, MEDIAN_WINDOW
 from arc.bathymetry.depth import power_law_geometry
 from arc.config import Configs
 from arc.hydraulics import DepthRoughness
@@ -653,7 +654,7 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
             by_reach.setdefault(int(cells.reaches[k]), []).append(k)
     reaches = {reach: ReachSections(cells.rows[ks], cells.cols[ks], [sections[k].xs for k in ks],
                                     [sections[k].banks for k in ks]) for reach, ks in by_reach.items()}
-    smoothed = smooth_bank_elevations(network, reaches, grid.dx, grid.dy)
+    smoothed = smooth_bank_elevations(network, reaches, grid.dx, grid.dy, smooth=configs.bathy_smooth_banks)
 
     for reach, ks in list(by_reach.items()):
         result = smoothed[reach]
@@ -682,9 +683,12 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
                                      mannings_n=water_n)
             depths[reach].append(depth.depth)
             applies[reach].append(depth.apply)
+    # Without bed smoothing, a running median of one cross section and no cap leave each bed as it is
+    smooth_bed = configs.bathy_smooth_bed
     channels = smooth_channel_depths(network, reaches, {reach: smoothed[reach] for reach in reaches}, depths,
                                      grid.dx, grid.dy, use_banks=use_banks,
-                                     max_bed_grade=MAX_BED_GRADE if configs.bathy_bed_cap else None)
+                                     max_bed_grade=MAX_BED_GRADE if configs.bathy_bed_cap and smooth_bed else None,
+                                     window=MEDIAN_WINDOW if smooth_bed else 1)
 
     carve = {}
     for reach, ks in by_reach.items():
