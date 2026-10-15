@@ -14,9 +14,10 @@ channel couldn't be narrower than two spacings, and a trapezoid a few spacings w
 spacings wide was a triangle, with 5/8 of the area of the trapezoid its depth was solved for (at a trapezoid height of
 0.2).
 
-Without bank elevations the reference level is the stream cell's elevation, the channel only ever lowers the ground,
-and a depth of 25 m or more isn't carved at all. With bank elevations (Bathy_Use_Banks) the reference level is the
-bank elevation given, and the channel sets the ground whether that raises or lowers it.
+Without bank elevations the reference level is the stream cell's elevation, and the channel only ever lowers the
+ground. Legacy didn't carve a depth of 25 m or more there; any depth is carved here. With bank elevations
+(Bathy_Use_Banks) the reference level is the bank elevation given, and the channel sets the ground whether that raises
+or lowers it.
 """
 from __future__ import annotations
 
@@ -28,8 +29,6 @@ from numba import njit
 from arc.bathymetry.banks import Banks, _ground_at, single_cell_banks
 from arc.bathymetry.depth import _check_trapezoid_height
 from arc.xsection.xsection import Profile, XSection
-
-MAX_DEPTH = 25.0  # without bank elevations, a deeper channel isn't carved
 
 
 @njit(cache=True, error_model="numpy")
@@ -206,8 +205,6 @@ def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height:
         raise ValueError("Carving a channel needs the cross section's Manning's n, for its profile.")
     reference = float(elevations[center]) if bank_elevation is None else float(bank_elevation)
     if not (math.isfinite(depth) and math.isfinite(reference)):
-        return changed
-    if bank_elevation is None and depth >= MAX_DEPTH:
         return changed
     if not banks.valid:
         banks = single_cell_banks(xs)

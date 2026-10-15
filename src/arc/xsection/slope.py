@@ -6,7 +6,7 @@ stream (see arc.xsection.stream_path), and never over less than the straight lin
 The slope methods (Stream_Slope_Method), and when each can't give a slope:
 
 - local_average: each cell's slope is the mean of its slopes to the reach's other cells within Gen_Slope_Dist cells
-  of it along each axis, kept between 0.0001 and 0.5 (local_average_slopes). None for a cell with no other cell of
+  of it along each axis, kept between 0.00001 and 0.5 (local_average_slopes). None for a cell with no other cell of
   its reach that near, and the reach's slope is the median of its cells'.
 - reach_average: every cell takes its reach's median slope, from the slopes between all pairs of the reach's cells
   within Gen_Slope_Dist cells of each other along each axis, leaving out level pairs. The median is of the slopes
@@ -16,6 +16,9 @@ The slope methods (Stream_Slope_Method), and when each can't give a slope:
   (corrected_local_slopes). None for a reach without percentiles, as for reach_average.
 - end_points: the drop between the ends of the reach's stream line over its length (end_point_slope). None where the
   ends can't be read on the DEM.
+- local_fit: each cell's slope is the fall of the straight line fitted by least squares to the elevations of the
+  2 * Gen_Slope_Dist + 1 cells nearest it along the stream, and the reach's is the fall of the line through all its
+  cells (local_fit_slopes). None for a reach with fewer than two cells.
 
 Whatever the method, a reach without a slope takes its neighbours' in the stream network
 (fill_unresolved_reach_slopes), and a cell without one takes its reach's. arc.pipeline skips the cells of a reach
@@ -31,7 +34,7 @@ from numba import njit
 
 from arc.xsection.stream_path import _columns_between, _row_index
 
-MIN_SLOPE = 1e-4
+MIN_SLOPE = 1e-5  # legacy's floor was 1e-4, which made level stretches steeper than the DEM shows
 MAX_SLOPE = 0.5
 NO_DATA = -9999.0  # an elevation at or below this is missing
 
@@ -146,6 +149,58 @@ def _reach_median_slope(z, rows, cols, stations, dx, dy, distance, low, high):
     return np.median(kept[:count]), lower, upper
 
 
+@njit(cache=True, error_model="numpy")
+def _fitted_line_slope(s, z, lo, hi):
+    """The slope m of the least-squares line z = m s + b through the points lo to hi - 1, NaN if their stations are
+    all the same."""
+    n = hi - lo
+    mean_s = 0.0
+    mean_z = 0.0
+    for k in range(lo, hi):
+        mean_s += s[k]
+        mean_z += z[k]
+    mean_s /= n
+    mean_z /= n
+    sxx = 0.0
+    sxz = 0.0
+    for k in range(lo, hi):
+        ds = s[k] - mean_s
+        sxx += ds * ds
+        sxz += ds * (z[k] - mean_z)
+    return sxz / sxx if sxx > 0.0 else np.nan
+
+
+@njit(cache=True, error_model="numpy")
+def _local_fit_slopes(z, stations, distance):
+    n = z.size
+    slopes = np.full(n, np.nan)
+    index = np.empty(n, np.int64)
+    count = 0
+    for i in range(n):
+        if math.isfinite(z[i]) and math.isfinite(stations[i]):
+            index[count] = i
+            count += 1
+    if count < 2:
+        return slopes, np.nan
+    index = index[:count]
+    order = index[np.argsort(stations[index], kind="mergesort")]
+    s = stations[order]
+    elevations = z[order]
+    whole = _fitted_line_slope(s, elevations, 0, count)
+    if math.isnan(whole):
+        return slopes, np.nan
+    width = min(2 * distance + 1, count)
+    for p in range(count):
+        lo = min(max(p - distance, 0), count - width)
+        m = _fitted_line_slope(s, elevations, lo, lo + width)
+        if math.isnan(m):
+            continue
+        # The fall per metre the way the reach's line falls
+        fall = -m if whole < 0.0 else (m if whole > 0.0 else abs(m))
+        slopes[order[p]] = min(max(fall, MIN_SLOPE), MAX_SLOPE)
+    return slopes, min(max(abs(whole), MIN_SLOPE), MAX_SLOPE)
+
+
 def _reach_arrays(z, rows, cols, stations):
     rows = np.asarray(rows, dtype=np.int64)
     cols = np.asarray(cols, dtype=np.int64)
@@ -159,7 +214,7 @@ def _reach_arrays(z, rows, cols, stations):
 
 def local_average_slopes(z, rows, cols, stations, dx: float, dy: float, distance: int) -> np.ndarray:
     """Each of a reach's cells' slope, the mean of its slopes to the reach's other cells within `distance` cells of
-    it along each axis, from 0.0001 to 0.5. NaN for a cell with no other cell that near.
+    it along each axis, from 0.00001 to 0.5. NaN for a cell with no other cell that near.
 
     z is the DEM at the cells, rows and cols are the cells, which should be all of the reach's cells, and stations are
     their distances along the stream from one end (along_stream_stations).
@@ -168,6 +223,31 @@ def local_average_slopes(z, rows, cols, stations, dx: float, dy: float, distance
     if rows.size == 0:
         return np.empty(0)
     return _local_average_slopes(z, rows, cols, stations, float(dx), float(dy), int(distance))
+
+
+def local_fit_slopes(z, stations, distance: int) -> tuple[np.ndarray, float]:
+    """Each of a reach's cells' slope from a straight line fitted to the elevations along the stream, and the reach's
+    slope (the local_fit method).
+
+    A cell's line is the least-squares fit of elevation against station through the 2 * distance + 1 cells nearest
+    it along the stream: itself and `distance` either side, or more on one side near the reach's ends, so that every
+    line has as many cells while the reach has them. The reach's line goes through all of its cells. A slope is the
+    line's fall per metre the way the reach's line falls, kept between 0.00001 and 0.5, so a stretch rising against
+    the reach takes the least slope. A rise between cells offsets a fall, where the methods that average slopes
+    between pairs of cells count both as falls.
+
+    z is the DEM at the cells, NaN where it has no data (those cells are left out, and get NaN), and stations are their
+    distances along the stream from one end (along_stream_stations). All NaN for a reach with fewer than two cells
+    with elevations, or whose cells all share one station.
+    """
+    z = np.asarray(z, dtype=np.float64)
+    stations = np.asarray(stations, dtype=np.float64)
+    if not z.ndim == 1 or z.shape != stations.shape:
+        raise ValueError(f"z and stations must be 1-D and the same length, not {z.shape} and {stations.shape}.")
+    if int(distance) < 1:
+        raise ValueError(f"distance must be at least 1 cell, not {distance!r}.")
+    slopes, reach_slope = _local_fit_slopes(z, stations, int(distance))
+    return slopes, float(reach_slope)
 
 
 def reach_median_slope(z, rows, cols, stations, dx: float, dy: float, distance: int, low_percentile: float = 25,
@@ -225,7 +305,7 @@ def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict) -> set:
 
 
 def end_point_slope(line, length: float, dem: np.ndarray, geotransform) -> float:
-    """The drop between the ends of a reach's line over its length in metres, at least 0.0001 (the end_points
+    """The drop between the ends of a reach's line over its length in metres, at least 0.00001 (the end_points
     method).
 
     line is a shapely LineString or MultiLineString in the DEM's coordinates, of which only the longest part counts.

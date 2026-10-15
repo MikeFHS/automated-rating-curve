@@ -11,11 +11,29 @@ import numpy as np
 
 from arc._log import LOG
 
-StreamSlopeMethod = Literal["local_average", "local_average_corrected", "reach_average", "end_points"]
+StreamSlopeMethod = Literal["local_average", "local_average_corrected", "reach_average", "end_points", "local_fit"]
 
-_CURVE2FLOOD_KEYS = {'comid_flow_file', 'make_output_gpkg', 'strmorder_field', 'outfld', 'outdep', 'outvel', 'outwse', 'mapper', 'topwidthplausiblelimit', 'tw_multfact', 'set_depth', 'localfloodoption', 'fsoutbathy', 'flood_waterlc_and_strm_cells', 'flow_direction_file', 'filled_dem_file', 'stream_info_file', 'fldpln_library', 'max_wse_rise', 'fldpln_median_filter_size', 'fldpln_max_drop_below_source', 'fs_adjust_flow_by_fraction',
-                     # curve2flood's aliases, and the keys nencarta writes into the ARC input files it shares with curve2flood
-                     'floodspreader_specifydepth', 'floodlocalonly', 'land_watervalue', 'fldpln_max_wse_rise', 'median_filter_size', 'max_drop_below_source', 'outshp'}
+# curve2flood's keys (curve2flood.config.Config) that aren't ARC's: one input file often drives both models, so they
+# are allowed and ignored
+_CURVE2FLOOD_KEYS = {
+    'comid_flow_file', 'outfld', 'outdep', 'outwse', 'outvel', 'make_output_gpkg', 'mapper', 'tw_multfact',
+    'topwidthplausiblelimit', 'localfloodoption', 'flood_waterlc_and_strm_cells', 'flood_bathy_mask', 'land_watervalue',
+    'set_depth', 'flow_direction_file', 'filled_dem_file', 'stream_info_file', 'fldpln_library', 'fsoutbathy',
+    # Its multi-point interpolation mapper's options
+    'mpi_topwidth_threshold_m', 'mpi_xs_point_spacing_m', 'mpi_remove_hwm_outliers', 'mpi_hwm_outlier_method',
+    'mpi_hwm_outlier_threshold', 'mpi_hwm_outlier_group_by', 'mpi_hwm_outlier_min_samples', 'mpi_corridor_buffer_m',
+    'mpi_anchor_buffer_m', 'mpi_use_topwidth_buffers', 'mpi_corridor_topwidth_factor', 'mpi_anchor_topwidth_factor',
+    'mpi_connectivity', 'mpi_k', 'mpi_power', 'mpi_max_distance_m', 'mpi_use_topwidth_max_distance',
+    'mpi_maxdist_topwidth_factor', 'mpi_min_topwidth_m', 'mpi_max_topwidth_m', 'mpi_fallback_topwidth_m',
+    'mpi_smooth_sigma_pixels', 'mpi_apply_wse_sanity_filter', 'mpi_wse_sanity_tolerance_m', 'mpi_fast_mode',
+    'mpi_one_based_vdt_rc',
+    # Its other names for set_depth and localfloodoption, from FloodSpreader
+    'floodspreader_specifydepth', 'floodlocalonly',
+    # Its retired keys, which it ignores with a warning
+    'max_wse_rise', 'fldpln_max_wse_rise', 'median_filter_size', 'fldpln_median_filter_size', 'max_drop_below_source',
+    'fldpln_max_drop_below_source',
+    # Keys nencarta writes into the input files it shares with curve2flood, which neither model uses
+    'outshp', 'fs_adjust_flow_by_fraction'}
 # Keys that ARC input files often carry (Create_ARC_Model_Input_File writes some of them) but ARC doesn't use
 _IGNORED_KEYS = {'spatial_units', 'str_limit_val', 'print_vdt'}
 
@@ -81,9 +99,12 @@ class Configs:
     # (arc.bathymetry.smooth_channel_depths)
     bathy_bed_cap: bool = True
     # Smooth each reach's channel widths and bank elevations (arc.bathymetry.smooth_bank_elevations), and its bed
-    # (arc.bathymetry.smooth_channel_depths). False leaves each cross section's own.
+    # (arc.bathymetry.smooth_channel_depths). False leaves each cross section's own. Unless given, the bed is smoothed
+    # without the standard step and not with it: a smoothed bed is a neighbour's, too shallow for a narrow channel to
+    # carry the baseflow in bank and too deep for a wide one, and the standard step's water rides above the dips that
+    # leaves in the normal depths (on the Karnali's main stem, 0.9 m higher at the baseflow).
     bathy_smooth_banks: bool = True
-    bathy_smooth_bed: bool = True
+    bathy_smooth_bed: bool | None = None
     findbanksbasedonlandcover: bool = False
 
     # Synthetic rating curve configuration
@@ -308,6 +329,8 @@ class Configs:
                 )
 
         # The dataclass is frozen, so derived values are set with object.__setattr__
+        if self.bathy_smooth_bed is None:
+            object.__setattr__(self, 'bathy_smooth_bed', not self.standard_step)
         object.__setattr__(self, 'makes_rating_curves', makes_rating_curves)
         object.__setattr__(self, 'use_representative_baseflow_bathymetry', b_use_representative_baseflow_bathymetry)
         object.__setattr__(self, 'use_bathymetry_powerlaw', b_use_bathymetry_powerlaw)

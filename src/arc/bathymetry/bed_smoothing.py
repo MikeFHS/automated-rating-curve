@@ -4,8 +4,10 @@ This step comes between working out each cross section's depth (bathymetry_depth
 smooth_channel_depths does it all, taking each reach's cross sections from upstream to downstream in the order the bank
 smoothing put them in (smooth_bank_elevations):
 
-1. A depth that isn't above 0 and at most 25 m is replaced by the one before it along the stream. The first in a
-   reach takes the shallowest last depth of the reaches flowing into it, or failing that 0.5 m (fill_reach_depths).
+1. A depth that isn't above 0 and finite is replaced by the one before it along the stream. The first in a reach
+   takes the shallowest last depth of the reaches flowing into it, or failing that 0.5 m (fill_reach_depths). A
+   depth is kept however deep: legacy also replaced those over 25 m, which left a channel that needed more unable to
+   carry its baseflow.
 2. The bed, each cross section's reference level less its depth, is smoothed with a running median of five cross
    sections (fewer at a reach's ends). With the bed cap on (Bathy_Bed_Cap), it then rises or falls no more than
    MAX_BED_GRADE metres per metre along the stream, starting from the lowest bed flowing into the reach
@@ -28,7 +30,6 @@ import networkx as nx
 import numpy as np
 from numba import njit
 
-from arc.bathymetry.channel import MAX_DEPTH
 from arc.bathymetry.smoothing import ReachSections, SmoothedReach
 from arc.xsection.slope import MAX_SLOPE
 
@@ -54,8 +55,7 @@ def _upstream_to_downstream(network: nx.DiGraph) -> list:
 
 def fill_reach_depths(network: nx.DiGraph, depths: Mapping[int, Sequence[float]],
                       orders: Mapping[int, np.ndarray]) -> dict[int, np.ndarray]:
-    """Each reach's depths, in the order given, with those that aren't above 0 and at most 25 m (NaN included)
-    filled in.
+    """Each reach's depths, in the order given, with those that aren't above 0 and finite (NaN included) filled in.
 
     orders holds each reach's cross sections from upstream to downstream, as indices into its depths. Going
     downstream, a depth is filled in with the one before it, the first in a reach with the shallowest last depth of the
@@ -74,7 +74,7 @@ def fill_reach_depths(network: nx.DiGraph, depths: Mapping[int, Sequence[float]]
         inflows = [last_depths[p] for p in network.predecessors(reach) if p in last_depths]
         previous = min(inflows) if inflows else DEFAULT_DEPTH
         for i in order:
-            if not 0.0 < values[i] <= MAX_DEPTH:
+            if not 0.0 < values[i] < math.inf:
                 values[i] = previous
             previous = values[i]
         if order.size > 0:

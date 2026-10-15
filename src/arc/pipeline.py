@@ -24,8 +24,8 @@ The steps
    does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then the water's n between them.
 7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed (unless
    Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
-   (unless Bathy_Smooth_Bed is off), and the channel carved into each cross section and burned into the bathymetry
-   raster, whose gaps are then filled. A channel whose banks nothing resolved
+   (unless Bathy_Smooth_Bed is off, as it is by default with Standard_Step), and the channel carved into each cross
+   section and burned into the bathymetry raster, whose gaps are then filled. A channel whose banks nothing resolved
    is carved as wide as its width prior, where it has one, and otherwise one cell wide.
 8. Rating curves (arc.rating_curve), linked along the stream network by the standard step with Standard_Step
    (arc.standard_step), and the representative cross sections (arc.outputs.representative) when they're asked for.
@@ -74,7 +74,7 @@ from arc.xsection.low_spot import low_spot_cell
 from arc.xsection.orientation import angle_offsets, narrowest_direction, stream_direction
 from arc.xsection.sampling import OFF_RASTER_ELEVATION, sample_elevations
 from arc.xsection.slope import (corrected_local_slopes, end_point_slope, fill_unresolved_reach_slopes,
-                                local_average_slopes, reach_median_slope)
+                                local_average_slopes, local_fit_slopes, reach_median_slope)
 from arc.xsection.stream_path import along_stream_stations, stream_cells_by_reach
 from arc.xsection.xsection import XSection
 
@@ -385,9 +385,9 @@ def _cells_by_reach(cells: Cells) -> dict[int, list[int]]:
     return by_reach
 
 
-def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[np.ndarray, np.ndarray]:
-    """The local average slope at each of cells ks, and at every cell of their reach (its stream cells, rows and cols,
-    and any of cells ks off them, as a manual cross section's can be)."""
+def _reach_cells(rows, cols, cells: Cells, ks) -> tuple[np.ndarray, np.ndarray, dict]:
+    """A reach's stream cells, rows and cols, with any of cells ks off them (as a manual cross section's can be),
+    and where each cell is among them."""
     have = {(int(r), int(c)): i for i, (r, c) in enumerate(zip(rows, cols))}
     extra = list(dict.fromkeys((int(cells.rows[k]), int(cells.cols[k])) for k in ks
                                if (int(cells.rows[k]), int(cells.cols[k])) not in have))
@@ -395,9 +395,31 @@ def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[n
         rows = np.concatenate([rows, np.array([r for r, _ in extra], dtype=np.int64)])
         cols = np.concatenate([cols, np.array([c for _, c in extra], dtype=np.int64)])
         have = {(int(r), int(c)): i for i, (r, c) in enumerate(zip(rows, cols))}
+    return rows, cols, have
+
+
+def _at_cells(values, have: dict, cells: Cells, ks) -> np.ndarray:
+    return np.array([values[have[(int(cells.rows[k]), int(cells.cols[k]))]] for k in ks], dtype=np.float64)
+
+
+def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[np.ndarray, np.ndarray]:
+    """The local average slope at each of cells ks, and at every cell of their reach (see _reach_cells)."""
+    rows, cols, have = _reach_cells(rows, cols, cells, ks)
     stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
     values = local_average_slopes(grid.dem[rows, cols], rows, cols, stations, grid.dx, grid.dy, distance)
-    return np.array([values[have[(int(cells.rows[k]), int(cells.cols[k]))]] for k in ks], dtype=np.float64), values
+    return _at_cells(values, have, cells, ks), values
+
+
+def _fitted_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[np.ndarray, float]:
+    """The fitted-line slope at each of cells ks, and their reach's, from all of its cells (see _reach_cells and
+    local_fit_slopes)."""
+    rows, cols, have = _reach_cells(rows, cols, cells, ks)
+    if rows.size == 0:
+        return np.full(len(ks), math.nan), math.nan
+    stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
+    z = grid.dem[rows, cols]
+    values, reach_slope = local_fit_slopes(np.where(z >= OFF_RASTER_ELEVATION, np.nan, z), stations, distance)
+    return _at_cells(values, have, cells, ks), reach_slope
 
 
 def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict) -> tuple[dict, dict]:
@@ -412,6 +434,9 @@ def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict) -> t
     for reach in sorted(set(stream_reaches) | set(by_reach)):
         rows, cols = stream_reaches.get(reach, empty)
         ks = by_reach.get(reach, [])
+        if method == "local_fit":
+            cell_values[reach], reach_slopes[reach] = _fitted_slopes(grid, rows, cols, cells, ks, distance)
+            continue
         if method in ("local_average", "local_average_corrected"):
             local, everywhere = _local_slopes(grid, rows, cols, cells, ks, distance)
         if method == "local_average":
