@@ -100,9 +100,13 @@ class Configs:
     bathy_bed_cap: bool = True
     # Smooth each reach's channel widths and bank elevations (arc.bathymetry.smooth_bank_elevations), and its bed
     # (arc.bathymetry.smooth_channel_depths). False leaves each cross section's own. Unless given, the bed is smoothed
-    # without the standard step and not with it: a smoothed bed is a neighbour's, too shallow for a narrow channel to
-    # carry the baseflow in bank and too deep for a wide one, and the standard step's water rides above the dips that
-    # leaves in the normal depths (on the Karnali's main stem, 0.9 m higher at the baseflow).
+    # only without the standard step and without bank elevations (Bathy_Use_Banks): a smoothed bed is a neighbour's,
+    # too shallow for a narrow channel to carry the baseflow in bank and too deep for a wide one. The standard step's
+    # water rides above the dips that leaves in the normal depths (on the Karnali's main stem, 0.9 m higher at the
+    # baseflow). Without it, each rating curve is its own cross section's, so with bank elevations, where the baseflow
+    # should fill each channel to its banks, the water lands metres above or below them: on the Karnali, where
+    # water-mask banks 54 m apart sit next to the reach median's 210 m, 14 m above them, and 465 cells' water below
+    # the DEM.
     bathy_smooth_banks: bool = True
     bathy_smooth_bed: bool | None = None
     findbanksbasedonlandcover: bool = False
@@ -330,7 +334,7 @@ class Configs:
 
         # The dataclass is frozen, so derived values are set with object.__setattr__
         if self.bathy_smooth_bed is None:
-            object.__setattr__(self, 'bathy_smooth_bed', not self.standard_step)
+            object.__setattr__(self, 'bathy_smooth_bed', not (self.standard_step or self.bathy_use_banks))
         object.__setattr__(self, 'makes_rating_curves', makes_rating_curves)
         object.__setattr__(self, 'use_representative_baseflow_bathymetry', b_use_representative_baseflow_bathymetry)
         object.__setattr__(self, 'use_bathymetry_powerlaw', b_use_bathymetry_powerlaw)

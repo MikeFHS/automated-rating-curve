@@ -6,8 +6,16 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
 1. Widths: a channel narrower than its reach's 25th percentile width or wider than its 75th, or one without valid
    banks, gets banks for the reach's median width instead, unless its banks are where the water ends in the water
    mask or the land cover (filter_reach_widths).
-2. Observations: each cross section's lower bank above its stream cell is an observation of the bank elevation. With
-   four or more in a reach, those below its 2nd percentile or above its 97th are left out (reach_bank_observations).
+2. Observations: each cross section's lower bank above its stream cell, as found, is an observation of the bank
+   elevation. With four or more in a reach, those below its 2nd percentile or above its 97th are left out
+   (reach_bank_observations). The banks the width filter gave a cross section aren't observations: they are the ground
+   wherever the reach's median width puts them, which in a gorge whose reach widens downstream is far up its walls
+   (35-38 m up, at the head of a Karnali reach whose median width is the plain's). Nor is a bank the water didn't
+   show (from the DEM: width-to-depth or flat water) that is above its cross section's ceiling, the water surface
+   that carries its largest flow over the DEM's own cross section (below_ceilings): no flood reaches it, so it is a
+   valley wall. Where the DEM can't resolve a creek in a V-shaped valley, those are all ARC finds; counted, they put
+   a Karnali tributary's bank elevation 10 m up, and with it the bed it carved. Only where that would leave the whole
+   site without an observation (deep channels that hold even the largest flow, and no water mask) are they kept.
 3. Order: the cross sections are put in order from upstream to downstream (order_reach).
 4. Levels: the bank elevation is the stream cells' elevations, fitted never to rise downstream, plus the bank's
    height: the 10th percentile of the observations' heights above their stream cells within 500 m along the reach,
@@ -25,9 +33,9 @@ So the bank elevation follows the shape of the stream, and only its height comes
 pull a whole reach down. Only a site without any observation gets no bank elevations (NaN).
 
 With smooth=False (Bathy_Smooth_Banks off), each cross section keeps its own banks and its own observation as its bank
-elevation, none left out. One without an observation takes its stream cell's elevation plus the reach's bank height
-(the 10th percentile of its observations' heights), or the whole site's. The cross sections are still put in order,
-and the junctions aren't tapered.
+elevation, none left out but those above their ceilings. One without an observation takes its stream cell's elevation
+plus the reach's bank height (the 10th percentile of its observations' heights), or the whole site's. The cross
+sections are still put in order, and the junctions aren't tapered.
 """
 from __future__ import annotations
 
@@ -38,6 +46,7 @@ import networkx as nx
 import numpy as np
 from numba import njit
 
+from arc._log import LOG
 from arc.bathymetry.banks import Banks, bank_control_elevation, banks_for_width
 from arc.xsection.slope import main_stem_above
 from arc.xsection.stream_path import along_stream_stations, downstream_order
@@ -48,6 +57,7 @@ ORIENTING_CELLS = 10  # how many cross sections at each end decide which end of 
 BANK_HEIGHT_QUANTILE = 0.1  # the bank's height above the water: this quantile of the observations' heights...
 BANK_HEIGHT_WINDOW = 500.0  # ...within this many metres either side along the reach
 JUNCTION_TAPER = 500.0  # metres either side of a junction over which two reaches' bank elevations are made to meet
+WATER_BANKS = "land_cover"  # the method of banks found where the water mask's or the land cover's water ends
 
 
 class ReachWidths(NamedTuple):
@@ -58,11 +68,13 @@ class ReachWidths(NamedTuple):
 
 
 class ReachSections(NamedTuple):
-    """A reach's cross sections: each one's stream cell, the section, and its banks from find_banks."""
+    """A reach's cross sections: each one's stream cell, the section, its banks from find_banks, and the ceiling
+    above which a bank the water didn't show is a valley wall (see below_ceilings; None, or NaN, for none)."""
     rows: np.ndarray
     cols: np.ndarray
     sections: Sequence[XSection]
     banks: Sequence[Banks]
+    ceilings: np.ndarray | None = None
 
 
 class SmoothedReach(NamedTuple):
@@ -70,7 +82,8 @@ class SmoothedReach(NamedTuple):
     stations, which are in order from upstream to downstream."""
     banks: list[Banks]  # after the width filter (as given, unsmoothed)
     bank_elevations: np.ndarray  # the smoothed bank elevations (each cross section's own), NaN if there are none
-    observations: np.ndarray  # each cross section's observation, NaN for none or an outlier
+    observations: np.ndarray  # each cross section's observation from its banks as found, NaN for none, an outlier or
+    # a wall above its ceiling
     order: np.ndarray  # the cross sections from upstream to downstream
     stations: np.ndarray  # how far each is along the stream from the upstream one, in metres
     widths: ReachWidths | None  # None if no cross section had valid banks
@@ -97,7 +110,7 @@ def filter_reach_widths(sections: Sequence[XSection], banks: Sequence[Banks]) ->
         return banks, None
     q25, median, q75 = (float(p) for p in np.percentile(widths, [25, 50, 75]))
     for k, (xs, b) in enumerate(zip(sections, banks)):
-        if b.valid and b.method == "land_cover":
+        if b.valid and b.method == WATER_BANKS:
             continue
         if not b.valid or b.top_width < q25 or b.top_width > q75:
             rebuilt = banks_for_width(xs, median)
@@ -122,6 +135,19 @@ def reach_bank_observations(sections: Sequence[XSection], banks: Sequence[Banks]
     lower, upper = (float(p) for p in np.percentile(observations[finite], OUTLIER_PERCENTILES))
     observations[finite & ((observations < lower) | (observations > upper))] = math.nan
     return observations, lower, upper
+
+
+def below_ceilings(observations, banks: Sequence[Banks], ceilings) -> np.ndarray:
+    """The observations with those of banks the water didn't show (any method but the water mask's or the land
+    cover's) above their cross section's ceiling left out (NaN): a valley wall, not a bank. A NaN ceiling, or None for
+    all of them, leaves an observation in."""
+    observations = np.array(observations, dtype=np.float64)
+    if ceilings is None:
+        return observations
+    ceilings = np.asarray(ceilings, dtype=np.float64)
+    from_the_dem = np.array([b.method != WATER_BANKS for b in banks], dtype=bool)
+    observations[from_the_dem & (observations > ceilings)] = math.nan  # a NaN ceiling compares False
+    return observations
 
 
 def order_reach(network: nx.DiGraph, reach: int, rows, cols, dx: float, dy: float,
@@ -356,18 +382,32 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
     cells = {reach: (np.asarray(r.rows, dtype=np.int64), np.asarray(r.cols, dtype=np.int64))
              for reach, r in reaches.items() if len(r.sections) > 0}
 
-    prepared = {}
+    found = {}
     for reach, sections in reaches.items():
         if len(sections.sections) == 0:
             continue
         thalwegs = np.array([float(xs.elevations[xs.elevations.size // 2]) for xs in sections.sections])
+        # The observations are the banks as found, not the width filter's (see the notes above)
         if smooth:
             banks, widths = filter_reach_widths(sections.sections, sections.banks)
-            observations, _, _ = reach_bank_observations(sections.sections, banks)
+            observations, _, _ = reach_bank_observations(sections.sections, sections.banks)
         else:
             banks, widths = list(sections.banks), None
             observations = np.array([bank_control_elevation(b, z) if b.valid else math.nan
                                      for b, z in zip(banks, thalwegs)], dtype=np.float64)
+        found[reach] = (banks, widths, observations, below_ceilings(observations, sections.banks, sections.ceilings),
+                        thalwegs)
+    # Where the largest flow stays below every bank, as in a site of deep channels without a water mask, the ceilings
+    # would leave no observation anywhere, and no bank elevation; the banks from the DEM are all there is then
+    keep_walls = not any(np.isfinite(below).any() for _, _, _, below, _ in found.values())
+    if keep_walls and any(np.isfinite(observed).any() for _, _, observed, _, _ in found.values()):
+        LOG.info("Every bank observation is above the water that carries its cross section's maximum flow, so they "
+                 "are all kept.")
+
+    prepared = {}
+    for reach, (banks, widths, observed, below, thalwegs) in found.items():
+        observations = observed if keep_walls else below
+        sections = reaches[reach]
         order, stations = order_reach(network, reach, sections.rows, sections.cols, dx, dy, cells, observations,
                                       stream_cells=stream_cells, outlets=outlets)
         prepared[reach] = (banks, widths, observations, order, stations, thalwegs)

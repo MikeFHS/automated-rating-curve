@@ -24,11 +24,13 @@ The steps
    does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then the water's n between them.
 7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed, and the
    bank elevations ramped to meet at each junction on a main stem (unless Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
-   (unless Bathy_Smooth_Bed is off, as it is by default with Standard_Step), and the channel carved into each cross
-   section and burned into the bathymetry raster, whose gaps are then filled. Each cross section's centre cell gets
-   its own carved bed, the Elev of its rating curve, and other cells where cross sections overlap get their mean (see
-   arc.bathymetry.raster). A channel whose banks nothing resolved
-   is carved as wide as its width prior, where it has one, and otherwise one cell wide.
+   (unless Bathy_Smooth_Bed is off, as it is by default with Standard_Step or Bathy_Use_Banks), and the channel carved
+   into each cross section and burned into the bathymetry raster, whose gaps are then filled. Each cross section's
+   centre cell gets its own carved bed, the Elev of its rating curve, and other cells where cross sections overlap get
+   their mean (see arc.bathymetry.raster). A channel whose banks nothing resolved is carved as wide as its width
+   prior, where it has one, and otherwise one cell wide. The water's n goes between the banks the channel is carved
+   to, which the width filter may have moved. A bank from the DEM above the water that carries the cell's maximum
+   flow is a valley wall, and isn't an observation of the bank elevation (bank_ceilings).
 8. Rating curves (arc.rating_curve), linked along the stream network by the standard step with Standard_Step
    (arc.standard_step), and the representative cross sections (arc.outputs.representative) when they're asked for.
 9. Outputs (arc.outputs), on the DEM's grid.
@@ -62,8 +64,9 @@ from arc.bathymetry import (Banks, ReachSections, banks_for_width, bathymetry_de
 from arc.bathymetry.banks import _on_raster_ordinates
 from arc.bathymetry.bed_smoothing import MAX_BED_GRADE, MEDIAN_WINDOW
 from arc.bathymetry.depth import power_law_geometry
+from arc.bathymetry.smoothing import WATER_BANKS
 from arc.config import Configs
-from arc.hydraulics import DepthRoughness
+from arc.hydraulics import DepthRoughness, wse_for_discharge
 from arc.io import Raster, Vector
 from arc.outputs import (CrossSectionRecord, RatingCurves, RepresentativeSample,
                          representative_cross_section_dataframe, vdt_dataframe, write_ap, write_cross_sections,
@@ -707,15 +710,36 @@ def unresolved_banks(xs: XSection, target_width: float) -> Banks:
     return single_cell_banks(xs)
 
 
+def bank_ceilings(sections: list, ks, max_flow, slopes, roughness: DepthRoughness | None,
+                  slope_factor: float) -> np.ndarray:
+    """The ceilings of cross sections ks (see arc.bathymetry.smoothing.below_ceilings): the water surface that carries
+    each one's maximum flow over its cross section as the DEM has it, before any carving and without banks. NaN, for
+    no ceiling, where the banks are the water's (water mask or land cover) or not valid, or where there's no maximum
+    flow or slope to carry, or the cross section never carries it."""
+    ceilings = np.full(len(ks), math.nan)
+    for position, k in enumerate(ks):
+        section = sections[k]
+        q, slope = float(max_flow[k]), float(slopes[k])
+        if section.banks.valid and section.banks.method != WATER_BANKS and q > 0.0 and slope > 0.0:
+            ceilings[position] = wse_for_discharge(section.xs, q, slope, roughness=roughness,
+                                                   slope_factor=slope_factor)
+    return ceilings
+
+
 def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list, network, slopes, baseflow,
-                     target_depth, target_width, water_n: float, *, stream_cells=None, outlets=None) -> np.ndarray:
+                     target_depth, target_width, water_n: float, *, stream_cells=None, outlets=None, max_flow=None,
+                     roughness: DepthRoughness | None = None) -> np.ndarray:
     """Smooth the banks, find, smooth and carve each channel, and return the filled bathymetry raster.
 
     With Bathy_Use_Banks, the sections of a reach given no bank elevation become unusable (which happens only where
     the whole site has no bank observation). A channel whose banks are still unresolved after the width filter is
     carved at its width prior, or one cell wide (unresolved_banks). The depth that carries the baseflow is solved with
-    water_n, the water class's Manning's n, which is the n the channel has between its banks. stream_cells and
-    outlets help order the cross sections of a reach none of whose neighbours has any (see order_reach).
+    water_n, the water class's Manning's n, which is the n the channel has between its banks, so the cross section
+    is given it there: between the banks the hydraulics use, which the width filter may have moved from the banks
+    found (run() gives it between those). stream_cells and outlets help order the cross sections of a reach none of
+    whose neighbours has any (see order_reach). With max_flow, each cell's maximum flow, and the rating curves'
+    roughness, a bank from the DEM above the water that carries the maximum flow isn't an observation of the bank
+    elevation (bank_ceilings).
     """
     if network is None:
         raise ValueError("Bathymetry needs the stream network, from StrmShp_File, reach_id and downstream_reach_id.")
@@ -725,7 +749,10 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
         if section is not None:
             by_reach.setdefault(int(cells.reaches[k]), []).append(k)
     reaches = {reach: ReachSections(cells.rows[ks], cells.cols[ks], [sections[k].xs for k in ks],
-                                    [sections[k].banks for k in ks]) for reach, ks in by_reach.items()}
+                                    [sections[k].banks for k in ks],
+                                    None if max_flow is None else bank_ceilings(
+                                        sections, ks, max_flow, slopes, roughness, configs.slope_adjustment_factor))
+               for reach, ks in by_reach.items()}
     smoothed = smooth_bank_elevations(network, reaches, grid.dx, grid.dy, smooth=configs.bathy_smooth_banks,
                                       stream_cells=stream_cells, outlets=outlets)
 
@@ -744,6 +771,7 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
             sections[k].hydraulic_banks = banks if banks.valid else unresolved_banks(sections[k].xs,
                                                                                      float(target_width[k]))
             sections[k].bank_elevation = float(result.bank_elevations[position])
+            set_in_bank_roughness(sections[k].xs, sections[k].hydraulic_banks, water_n)
 
     depths, applies = {}, {}
     for reach, ks in by_reach.items():
@@ -951,19 +979,19 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         stream_reaches = stream_cells_by_reach(grid.streams)
         outlets = line_outlets(configs, grid, layer, cells.reaches)
 
+    roughness = DepthRoughness(configs.k_decay, configs.shallow_factor, configs.deep_factor) \
+        if configs.depth_varying_n else None
     results = Results(configs, cells, slopes, baseflow, max_flow, sections)
     if configs.bathy_out_file:
         results.bathymetry = apply_bathymetry(configs, grid, cells, sections, network, slopes, baseflow,
                                               target_depth, target_width, water_n, stream_cells=stream_reaches,
-                                              outlets=outlets)
+                                              outlets=outlets, max_flow=max_flow, roughness=roughness)
     usable = [(k, s) for k, s in enumerate(sections) if s is not None and s.usable]
     for _, section in usable:
         set_bank_distances(section.xs, section.hydraulic_banks)
     if configs.xs_out_file:
         results.cross_sections = [cross_section_record(s, cells.comids[k]) for k, s in usable]
 
-    roughness = DepthRoughness(configs.k_decay, configs.shallow_factor, configs.deep_factor) \
-        if configs.depth_varying_n else None
     if configs.makes_rating_curves:
         results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet)
         if configs.standard_step:
