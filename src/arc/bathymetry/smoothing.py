@@ -13,13 +13,21 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
    height: the 10th percentile of the observations' heights above their stream cells within 500 m along the reach,
    or the reach's, or the whole site's where there are none. The sum is fitted never to rise again, and is never
    below the stream cell (reach_bank_levels).
+5. Junctions: each reach's levels are its own, so where one reach flows into the next they can differ by metres,
+   their heights coming from different banks (by over 1 m at a fifth of the junctions of 68 test sites, where the
+   stream cells differ by that at under 2%). With the standard step, a bed that steps like that drops the water
+   surface over it in a cell or two. So for each reach and the one above it on its main stem (main_stem_above), the
+   last JUNCTION_TAPER metres of the one above and the first of the one below are ramped to meet at the mean of the
+   two levels, the shift falling linearly to nothing JUNCTION_TAPER metres from the junction (taper_junctions). Where
+   the reach below stood higher, the level rises on the ramp; it still never goes below the stream cell.
 
 So the bank elevation follows the shape of the stream, and only its height comes from the banks: a few low banks can't
 pull a whole reach down. Only a site without any observation gets no bank elevations (NaN).
 
 With smooth=False (Bathy_Smooth_Banks off), each cross section keeps its own banks and its own observation as its bank
 elevation, none left out. One without an observation takes its stream cell's elevation plus the reach's bank height
-(the 10th percentile of its observations' heights), or the whole site's. The cross sections are still put in order.
+(the 10th percentile of its observations' heights), or the whole site's. The cross sections are still put in order,
+and the junctions aren't tapered.
 """
 from __future__ import annotations
 
@@ -31,6 +39,7 @@ import numpy as np
 from numba import njit
 
 from arc.bathymetry.banks import Banks, bank_control_elevation, banks_for_width
+from arc.xsection.slope import main_stem_above
 from arc.xsection.stream_path import along_stream_stations, downstream_order
 from arc.xsection.xsection import XSection
 
@@ -38,6 +47,7 @@ OUTLIER_PERCENTILES = (2, 97)  # observations outside these percentiles of their
 ORIENTING_CELLS = 10  # how many cross sections at each end decide which end of an unconnected reach is upstream
 BANK_HEIGHT_QUANTILE = 0.1  # the bank's height above the water: this quantile of the observations' heights...
 BANK_HEIGHT_WINDOW = 500.0  # ...within this many metres either side along the reach
+JUNCTION_TAPER = 500.0  # metres either side of a junction over which two reaches' bank elevations are made to meet
 
 
 class ReachWidths(NamedTuple):
@@ -115,23 +125,29 @@ def reach_bank_observations(sections: Sequence[XSection], banks: Sequence[Banks]
 
 
 def order_reach(network: nx.DiGraph, reach: int, rows, cols, dx: float, dy: float,
-                cells: Mapping[int, tuple[np.ndarray, np.ndarray]], observations) -> tuple[np.ndarray, np.ndarray]:
+                cells: Mapping[int, tuple[np.ndarray, np.ndarray]], observations, *,
+                stream_cells: Mapping[int, tuple[np.ndarray, np.ndarray]] | None = None,
+                outlets: Mapping[int, tuple[int, int]] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """A reach's cross sections in order from upstream to downstream, and their stations in metres from the upstream
     one.
 
     The downstream end is nearest the first reach downstream that has cross sections, or, failing that, farthest
     along the stream from the one nearest any reach upstream (see downstream_order). cells holds each reach's cross
-    sections' stream cells. A reach with neither is ordered from one end of its cells to the other, then turned round
-    to put the higher end upstream: an unconnected reach's highest observation before its lowest, or else whichever
-    end's first ten cross sections have the higher mean observation.
+    sections' stream cells. Where no neighbour has cross sections, the same goes for its neighbours' cells on the
+    stream raster (stream_cells, each reach's), and then the downstream end is the cell nearest the cell (row, col)
+    where the reach's line ends (outlets, each reach's). A reach with none of these is ordered from one end of its
+    cells to the other, then turned round to put the higher end upstream: an unconnected reach's highest observation
+    before its lowest, or else whichever end's first ten cross sections have the higher mean observation. Those are
+    noisy where the water is flat, which is why the network and the line come first.
     """
     rows = np.asarray(rows, dtype=np.int64)
     cols = np.asarray(cols, dtype=np.int64)
-    downstream = next((cells[s] for s in network.successors(reach) if s in cells and len(cells[s][0]) > 0), None)
-    upstream = [cells[p] for p in network.predecessors(reach) if p in cells]
-    upstream_cells = (np.concatenate([c[0] for c in upstream]), np.concatenate([c[1] for c in upstream])) \
-        if upstream else None
-    ordered = downstream_order(rows, cols, dx, dy, downstream_cells=downstream, upstream_cells=upstream_cells)
+    ordered = _order_by_neighbours(network, reach, rows, cols, dx, dy, cells)
+    if ordered is None and stream_cells is not None:
+        ordered = _order_by_neighbours(network, reach, rows, cols, dx, dy, stream_cells)
+    if ordered is None and outlets is not None and reach in outlets:
+        row, col = outlets[reach]
+        ordered = downstream_order(rows, cols, dx, dy, downstream_cells=(np.array([row]), np.array([col])))
     if ordered is not None:
         return ordered
 
@@ -142,6 +158,15 @@ def order_reach(network: nx.DiGraph, reach: int, rows, cols, dx: float, dy: floa
                                  network.in_degree(reach) == 0 and network.out_degree(reach) == 0):
         order, stations = order[::-1].copy(), stations[-1] - stations[::-1]
     return order, stations
+
+
+def _order_by_neighbours(network: nx.DiGraph, reach: int, rows: np.ndarray, cols: np.ndarray, dx: float, dy: float,
+                         cells: Mapping[int, tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray] | None:
+    downstream = next((cells[s] for s in network.successors(reach) if s in cells and len(cells[s][0]) > 0), None)
+    upstream = [cells[p] for p in network.predecessors(reach) if p in cells]
+    upstream_cells = (np.concatenate([c[0] for c in upstream]), np.concatenate([c[1] for c in upstream])) \
+        if upstream else None
+    return downstream_order(rows, cols, dx, dy, downstream_cells=downstream, upstream_cells=upstream_cells)
 
 
 def _higher_end_is_downstream(ordered_observations: np.ndarray, unconnected: bool) -> bool:
@@ -275,16 +300,54 @@ def reach_bank_levels(thalwegs, observations, stations, fallback_height: float, 
     return np.maximum(_falling_fit(water + height), np.where(known, thalwegs, -math.inf))
 
 
+def taper_junctions(network: nx.DiGraph, smoothed: Mapping[int, SmoothedReach], thalwegs: Mapping[int, np.ndarray], *,
+                    taper: float = JUNCTION_TAPER) -> dict[int, SmoothedReach]:
+    """The reaches with their bank elevations ramped to meet at each junction on a main stem (see the notes above).
+
+    thalwegs holds each reach's stream cells' elevations, in the order its cross sections were given; the bank
+    elevations are kept at or above them. A reach without bank elevations, and one with no main-stem neighbour that
+    has them, is left as it is. The shifts are worked out from the levels as given, so a reach shorter than twice
+    the taper takes both its ramps.
+    """
+    if not taper > 0.0:
+        raise ValueError(f"The junction taper must be above 0 m, not {taper!r}.")
+    with_levels = {reach for reach, s in smoothed.items() if np.isfinite(s.bank_elevations).any()}
+    shifts = {reach: np.zeros(smoothed[reach].bank_elevations.size) for reach in with_levels}
+    for below in with_levels:
+        above = main_stem_above(network, below, with_levels) if below in network else None
+        if above is None:
+            continue
+        upper, lower = smoothed[above], smoothed[below]
+        end = float(upper.bank_elevations[upper.order[-1]])
+        start = float(lower.bank_elevations[lower.order[0]])
+        if not (math.isfinite(end) and math.isfinite(start)):
+            continue
+        meet = 0.5 * (end + start)
+        to_junction = upper.stations[-1] - upper.stations
+        shifts[above][upper.order] += np.clip(1.0 - to_junction / taper, 0.0, 1.0) * (meet - end)
+        shifts[below][lower.order] += np.clip(1.0 - lower.stations / taper, 0.0, 1.0) * (meet - start)
+    tapered = dict(smoothed)
+    for reach, shift in shifts.items():
+        if shift.any():
+            floor = np.where(np.isfinite(thalwegs[reach]), thalwegs[reach], -math.inf)
+            levels = np.maximum(smoothed[reach].bank_elevations + shift, floor)
+            tapered[reach] = smoothed[reach]._replace(bank_elevations=levels)
+    return tapered
+
+
 # --- Everything ---------------------------------------------------------------------------------------------------
 
 
 def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSections], dx: float,
-                           dy: float, *, smooth: bool = True) -> dict[int, SmoothedReach]:
+                           dy: float, *, smooth: bool = True,
+                           stream_cells: Mapping[int, tuple[np.ndarray, np.ndarray]] | None = None,
+                           outlets: Mapping[int, tuple[int, int]] | None = None) -> dict[int, SmoothedReach]:
     """Smooth the bank elevations of every reach's cross sections (see the notes above), or with smooth=False, give
     each its own.
 
-    network runs from each reach to the one downstream of it (reach_network), and orders each reach's cross sections.
-    Every reach with cross sections must be in it. dx and dy are the cells' width and height in metres.
+    network runs from each reach to the one downstream of it (reach_network), and orders each reach's cross sections,
+    with stream_cells and outlets where no neighbour has cross sections (see order_reach). Every reach with cross
+    sections must be in it. dx and dy are the cells' width and height in metres.
     """
     missing = sorted(reach for reach in reaches if reach not in network)
     if missing:
@@ -305,7 +368,8 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
             banks, widths = list(sections.banks), None
             observations = np.array([bank_control_elevation(b, z) if b.valid else math.nan
                                      for b, z in zip(banks, thalwegs)], dtype=np.float64)
-        order, stations = order_reach(network, reach, sections.rows, sections.cols, dx, dy, cells, observations)
+        order, stations = order_reach(network, reach, sections.rows, sections.cols, dx, dy, cells, observations,
+                                      stream_cells=stream_cells, outlets=outlets)
         prepared[reach] = (banks, widths, observations, order, stations, thalwegs)
 
     # The whole site's bank height, for reaches without observations of their own
@@ -325,4 +389,6 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
             height = float(np.quantile(reach_heights, BANK_HEIGHT_QUANTILE)) if reach_heights.size else site_height
             bank_elevations = np.where(np.isfinite(observations), observations, thalwegs + height)
         smoothed[reach] = SmoothedReach(banks, bank_elevations, observations, order, stations, widths)
+    if smooth:
+        smoothed = taper_junctions(network, smoothed, {reach: p[5] for reach, p in prepared.items()})
     return smoothed

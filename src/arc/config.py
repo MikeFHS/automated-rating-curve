@@ -56,7 +56,7 @@ class Configs:
     lu_manning_n: os.PathLike | None = None
     manual_cross_sections_file: os.PathLike | None = None
     # Where the water is (its non-zero cells), on the DEM's grid: the banks are where its water ends. curve2flood
-    # reads it too, and keeps the bathymetry only inside it.
+    # reads it too, only to flood its cells (Flood_Bathy_Mask): it burns the bathymetry in wherever ARC carved.
     bathywatermask: os.PathLike | None = None
 
     # Input file field names

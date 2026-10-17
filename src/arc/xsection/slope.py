@@ -7,7 +7,9 @@ The slope methods (Stream_Slope_Method), and when each can't give a slope:
 
 - local_average: each cell's slope is the mean of its slopes to the reach's other cells within Gen_Slope_Dist cells
   of it along each axis, kept between 0.00001 and 0.5 (local_average_slopes). None for a cell with no other cell of
-  its reach that near, and the reach's slope is the median of its cells'.
+  its reach that near, and the reach's slope is the median of its cells'. With a stream network, arc.pipeline counts
+  the cells of the reach's main-stem neighbours too (main_stem_above, and the reach below), so that a cell near a
+  junction isn't averaged over one side of it alone: one-sided, the slopes jumped across junctions.
 - reach_average: every cell takes its reach's median slope, from the slopes between all pairs of the reach's cells
   within Gen_Slope_Dist cells of each other along each axis, leaving out level pairs. The median is of the slopes
   between two percentiles of them, 25 and 75 by default (reach_median_slope). None for a reach without a pair of cells
@@ -273,6 +275,15 @@ def corrected_local_slopes(local_slopes, lower: float, upper: float) -> np.ndarr
     return np.where(local_slopes < lower, lower, np.where(local_slopes > upper, upper, local_slopes))
 
 
+def main_stem_above(network: nx.DiGraph, reach: int, among=None) -> int | None:
+    """The reach's upstream neighbour on its main stem: the one with the most reaches above it, and of those the
+    lowest ID, among the reaches in `among` if it's given. None if the reach has no such neighbour."""
+    upstream = [p for p in network.predecessors(reach) if among is None or p in among]
+    if not upstream:
+        return None
+    return max(upstream, key=lambda p: (len(nx.ancestors(network, p)), -p))
+
+
 def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict) -> set:
     """Give the reaches without a slope (NaN) their neighbours' slope, in place, and return the reaches still left
     without one.
@@ -288,11 +299,10 @@ def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict) -> set:
         for reach in sorted(unresolved):
             if reach not in network:
                 continue
-            upstream = [p for p in network.predecessors(reach) if p in slopes and p not in unresolved]
+            main_stem = main_stem_above(network, reach, slopes.keys() - unresolved)
             downstream = [s for s in network.successors(reach) if s in slopes and s not in unresolved]
             neighbour_slopes = []
-            if upstream:
-                main_stem = max(upstream, key=lambda p: (len(nx.ancestors(network, p)), -p))
+            if main_stem is not None:
                 neighbour_slopes.append(slopes[main_stem])
             if downstream:
                 neighbour_slopes.append(slopes[downstream[0]])

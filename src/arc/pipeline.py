@@ -8,13 +8,13 @@ or from the command line, ``python -m arc.pipeline ARC_Input_File.yaml`` (or ``a
 
 The steps
 ---------
-1. Inputs: the flow file, and the DEM, stream and land cover rasters and the water mask (BathyWaterMask), which must
+1. Read Inputs: the flow file, and the DEM, stream and land cover rasters and the water mask (BathyWaterMask), which must
    share one grid (north-up or south-up, not rotated, in metres or degrees). The stream network (StrmShp_File), if
-   given, serves the bathymetry, the slopes and the drainage-area power laws. DEM cells without data are walls, like
-   the ground beyond the raster's edge.
+   given, serves the bathymetry, the slopes and the drainage-area power laws. DEM cells without data are walls.
 2. Stream cells: the stream raster's cells whose ID is in the flow file (every stream cell for representative cross
    sections built without flows), or the manual cross sections' cells.
-3. Slopes, by Stream_Slope_Method (arc.xsection.slope). A reach the method can't give a slope takes its
+3. Slopes, by Stream_Slope_Method (arc.xsection.slope). The local averages near a reach's ends reach into its
+   main-stem neighbours' cells, where there's a stream network. A reach the method can't give a slope takes its
    neighbours' in the stream network, and the cells of a reach left without one are skipped.
 4. Roughness: the stream cells become water in the land cover (and in the water mask), and each land cover class
    takes its n from the Manning's n table.
@@ -22,10 +22,12 @@ The steps
    channel is narrowest, and the cross section there.
 6. Banks (arc.bathymetry.find_banks): where the water mask's water ends, if there is a mask, or where the land cover's
    does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then the water's n between them.
-7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed (unless
-   Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
+7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed, and the
+   bank elevations ramped to meet at each junction on a main stem (unless Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
    (unless Bathy_Smooth_Bed is off, as it is by default with Standard_Step), and the channel carved into each cross
-   section and burned into the bathymetry raster, whose gaps are then filled. A channel whose banks nothing resolved
+   section and burned into the bathymetry raster, whose gaps are then filled. Each cross section's centre cell gets
+   its own carved bed, the Elev of its rating curve, and other cells where cross sections overlap get their mean (see
+   arc.bathymetry.raster). A channel whose banks nothing resolved
    is carved as wide as its width prior, where it has one, and otherwise one cell wide.
 8. Rating curves (arc.rating_curve), linked along the stream network by the standard step with Standard_Step
    (arc.standard_step), and the representative cross sections (arc.outputs.representative) when they're asked for.
@@ -74,7 +76,7 @@ from arc.xsection.low_spot import low_spot_cell
 from arc.xsection.orientation import angle_offsets, narrowest_direction, stream_direction
 from arc.xsection.sampling import OFF_RASTER_ELEVATION, sample_elevations
 from arc.xsection.slope import (corrected_local_slopes, end_point_slope, fill_unresolved_reach_slopes,
-                                local_average_slopes, local_fit_slopes, reach_median_slope)
+                                local_average_slopes, local_fit_slopes, main_stem_above, reach_median_slope)
 from arc.xsection.stream_path import along_stream_stations, stream_cells_by_reach
 from arc.xsection.xsection import XSection
 
@@ -245,6 +247,28 @@ def stream_network(configs: Configs, layer):
     return reach_network(layer[configs.reach_id].tolist(), layer[configs.downstream_reach_id].tolist())
 
 
+def line_outlets(configs: Configs, grid: Grid, layer, reaches) -> dict[int, tuple[int, int]]:
+    """The cell (row, col) holding the end of each of these reaches' lines in the stream layer, which may be off the
+    raster. Stream networks are drawn from upstream to downstream, so it's the downstream end, which orders a reach
+    none of whose neighbours is on the stream raster (see order_reach). A reach's first feature counts, and of a
+    multi-part line, the last part."""
+    if layer is None or configs.reach_id not in layer.columns:
+        return {}
+    ids = pd.to_numeric(layer[configs.reach_id], errors="coerce")
+    first = (ids.isin(np.unique(np.asarray(reaches, dtype=np.int64))) & ~ids.duplicated()).to_numpy()
+    features = layer[first]
+    if features.crs is not None:
+        features = features.to_crs(grid.reference.crs)
+    x0, width, _, y0, _, height = grid.reference.geotransform
+    outlets = {}
+    for reach, line in zip(ids[first], features.geometry):
+        if line is None or line.is_empty:
+            continue
+        x, y = (line.geoms[-1] if hasattr(line, "geoms") else line).coords[-1][:2]
+        outlets[int(reach)] = (math.floor((y - y0) / height), math.floor((x - x0) / width))
+    return outlets
+
+
 def power_law_targets(configs: Configs, layer) -> dict[int, tuple[float | None, float | None]]:
     """Each reach's drainage-area bankfull depth and width, where configured."""
     if not (configs.use_bathymetry_powerlaw or configs.use_bathymetry_powerlaw_width):
@@ -402,12 +426,29 @@ def _at_cells(values, have: dict, cells: Cells, ks) -> np.ndarray:
     return np.array([values[have[(int(cells.rows[k]), int(cells.cols[k]))]] for k in ks], dtype=np.float64)
 
 
-def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[np.ndarray, np.ndarray]:
-    """The local average slope at each of cells ks, and at every cell of their reach (see _reach_cells)."""
+def _local_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance, neighbours=None) -> tuple[np.ndarray, np.ndarray]:
+    """The local average slope at each of cells ks, and at every cell of their reach (see _reach_cells), averaged
+    over the reach's cells and its neighbours' (neighbours, their rows and cols) within the distance."""
+    own = len(rows)
+    extra = 0 if neighbours is None else len(neighbours[0])
+    if extra:
+        rows, cols = np.concatenate([rows, neighbours[0]]), np.concatenate([cols, neighbours[1]])
     rows, cols, have = _reach_cells(rows, cols, cells, ks)
     stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
     values = local_average_slopes(grid.dem[rows, cols], rows, cols, stations, grid.dx, grid.dy, distance)
-    return _at_cells(values, have, cells, ks), values
+    return _at_cells(values, have, cells, ks), np.r_[values[:own], values[own + extra:]]
+
+
+def _main_stem_cells(network, reach: int, stream_reaches: dict) -> tuple[np.ndarray, np.ndarray] | None:
+    """The stream cells of the reach's neighbours on its main stem, the reach above it (main_stem_above) and the one
+    below, or None without a stream network."""
+    if network is None or reach not in network:
+        return None
+    above = main_stem_above(network, reach, stream_reaches)
+    parts = [stream_reaches[n] for n in [above, *network.successors(reach)] if n in stream_reaches]
+    if not parts:
+        return None
+    return np.concatenate([r for r, _ in parts]), np.concatenate([c for _, c in parts])
 
 
 def _fitted_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[np.ndarray, float]:
@@ -422,10 +463,14 @@ def _fitted_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[
     return _at_cells(values, have, cells, ks), reach_slope
 
 
-def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict) -> tuple[dict, dict]:
+def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict, network=None) -> tuple[dict, dict]:
     """By a method that measures slopes between stream cells: each reach's slope, NaN where the DEM gives none, and
     the slopes of the run's cells, by reach, NaN where a cell has none. Every reach on the stream raster gets a slope,
-    so that a reach without one can take its neighbours'."""
+    so that a reach without one can take its neighbours'.
+
+    With a stream network, the local averages take in the cells of the reach's main-stem neighbours too, so that a
+    cell near a junction is averaged over both sides of it; the reach's percentiles and median slope are still its
+    own cells'. The fitted lines (local_fit) stay within the reach."""
     method = configs.stream_slope_method
     distance = configs.gen_slope_dist
     stream_reaches = stream_cells_by_reach(grid.streams)
@@ -438,7 +483,8 @@ def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict) -> t
             cell_values[reach], reach_slopes[reach] = _fitted_slopes(grid, rows, cols, cells, ks, distance)
             continue
         if method in ("local_average", "local_average_corrected"):
-            local, everywhere = _local_slopes(grid, rows, cols, cells, ks, distance)
+            local, everywhere = _local_slopes(grid, rows, cols, cells, ks, distance,
+                                              _main_stem_cells(network, reach, stream_reaches))
         if method == "local_average":
             measured = everywhere[~np.isnan(everywhere)]
             reach_slopes[reach] = float(np.median(measured)) if measured.size else math.nan
@@ -491,7 +537,7 @@ def cell_slopes(configs: Configs, grid: Grid, cells: Cells, network, layer) -> t
         reach_slopes = _end_point_slopes(configs, grid, layer, by_reach)
         cell_values = {reach: np.full(len(ks), reach_slopes[reach]) for reach, ks in by_reach.items()}
     else:
-        reach_slopes, cell_values = _dem_slopes(configs, grid, cells, by_reach)
+        reach_slopes, cell_values = _dem_slopes(configs, grid, cells, by_reach, network)
     measured = {reach for reach, slope in reach_slopes.items() if not math.isnan(slope)}
     if network is not None:
         left = fill_unresolved_reach_slopes(network, reach_slopes)
@@ -662,13 +708,14 @@ def unresolved_banks(xs: XSection, target_width: float) -> Banks:
 
 
 def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list, network, slopes, baseflow,
-                     target_depth, target_width, water_n: float) -> np.ndarray:
+                     target_depth, target_width, water_n: float, *, stream_cells=None, outlets=None) -> np.ndarray:
     """Smooth the banks, find, smooth and carve each channel, and return the filled bathymetry raster.
 
     With Bathy_Use_Banks, the sections of a reach given no bank elevation become unusable (which happens only where
     the whole site has no bank observation). A channel whose banks are still unresolved after the width filter is
     carved at its width prior, or one cell wide (unresolved_banks). The depth that carries the baseflow is solved with
-    water_n, the water class's Manning's n, which is the n the channel has between its banks.
+    water_n, the water class's Manning's n, which is the n the channel has between its banks. stream_cells and
+    outlets help order the cross sections of a reach none of whose neighbours has any (see order_reach).
     """
     if network is None:
         raise ValueError("Bathymetry needs the stream network, from StrmShp_File, reach_id and downstream_reach_id.")
@@ -679,7 +726,8 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
             by_reach.setdefault(int(cells.reaches[k]), []).append(k)
     reaches = {reach: ReachSections(cells.rows[ks], cells.cols[ks], [sections[k].xs for k in ks],
                                     [sections[k].banks for k in ks]) for reach, ks in by_reach.items()}
-    smoothed = smooth_bank_elevations(network, reaches, grid.dx, grid.dy, smooth=configs.bathy_smooth_banks)
+    smoothed = smooth_bank_elevations(network, reaches, grid.dx, grid.dy, smooth=configs.bathy_smooth_banks,
+                                      stream_cells=stream_cells, outlets=outlets)
 
     for reach, ks in list(by_reach.items()):
         result = smoothed[reach]
@@ -721,11 +769,12 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
             if applies[reach][position]:
                 carve[k] = float(channels[reach].depths[position])
     bathymetry = np.full(grid.dem.shape, np.nan, dtype=np.float32)
-    for k in sorted(carve):  # in the cells' order, which decides how overlapping cross sections average
+    burns = np.zeros(grid.dem.shape, dtype=np.int32)
+    for k in sorted(carve):
         section = sections[k]
         changed = carve_channel(section.xs, section.hydraulic_banks, carve[k], trapezoid_height=configs.bathy_trap_h,
                                 bank_elevation=section.bank_elevation if use_banks else None)
-        burn_into_raster(bathymetry, section.rows, section.cols, section.xs.elevations, changed)
+        burn_into_raster(bathymetry, burns, section.rows, section.cols, section.xs.elevations, changed)
     ground = None if use_banks else np.where(grid.dem >= OFF_RASTER_ELEVATION, np.nan, grid.dem).astype(np.float32)
     return fill_bathymetry_gaps(bathymetry, ground)
 
@@ -896,10 +945,17 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
             sample_roughness(section, grid, mannings_n, length)
             set_in_bank_roughness(section.xs, section.banks, water_n)
 
+    # Where every reach lies, which orders the cross sections of a reach none of whose neighbours has any
+    stream_reaches = outlets = None
+    if network is not None and (configs.bathy_out_file or configs.standard_step):
+        stream_reaches = stream_cells_by_reach(grid.streams)
+        outlets = line_outlets(configs, grid, layer, cells.reaches)
+
     results = Results(configs, cells, slopes, baseflow, max_flow, sections)
     if configs.bathy_out_file:
         results.bathymetry = apply_bathymetry(configs, grid, cells, sections, network, slopes, baseflow,
-                                              target_depth, target_width, water_n)
+                                              target_depth, target_width, water_n, stream_cells=stream_reaches,
+                                              outlets=outlets)
     usable = [(k, s) for k, s in enumerate(sections) if s is not None and s.usable]
     for _, section in usable:
         set_bank_distances(section.xs, section.hydraulic_banks)
@@ -911,9 +967,12 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
     if configs.makes_rating_curves:
         results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet)
         if configs.standard_step:
+            elevations = grid.dem[cells.rows, cells.cols]
             summary = apply_standard_step(network, cells.rows, cells.cols, cells.reaches, sections, slopes, max_flow,
                                           baseflow, results.curves, grid.dx, grid.dy, roughness=roughness,
-                                          slope_factor=configs.slope_adjustment_factor)
+                                          slope_factor=configs.slope_adjustment_factor, stream_cells=stream_reaches,
+                                          outlets=outlets, elevations=np.where(elevations >= OFF_RASTER_ELEVATION,
+                                                                               np.nan, elevations))
             LOG.info(f"Standard step: {summary.cells} rating curves linked, {summary.critical} of {summary.steps} "
                      "steps at critical depth")
     if configs.build_representative_cross_section:

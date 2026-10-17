@@ -4,7 +4,7 @@ The steps, in the order arc.pipeline runs them:
 
 1. find_banks: each cross section's banks (arc.bathymetry.banks).
 2. smooth_bank_elevations: along each reach, widths far from the reach's median replaced by it, and the bank
-   elevation smoothed (arc.bathymetry.smoothing).
+   elevation smoothed, then ramped to meet the next reach's at each junction on a main stem (arc.bathymetry.smoothing).
 3. bathymetry_depth: how deep each channel is, to carry its baseflow or from a drainage-area power law
    (arc.bathymetry.depth).
 4. smooth_channel_depths: along each reach, missing depths filled in and the channel bed smoothed

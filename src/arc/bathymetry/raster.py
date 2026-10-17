@@ -4,6 +4,11 @@ gaps the cross sections leave in the bathymetry raster.
 Each ordinate belongs to the cell nearest to it. Sampling steps one cell along whichever axis the cross section
 crosses fastest, so consecutive ordinates are in different cells.
 
+Where cross sections overlap, a cell takes the mean of the elevations burned into it, whatever order they come in.
+The cell at a cross section's centre is the exception: it takes that centre's elevation, which is the bed its rating
+curve was worked out on (the VDT database's Elev), whatever its neighbours' channels burn there. A cell at the centre
+of more than one cross section (the low spot can move two onto one cell) takes the mean of their centres.
+
 Once every cross section is burned in, fill_bathymetry_gaps fills each cell without bathymetry that has some in at
 least four of the eight cells around it with their mean. Without Bathy_Use_Banks the channel should only lower the
 ground, so given the DEM it first drops cells whose bathymetry is above the ground (on a cross section at an angle the
@@ -39,16 +44,39 @@ def sample_land_cover(land_cover: np.ndarray, row: int, col: int, stream_directi
 
 
 @njit(cache=True, error_model="numpy")
-def burn_into_raster(raster, rows, cols, elevations, changed):
-    """Write the changed ordinates' elevations into their cells of an output raster. A cell that already has a value
-    from another cross section takes the average of that and the new one."""
+def _burn(raster, burns, r, c, elevation, centre):
+    """Burn one elevation into a cell. burns counts what the cell's mean is of: the ordinates burned into it, or
+    once a centre has been, minus the number of centres."""
+    count = burns[r, c]
+    if centre:
+        if count >= 0:  # the first centre replaces the ordinates burned before it
+            raster[r, c] = elevation
+            burns[r, c] = -1
+            return
+        count -= 1
+    elif count < 0:
+        return  # a centre's cell
+    else:
+        count += 1
+    current = raster[r, c]
+    raster[r, c] = elevation if abs(count) == 1 else current + (elevation - current) / abs(count)
+    burns[r, c] = count
+
+
+@njit(cache=True, error_model="numpy")
+def burn_into_raster(raster, burns, rows, cols, elevations, changed):
+    """Burn a carved cross section into the bathymetry raster: its changed ordinates' elevations, and its centre's,
+    changed or not (see the notes above), unless the carve changed nothing. burns, an int32 array the shape of the
+    raster that starts at 0, keeps each cell's count for the means, so pass the same one for every cross section."""
+    if not changed.any():
+        return
+    centre = elevations.size // 2
     for k in range(elevations.size):
-        if not changed[k]:
+        if not (changed[k] or k == centre):
             continue
         r, c = rows[k], cols[k]
         if 0 <= r < raster.shape[0] and 0 <= c < raster.shape[1]:
-            current = raster[r, c]
-            raster[r, c] = elevations[k] if np.isnan(current) else current + (elevations[k] - current) * 0.5
+            _burn(raster, burns, r, c, elevations[k], k == centre)
 
 
 @njit(cache=True, error_model="numpy")

@@ -22,12 +22,19 @@ at the flow before (so that it never falls as the flow rises, which the lowest r
 critical depth where there's none (where the water below is supercritical, or the cross section above needs more energy
 even at critical depth).
 
-Each reach's rated cells are put in order along the stream (arc.bathymetry.order_reach), and their rating curves are
-worked out again at flows common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N
+Each reach's rated cells are put in order along the stream (arc.bathymetry.order_reach): by the reaches next to it in
+the network, on the stream raster if they have no rating curves, or else by where its line ends, and only failing
+those by its stream cells' elevations. A march from the wrong end piles water up from there, and the elevations, the
+carved beds above all, are noisy where the water is flat. Their rating curves are then worked out again at flows
+common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N
 (VDT_Database_NumIterations), with the first set just below the baseflow if it was at or above it, as rating_curve
 does. A reach starts from the water surface of the first rated cell of the reach below it at the same j (the same share
 of that reach's maximum flow), and an outlet from its last cell's normal depth (arc.hydraulics.wse_for_discharge), both
-at least critical depth. Each
+at least critical depth. Where the reaches below have no rated cells (one in a lake, or one the flow file leaves out),
+the reach starts as an outlet does, but no higher than the water at the top of the first reach further down that has
+them, risen by the reach's median slope over the straight distance between them: normal depth at one cross section, a
+choke as like as not on flat water, could otherwise stand the whole reach metres above the river below it. The water
+below isn't passed on in full, as it is from a reach next to it, as the gap's fall is only an estimate. Each
 increment's velocity, top width and wetted perimeter are then the cell's own cross section's at its water surface.
 
 Each cross section has a table of LEVELS water surfaces, from its bed to well above the top of its own rating curve:
@@ -38,6 +45,7 @@ surface is then found with the exact hydraulics, so that no interpolation error 
 from __future__ import annotations
 
 import math
+from collections import deque
 from typing import NamedTuple
 
 import networkx as nx
@@ -266,13 +274,19 @@ def flows_for(max_flow: float, baseflow: float, increments: int) -> np.ndarray:
 def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray, reaches: np.ndarray, sections: list,
                         slopes: np.ndarray, max_flow: np.ndarray, baseflow: np.ndarray, curves: RatingCurves,
                         dx: float, dy: float, *, roughness: DepthRoughness | None = None,
-                        slope_factor: float = 1.0, eddy_length: float = EDDY_LENGTH) -> StepSummary:
+                        slope_factor: float = 1.0, eddy_length: float = EDDY_LENGTH, stream_cells=None, outlets=None,
+                        elevations: np.ndarray | None = None) -> StepSummary:
     """Rewrite the rating curves of the cells that have them (see the notes above), in place.
 
     rows, cols and reaches are each cell's stream cell and reach, and sections its cross section (anything with an
     `xs` and a `usable` flag, or None). network runs from each reach to the one downstream (reach_network), and must
     hold every reach with a rated cell. eddy_length is how far downstream the eddy loss looks (see the notes above);
     0 charges each step the change from the cross section below alone.
+
+    A reach whose neighbours have no rated cells is ordered by their cells on the stream raster (stream_cells, each
+    reach's rows and columns), or by the cell where its line ends (outlets, each reach's (row, col)), and failing
+    both with its higher end upstream, by elevations (each cell's stream cell's, NaN for none) or else its cross
+    sections' beds (see order_reach).
     """
     slope_factor = _check_slope_factor(slope_factor)
     increments = curves.number_of_increments
@@ -294,16 +308,25 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
     cells = {reach: (np.asarray(rows)[ks].astype(np.int64), np.asarray(cols)[ks].astype(np.int64))
              for reach, ks in by_reach.items()}
     upstream_wse: dict[int, np.ndarray] = {}  # each reach's first cell's water surface at each j
+    first_cell: dict[int, tuple[int, int]] = {}  # and that cell
     steps = critical_steps = 0
     for reach in downstream_first:
         ks = np.array(by_reach[reach])
-        beds = np.array([float(sections[k].xs.elevations[sections[k].xs.elevations.size // 2]) for k in ks])
-        order, stations = order_reach(network, reach, *cells[reach], dx, dy, cells, beds)
+        heights = np.asarray(elevations, dtype=np.float64)[ks] if elevations is not None else \
+            np.array([float(sections[k].xs.elevations[sections[k].xs.elevations.size // 2]) for k in ks])
+        order, stations = order_reach(network, reach, *cells[reach], dx, dy, cells, heights,
+                                      stream_cells=stream_cells, outlets=outlets)
         ks, stations = ks[order], np.asarray(stations, dtype=np.float64)
         tables = [HydraulicTable(sections[k].xs, float(np.nanmax(curves.increments[k, :, WSE])), roughness)
                   for k in ks]
         flows = np.array([flows_for(float(max_flow[k]), float(baseflow[k]), increments) for k in ks])
-        below = next((s for s in network.successors(reach) if s in upstream_wse), None)
+        below, cap = _reach_below(network, reach, upstream_wse), np.full(increments, math.inf)
+        if below is not None and not network.has_edge(reach, below):
+            # Past reaches without rated cells: an outlet, its water no higher than the water below risen by the slope
+            row, col = first_cell[below]
+            gap = math.hypot((int(rows[ks[-1]]) - row) * dy, (int(cols[ks[-1]]) - col) * dx)
+            cap = upstream_wse[below] + float(np.median(np.asarray(slopes)[ks])) * gap
+            below = None
         wse = np.empty((ks.size, increments))
         heads = np.empty((ks.size, increments))
         far = _eddy_ends(stations, eddy_length)
@@ -316,6 +339,7 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                                           roughness=roughness, slope_factor=slope_factor)
                 if not math.isfinite(start):
                     start = last.normal(flows[-1, j], float(slopes[ks[-1]]), slope_factor)
+                start = min(start, cap[j])
             # No cross section's water falls as the flow rises
             floors = wse[:, j - 1] if j > 0 else np.full(ks.size, -math.inf)
             wse[-1, j] = max(start, last.critical(flows[-1, j]), floors[-1])
@@ -329,9 +353,24 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                 steps += 1
                 critical_steps += int(critical)
         upstream_wse[reach] = wse[0]
+        first_cell[reach] = (int(rows[ks[0]]), int(cols[ks[0]]))
         for i, k in enumerate(ks):
             _rewrite(curves.increments[k], sections[k].xs, flows[i], wse[i], roughness)
     return StepSummary(len(rated), steps, critical_steps)
+
+
+def _reach_below(network: nx.DiGraph, reach: int, worked_out) -> int | None:
+    """The nearest reach downstream whose water surfaces are worked out, past any that have no rated cells, or None
+    for an outlet."""
+    seen, queue = {reach}, deque(network.successors(reach))
+    while queue:
+        below = queue.popleft()
+        if below in worked_out:
+            return below
+        if below not in seen:
+            seen.add(below)
+            queue.extend(network.successors(below))
+    return None
 
 
 def _eddy_ends(stations: np.ndarray, eddy_length: float) -> np.ndarray:
