@@ -18,9 +18,13 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
    site without an observation (deep channels that hold even the largest flow, and no water mask) are they kept.
 3. Order: the cross sections are put in order from upstream to downstream (order_reach).
 4. Levels: the bank elevation is the stream cells' elevations, fitted never to rise downstream, plus the bank's
-   height: the 10th percentile of the observations' heights above their stream cells within 500 m along the reach,
-   or the reach's, or the whole site's where there are none. The sum is fitted never to rise again, and is never
-   below the stream cell (reach_bank_levels).
+   height: the 10th percentile of the observations' heights above their stream cells within 500 m along the reach.
+   Where fewer than MIN_BANK_OBSERVATIONS (5) are, it is the 10th percentile of the 5 nearest along the reach, or of
+   all the reach's if it has fewer, or the whole site's where it has none. Of one or two observations, the 10th
+   percentile is just the lowest, however high: where a creek is too narrow for the DEM to show its banks, ARC finds
+   only the odd rim of the floodplain, and one 0.92 m up set the bank height, and so the bed, for a whole kilometre
+   of an N39W109 creek, 0.96 m above the DEM; with the 5 nearest the bed is at most 0.17 m above it. The sum is
+   fitted never to rise again, and is never below the stream cell (reach_bank_levels).
 5. Junctions: each reach's levels are its own, so where one reach flows into the next they can differ by metres,
    their heights coming from different banks (by over 1 m at a fifth of the junctions of 68 test sites, where the
    stream cells differ by that at under 2%). With the standard step, a bed that steps like that drops the water
@@ -55,7 +59,8 @@ from arc.xsection.xsection import XSection
 OUTLIER_PERCENTILES = (2, 97)  # observations outside these percentiles of their reach's are left out
 ORIENTING_CELLS = 10  # how many cross sections at each end decide which end of an unconnected reach is upstream
 BANK_HEIGHT_QUANTILE = 0.1  # the bank's height above the water: this quantile of the observations' heights...
-BANK_HEIGHT_WINDOW = 500.0  # ...within this many metres either side along the reach
+BANK_HEIGHT_WINDOW = 500.0  # ...within this many metres either side along the reach...
+MIN_BANK_OBSERVATIONS = 5  # ...or, where fewer are, of this many nearest along it
 JUNCTION_TAPER = 500.0  # metres either side of a junction over which two reaches' bank elevations are made to meet
 WATER_BANKS = "land_cover"  # the method of banks found where the water mask's or the land cover's water ends
 
@@ -284,41 +289,53 @@ def falling_fit(values) -> np.ndarray:
 
 
 @njit(cache=True, error_model="numpy")
-def _running_quantile(values, stations, quantile, half_window):
+def _running_quantile(values, stations, quantile, half_window, min_count):
     n = values.size
     out = np.full(n, np.nan)
-    part = np.empty(n)
+    observed = np.flatnonzero(np.isfinite(values))
+    if observed.size == 0:
+        return out
+    part = np.empty(observed.size)
+    distances = np.empty(observed.size)
     for i in range(n):
         count = 0
-        for j in range(n):
-            if abs(stations[j] - stations[i]) <= half_window and math.isfinite(values[j]):
+        for j in observed:
+            if abs(stations[j] - stations[i]) <= half_window:
                 part[count] = values[j]
                 count += 1
-        if count > 0:
-            out[i] = np.quantile(part[:count], quantile)
+        if count < min_count:
+            # Too few for a low percentile to skip the high ones: the min_count nearest instead, or all there are
+            for k in range(observed.size):
+                distances[k] = abs(stations[observed[k]] - stations[i])
+            nearest = observed[np.argsort(distances)[:min(min_count, observed.size)]]
+            count = nearest.size
+            part[:count] = values[nearest]
+        out[i] = np.quantile(part[:count], quantile)
     return out
 
 
 def reach_bank_levels(thalwegs, observations, stations, fallback_height: float, *,
-                      quantile: float = BANK_HEIGHT_QUANTILE, half_window: float = BANK_HEIGHT_WINDOW) -> np.ndarray:
+                      quantile: float = BANK_HEIGHT_QUANTILE, half_window: float = BANK_HEIGHT_WINDOW,
+                      min_observations: int = MIN_BANK_OBSERVATIONS) -> np.ndarray:
     """A reach's bank elevations, its cross sections in order from upstream to downstream (see the notes above).
 
     thalwegs are the stream cells' elevations, observations the cross sections' observations (NaN for none) and
     stations their distances along the reach in metres. The water surface is the thalwegs fitted never to rise
     (falling_fit). Each cross section's bank height is the quantile of the observations' heights above their stream
-    cells within half_window metres, or the reach's quantile, or failing that fallback_height (the site's); the bank
-    elevation is the water surface plus that, fitted never to rise, and never below the stream cell. All NaN if the
-    reach has no height to take.
+    cells within half_window metres; where fewer than min_observations are, of the min_observations nearest along the
+    reach, or all of the reach's if it has fewer; and failing any, fallback_height (the site's). The bank elevation is
+    the water surface plus that, fitted never to rise, and never below the stream cell. All NaN if the reach has no
+    height to take.
     """
+    if min_observations < 1:
+        raise ValueError(f"The bank height needs at least 1 observation, not {min_observations!r}.")
     thalwegs = np.asarray(thalwegs, dtype=np.float64)
     observations = np.asarray(observations, dtype=np.float64)
     stations = np.asarray(stations, dtype=np.float64)
     heights = observations - thalwegs
     heights[~(heights > 0.0)] = math.nan
-    height = _running_quantile(heights, stations, float(quantile), float(half_window))
-    reach_height = float(np.quantile(heights[np.isfinite(heights)], quantile)) if np.isfinite(heights).any() \
-        else float(fallback_height)
-    height = np.where(np.isfinite(height), height, reach_height)
+    height = _running_quantile(heights, stations, float(quantile), float(half_window), int(min_observations))
+    height = np.where(np.isfinite(height), height, float(fallback_height))  # NaN only where the reach has none
     if not np.isfinite(height).all():
         return np.full(thalwegs.size, math.nan)
     known = np.isfinite(thalwegs)
