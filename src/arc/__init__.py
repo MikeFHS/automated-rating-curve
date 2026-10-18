@@ -11,13 +11,28 @@ Entry points
 - arc.process_geospatial_data.Process_ARC_Geospatial_Data: make ARC's input rasters and input file.
 - arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector: turn ARC's curve file into GeoJSON for flood
   mapping.
+
+The entry points are imported when first used, so that a run doesn't import the flow file tools' s3fs and xarray.
 """
+import importlib
 
 from ._log import LOG
-from .arc import Arc
-from .Create_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
-from .streamflow_processing import Create_ARC_Streamflow_Input
-from .process_geospatial_data import Process_ARC_Geospatial_Data
+
+_ENTRY_POINTS = {'Arc': '.arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector': '.Create_GeoJSON',
+                 'Create_ARC_Streamflow_Input': '.streamflow_processing',
+                 'Process_ARC_Geospatial_Data': '.process_geospatial_data'}
 
 __all__ = ['Arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data']
 __version__ = '0.4.0'
+
+
+def __getattr__(name):
+    if name in _ENTRY_POINTS:
+        value = getattr(importlib.import_module(_ENTRY_POINTS[name], __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_ENTRY_POINTS))

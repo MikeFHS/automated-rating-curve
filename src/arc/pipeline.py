@@ -59,8 +59,8 @@ import tqdm
 from arc import LOG
 from arc.bathymetry import (Banks, ReachSections, banks_for_width, bathymetry_depth, burn_into_raster, carve_channel,
                             fill_bathymetry_gaps, find_banks, in_bank, ordinate_cells, reach_network,
-                            sample_land_cover, set_bank_distances, set_in_bank_roughness, single_cell_banks,
-                            smooth_bank_elevations, smooth_channel_depths)
+                            set_bank_distances, set_in_bank_roughness, single_cell_banks, smooth_bank_elevations,
+                            smooth_channel_depths)
 from arc.bathymetry.banks import _on_raster_ordinates
 from arc.bathymetry.bed_smoothing import MAX_BED_GRADE, MEDIAN_WINDOW
 from arc.bathymetry.depth import power_law_geometry
@@ -97,7 +97,9 @@ class Grid(NamedTuple):
     """The input rasters, on one grid."""
     reference: Raster  # the DEM, whose grid the outputs are written on
     dem: np.ndarray  # float64, with cells without data as walls
-    streams: np.ndarray  # int64, each stream cell holding its reach's ID and every other cell 0
+    # int32 if the raster's integer type fits it, and otherwise int64, each stream cell holding its reach's ID and
+    # every other cell 0
+    streams: np.ndarray
     land_cover: np.ndarray  # uint8
     dx: float  # the cells' width and height in metres
     dy: float
@@ -210,7 +212,9 @@ def read_grid(configs: Configs) -> Grid:
     dem[no_data] = OFF_RASTER_ELEVATION
 
     stream_raster = rasters["stream"]
-    streams = stream_raster.read_array(np.int64)
+    streams = stream_raster.read_array()
+    narrow = streams.dtype in (np.int8, np.int16, np.int32, np.uint8, np.uint16)
+    streams = streams.astype(np.int32 if narrow else np.int64, copy=False)
     if stream_raster.nodata_value is not None and math.isfinite(stream_raster.nodata_value):
         streams[streams == int(stream_raster.nodata_value)] = 0
     streams[streams < 0] = 0
@@ -219,8 +223,12 @@ def read_grid(configs: Configs) -> Grid:
 
     water_mask = None
     if "water mask" in rasters:
-        mask = rasters["water mask"].read_array(np.float64)
-        water = np.isfinite(mask) & (mask != 0.0)
+        mask = rasters["water mask"].read_array()
+        if np.issubdtype(mask.dtype, np.integer):
+            water = mask != 0  # compared as it is, without a float64 copy
+        else:
+            mask = mask.astype(np.float64, copy=False)
+            water = np.isfinite(mask) & (mask != 0.0)
         if rasters["water mask"].nodata_value is not None:
             water &= mask != rasters["water mask"].nodata_value
         water_mask = water.astype(np.uint8)
@@ -623,7 +631,7 @@ def mannings_n_raster(configs: Configs, land_cover: np.ndarray) -> tuple[np.ndar
     table = pd.read_parquet(path) if path.endswith('.parquet') else pd.read_csv(path, sep='\t')
     lookup = np.zeros(256, dtype=np.float32)
     lookup[table.iloc[:, 0].astype(np.uint8).values] = table.iloc[:, 2].values
-    n = _bounded(lookup[land_cover]).astype(np.float64)
+    n = _bounded(lookup).astype(np.float64)[land_cover]
     water_rows = table.loc[table.iloc[:, 0].astype(int) == configs.lc_water_value]
     if water_rows.empty:
         raise ValueError("The Manning's n table has no entry for the configured water class.")
@@ -672,14 +680,13 @@ def bank_water(configs: Configs, grid: Grid) -> tuple[np.ndarray | None, int | N
     return None, None
 
 
-def water_along(section: Section, water: np.ndarray | None, grid: Grid, length: float) -> np.ndarray | None:
-    """The bank_water raster at each ordinate of a cross section, NaN off the raster, or None without one. A manual
-    cross section takes the water mask at its ordinates' cells, or its own land cover."""
+def water_along(section: Section, water: np.ndarray | None, grid: Grid) -> np.ndarray | None:
+    """The bank_water raster at each ordinate's cell (as arc.bathymetry.sample_land_cover reads it), NaN off the
+    raster, or None without one. A manual cross section takes the water mask at its ordinates' cells, or its own land
+    cover."""
     if water is None:
         return None
-    if not section.manual:
-        return sample_land_cover(water, section.row, section.col, section.direction, length, grid.dx, grid.dy)
-    if water is not grid.water_mask:
+    if section.manual and water is not grid.water_mask:
         return section.land_cover
     rows, cols = section.rows, section.cols
     on_raster = (rows >= 0) & (rows < water.shape[0]) & (cols >= 0) & (cols < water.shape[1])
@@ -809,7 +816,11 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
         changed = carve_channel(section.xs, section.hydraulic_banks, carve[k], trapezoid_height=configs.bathy_trap_h,
                                 bank_elevation=section.bank_elevation if use_banks else None)
         burn_into_raster(bathymetry, burns, section.rows, section.cols, section.xs.elevations, changed)
-    ground = None if use_banks else np.where(grid.dem >= OFF_RASTER_ELEVATION, np.nan, grid.dem).astype(np.float32)
+    del burns
+    ground = None
+    if not use_banks:
+        ground = grid.dem.astype(np.float32)
+        ground[grid.dem >= OFF_RASTER_ELEVATION] = np.nan
     return fill_bathymetry_gaps(bathymetry, ground)
 
 
@@ -960,7 +971,7 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
             section = sample_section(configs, grid, int(cells.rows[k]), int(cells.cols[k]), offsets, length)
         if section is not None:
             width = None if math.isnan(target_width[k]) else float(target_width[k])
-            along = water_along(section, water, grid, length)
+            along = water_along(section, water, grid)
             section.banks = find_banks(section.xs, target_width=width, land_cover=along,
                                        water_value=water_value if along is not None else None)
             section.hydraulic_banks = section.banks
@@ -978,6 +989,7 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         if section is not None:
             sample_roughness(section, grid, mannings_n, length)
             set_in_bank_roughness(section.xs, section.banks, water_n)
+    del mannings_n  # the cross sections have their n, and the raster is as big as the DEM
 
     # Where every reach lies, which orders the cross sections of a reach none of whose neighbours has any
     stream_reaches = outlets = None

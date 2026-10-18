@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 from numba import njit
 from numba.core.errors import TypingError
-from scipy.optimize import curve_fit
 
 from arc import LOG
 from arc.outputs.rating_curves import METADATA_COLUMNS, Q, T, V, WSE, RatingCurves
@@ -35,6 +34,8 @@ def _power(d_value: np.ndarray, d_coefficient: float, d_power: float):
 def fit_power_law(x: np.ndarray, y: np.ndarray, init_guess=(1.0, 1.0)) -> tuple[float, float, float]:
     """a, b and R² of y = a * x**b. R² isn't worked out, so it's -9999.9, and so are a and b when the fit doesn't
     converge."""
+    from scipy.optimize import curve_fit  # here, as importing it takes a quarter of a second
+
     coefficient, power, r2 = FAILED_FIT, FAILED_FIT, FAILED_FIT
     try:
         (coefficient, power), _ = curve_fit(_power, x, y, p0=list(init_guess))
