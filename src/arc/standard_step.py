@@ -27,8 +27,8 @@ the network, on the stream raster if they have no rating curves, or else by wher
 those by its stream cells' elevations. A march from the wrong end piles water up from there, and the elevations, the
 carved beds above all, are noisy where the water is flat. Their rating curves are then worked out again at flows
 common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N
-(VDT_Database_NumIterations), with the first set just below the baseflow if it was at or above it, as rating_curve
-does. A reach starts from the water surface of the first rated cell of the reach below it at the same j (the same share
+(VDT_Database_NumIterations), with the first at or above the baseflow set just below it, so that the baseflow is one
+of them (rating_curve does the same when that is the first). A reach starts from the water surface of the first rated cell of the reach below it at the same j (the same share
 of that reach's maximum flow), and an outlet from its last cell's normal depth (arc.hydraulics.wse_for_discharge), both
 at least critical depth. Where the reaches below have no rated cells (one in a lake, or one the flow file leaves out),
 the reach starts as an outlet does, but no higher than the water at the top of the first reach further down that has
@@ -36,6 +36,17 @@ them, risen by the reach's median slope over the straight distance between them:
 choke as like as not on flat water, could otherwise stand the whole reach metres above the river below it. The water
 below isn't passed on in full, as it is from a reach next to it, as the gap's fall is only an estimate. Each
 increment's velocity, top width and wetted perimeter are then the cell's own cross section's at its water surface.
+
+The baseflow stays in the channel. The bathymetry carves each channel to carry its baseflow, by Manning's equation,
+with its water at a level (its bank elevation with Bathy_Use_Banks, its stream cell's otherwise), so normal depth puts
+the baseflow there. The step needn't: where a channel was carved for a steeper slope than the levels fall, its water
+loses more to friction than the banks drop, and rises over them going upstream (on 68 test sites, the friction with
+full banks added up to 1.26 times the banks' fall, and the baseflow stood over half a metre above the banks at 23% of
+cells, and over 0.1 m at 55%). So at every flow up to its baseflow, a cell's water is held at most at its level
+(baseflow_levels), the energy above that taken as lost there, as over a riffle, and the march goes on upstream from
+the held water. A steep section is held there too where its critical depth is higher: supercritical water is below
+critical depth. With the baseflow one of the flows, curve2flood reads the held water at it, not a line from the flows
+either side of it.
 
 Each cross section has a table of LEVELS water surfaces, from its bed to well above the top of its own rating curve:
 it brackets each step's water surface (or, where the water below stands higher than the table reaches, the search goes
@@ -257,17 +268,25 @@ def step_up(down: HydraulicTable, wse_down: float, q_down: float, up: HydraulicT
 
 
 class StepSummary(NamedTuple):
-    """What apply_standard_step did: the cells it rewrote, and how many steps it took and went critical."""
+    """What apply_standard_step did: the cells it rewrote, how many steps it took and went critical, and how many
+    water surfaces (a cell at a flow) it held at the baseflow level."""
     cells: int
     steps: int
     critical: int
+    held: int = 0
 
 
 def flows_for(max_flow: float, baseflow: float, increments: int) -> np.ndarray:
-    """A cell's flows: j/N of its maximum flow, j = 1 to N, the first set just below a baseflow it reaches."""
+    """A cell's flows: j/N of its maximum flow, j = 1 to N, the first at or above its baseflow set just below it, so
+    that the baseflow is one of them (none is if the baseflow is above the maximum flow)."""
     flows = max_flow * np.arange(1, increments + 1) / increments
-    if increments and baseflow > BASEFLOW_MARGIN and flows[0] >= baseflow:
-        flows[0] = baseflow - BASEFLOW_MARGIN
+    if increments and baseflow > BASEFLOW_MARGIN:
+        reaching = np.flatnonzero(flows >= baseflow)
+        if reaching.size:
+            j = int(reaching[0])
+            node = baseflow - BASEFLOW_MARGIN
+            if j == 0 or node > flows[j - 1]:
+                flows[j] = node
     return flows
 
 
@@ -275,13 +294,16 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                         slopes: np.ndarray, max_flow: np.ndarray, baseflow: np.ndarray, curves: RatingCurves,
                         dx: float, dy: float, *, roughness: DepthRoughness | None = None,
                         slope_factor: float = 1.0, eddy_length: float = EDDY_LENGTH, stream_cells=None, outlets=None,
-                        elevations: np.ndarray | None = None) -> StepSummary:
+                        elevations: np.ndarray | None = None,
+                        baseflow_levels: np.ndarray | None = None) -> StepSummary:
     """Rewrite the rating curves of the cells that have them (see the notes above), in place.
 
     rows, cols and reaches are each cell's stream cell and reach, and sections its cross section (anything with an
     `xs` and a `usable` flag, or None). network runs from each reach to the one downstream (reach_network), and must
     hold every reach with a rated cell. eddy_length is how far downstream the eddy loss looks (see the notes above);
-    0 charges each step the change from the cross section below alone.
+    0 charges each step the change from the cross section below alone. baseflow_levels is each cell's baseflow
+    level, the water surface its channel was carved to carry its baseflow at, or NaN (and None) for none: at every
+    flow up to its baseflow, its water is held at most there.
 
     A reach whose neighbours have no rated cells is ordered by their cells on the stream raster (stream_cells, each
     reach's rows and columns), or by the cell where its line ends (outlets, each reach's (row, col)), and failing
@@ -309,7 +331,9 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
              for reach, ks in by_reach.items()}
     upstream_wse: dict[int, np.ndarray] = {}  # each reach's first cell's water surface at each j
     first_cell: dict[int, tuple[int, int]] = {}  # and that cell
-    steps = critical_steps = 0
+    levels_all = np.full(len(sections), math.nan) if baseflow_levels is None else \
+        np.asarray(baseflow_levels, dtype=np.float64)
+    steps = critical_steps = held = 0
     for reach in downstream_first:
         ks = np.array(by_reach[reach])
         heights = np.asarray(elevations, dtype=np.float64)[ks] if elevations is not None else \
@@ -320,6 +344,9 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         tables = [HydraulicTable(sections[k].xs, float(np.nanmax(curves.increments[k, :, WSE])), roughness)
                   for k in ks]
         flows = np.array([flows_for(float(max_flow[k]), float(baseflow[k]), increments) for k in ks])
+        # Each cell's level and the flows it holds the water at most at it: those up to its baseflow
+        levels = levels_all[ks]
+        holds = (flows <= np.asarray(baseflow, dtype=np.float64)[ks, None]) & np.isfinite(levels)[:, None]
         below, cap = _reach_below(network, reach, upstream_wse), np.full(increments, math.inf)
         if below is not None and not network.has_edge(reach, below):
             # Past reaches without rated cells: an outlet, its water no higher than the water below risen by the slope
@@ -343,12 +370,19 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
             # No cross section's water falls as the flow rises
             floors = wse[:, j - 1] if j > 0 else np.full(ks.size, -math.inf)
             wse[-1, j] = max(start, last.critical(flows[-1, j]), floors[-1])
+            if holds[-1, j] and wse[-1, j] > levels[-1]:
+                wse[-1, j] = max(levels[-1], floors[-1])
+                held += 1
             heads[-1, j] = velocity_head(last, wse[-1, j], flows[-1, j])
             for m in range(ks.size - 2, -1, -1):
                 end = far[m]
                 wse[m, j], critical = step_up(tables[m + 1], wse[m + 1, j], flows[m + 1, j], tables[m], flows[m, j],
                                               abs(stations[m + 1] - stations[m]), slope_factor, floors[m],
                                               eddy_head=heads[end, j], eddy_steps=end - m)
+                if holds[m, j] and wse[m, j] > levels[m]:
+                    # The baseflow stays in its channel: the energy over its level is lost here
+                    wse[m, j], critical = max(levels[m], floors[m]), False
+                    held += 1
                 heads[m, j] = velocity_head(tables[m], wse[m, j], flows[m, j])
                 steps += 1
                 critical_steps += int(critical)
@@ -356,7 +390,7 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         first_cell[reach] = (int(rows[ks[0]]), int(cols[ks[0]]))
         for i, k in enumerate(ks):
             _rewrite(curves.increments[k], sections[k].xs, flows[i], wse[i], roughness)
-    return StepSummary(len(rated), steps, critical_steps)
+    return StepSummary(len(rated), steps, critical_steps, held)
 
 
 def _reach_below(network: nx.DiGraph, reach: int, worked_out) -> int | None:

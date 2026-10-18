@@ -136,6 +136,9 @@ class Section:
     banks: Banks | None = None  # as found
     hydraulic_banks: Banks | None = None  # as the hydraulics use them: after the width filter with bathymetry
     bank_elevation: float = math.nan  # the smoothed bank elevation, with bathymetry
+    # The water surface its channel was carved to carry the baseflow at (its bank elevation with Bathy_Use_Banks, its
+    # stream cell's otherwise), where bathymetry carved it for the baseflow; the standard step holds the baseflow there
+    baseflow_level: float = math.nan
     usable: bool = True  # False once the bathymetry drops its reach
     manual: bool = False
 
@@ -784,6 +787,9 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
                                      mannings_n=water_n)
             depths[reach].append(depth.depth)
             applies[reach].append(depth.apply)
+            if depth.apply and depth.source == "baseflow_manning" and 0.0 < depth.depth < math.inf:
+                # The level the baseflow fills the channel to: the carve's reference (see smooth_channel_depths)
+                section.baseflow_level = section.bank_elevation if use_banks else _centre(section)
     # Without bed smoothing, a running median of one cross section and no cap leave each bed as it is
     smooth_bed = configs.bathy_smooth_bed
     channels = smooth_channel_depths(network, reaches, {reach: smoothed[reach] for reach in reaches}, depths,
@@ -996,13 +1002,15 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet)
         if configs.standard_step:
             elevations = grid.dem[cells.rows, cells.cols]
+            levels = np.array([math.nan if s is None else s.baseflow_level for s in sections])
             summary = apply_standard_step(network, cells.rows, cells.cols, cells.reaches, sections, slopes, max_flow,
                                           baseflow, results.curves, grid.dx, grid.dy, roughness=roughness,
                                           slope_factor=configs.slope_adjustment_factor, stream_cells=stream_reaches,
                                           outlets=outlets, elevations=np.where(elevations >= OFF_RASTER_ELEVATION,
-                                                                               np.nan, elevations))
+                                                                               np.nan, elevations),
+                                          baseflow_levels=levels)
             LOG.info(f"Standard step: {summary.cells} rating curves linked, {summary.critical} of {summary.steps} "
-                     "steps at critical depth")
+                     f"steps at critical depth, {summary.held} water surfaces held at the baseflow level")
     if configs.build_representative_cross_section:
         samples = [RepresentativeSample(int(cells.comids[k]), s.xs, float(s.xs.elevations[s.xs.elevations.size // 2]),
                                         float(slopes[k])) for k, s in usable]
