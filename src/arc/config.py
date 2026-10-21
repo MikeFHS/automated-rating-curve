@@ -19,6 +19,7 @@ _CURVE2FLOOD_KEYS = {
     'comid_flow_file', 'outfld', 'outdep', 'outwse', 'outvel', 'make_output_gpkg', 'mapper', 'tw_multfact',
     'topwidthplausiblelimit', 'localfloodoption', 'flood_waterlc_and_strm_cells', 'flood_bathy_mask', 'land_watervalue',
     'set_depth', 'flow_direction_file', 'filled_dem_file', 'stream_info_file', 'fldpln_library', 'fsoutbathy',
+    'fldpln_min_flood_depth',
     # Its multi-point interpolation mapper's options
     'mpi_topwidth_threshold_m', 'mpi_xs_point_spacing_m', 'mpi_remove_hwm_outliers', 'mpi_hwm_outlier_method',
     'mpi_hwm_outlier_threshold', 'mpi_hwm_outlier_group_by', 'mpi_hwm_outlier_min_samples', 'mpi_corridor_buffer_m',
@@ -111,6 +112,10 @@ class Configs:
     # the DEM.
     bathy_smooth_banks: bool = True
     bathy_smooth_bed: bool | None = None
+    # With Bathy_Use_Banks, a cross section whose banks weren't found (none, or a single cell from the width prior)
+    # and whose baseflow is below this (m³/s) carries its baseflow at its stream cell's level rather than at its
+    # reach's bank elevation (arc.pipeline.apply_bathymetry). 0 turns it off.
+    bathy_bankless_max_baseflow: float = 20.0
     findbanksbasedonlandcover: bool = False
 
     # Synthetic rating curve configuration
@@ -354,6 +359,8 @@ class Configs:
             raise ValueError('slope_adjustment_factor must be finite and positive.')
         if not np.isfinite(self.k_decay) or self.k_decay <= 0.0:
             raise ValueError('k_decay must be finite and positive.')
+        if not self.bathy_bankless_max_baseflow >= 0.0:
+            raise ValueError('Bathy_Bankless_Max_Baseflow must be 0 or more.')
         if not np.isfinite(self.shallow_factor) or self.shallow_factor < 1.0:
             raise ValueError('shallow_factor must be finite and >= 1.')
         if not np.isfinite(self.deep_factor) or not 0.0 < self.deep_factor <= 1.0:

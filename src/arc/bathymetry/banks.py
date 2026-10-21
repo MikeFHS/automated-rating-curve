@@ -20,6 +20,10 @@ from arc.xsection.xsection import XSection
 
 # Ground less than this far above the stream cell is flat water
 FLAT_WATER_DEPTH = 0.1
+# The ground under a channel's water, out to a bank found from the DEM, falls no further than this below the stream
+# cell. Where it falls further, as across a valley from a stream on its side, the water drains away from the stream,
+# and the ground that stops it is the valley's far side, not a bank
+MAX_BANK_DIP = 2.0
 # The width-to-depth search looks no higher than this above the stream cell, and on each side no further out than the
 # first ordinate higher than it, which is as far out as arc.pipeline samples a cross section to find its banks
 MAX_BANK_HEIGHT = 25.0
@@ -213,6 +217,32 @@ def _on_the_raster(elevations, spacing, left, right):
 
 
 @njit(cache=True, error_model="numpy")
+def _drains_away(elevations, spacing, step, distance):
+    """Whether the ground under the water out to a bank `distance` metres from the stream cell on one side falls more
+    than MAX_BANK_DIP below the stream cell."""
+    center = elevations.size // 2
+    lowest = float(elevations[center]) - MAX_BANK_DIP
+    j = center
+    for _ in range(int(distance / spacing)):
+        j += step
+        if elevations[j] < lowest:
+            return True
+    return False
+
+
+@njit(cache=True, error_model="numpy")
+def _held(elevations, spacing, left, right):
+    """Banks where the DEM's water's edges are, but none (NaN) on a side whose water runs off the raster (see
+    _on_the_raster) or drains away from the stream (_drains_away)."""
+    left, right = _on_the_raster(elevations, spacing, left, right)
+    if left >= 0.0 and _drains_away(elevations, spacing, -1, left):
+        left = np.nan
+    if right >= 0.0 and _drains_away(elevations, spacing, 1, right):
+        right = np.nan
+    return left, right
+
+
+@njit(cache=True, error_model="numpy")
 def _search(elevations, spacing, land_cover, water, target_width):
     """The method find_banks uses, and the distances to the left and right banks."""
     center = elevations.size // 2
@@ -224,10 +254,10 @@ def _search(elevations, spacing, land_cover, water, target_width):
         if _resolved(left, right, spacing):
             return _LAND_COVER, left, right
     left, right, _ = _width_to_depth_banks(elevations, spacing)
-    left, right = _on_the_raster(elevations, spacing, left, right)
+    left, right = _held(elevations, spacing, left, right)
     if _resolved(left, right, spacing):
         return _WIDTH_TO_DEPTH, left, right
-    left, right = _on_the_raster(elevations, spacing, *_flat_water_banks(elevations, spacing))
+    left, right = _held(elevations, spacing, *_flat_water_banks(elevations, spacing))
     if _resolved(left, right, spacing):
         return _FLAT_WATER, left, right
     return _NONE, np.nan, np.nan
@@ -269,7 +299,8 @@ def find_banks(xs: XSection, *, target_width: float | None = None, land_cover: n
 
     It keeps the first to resolve a channel at least two ordinate spacings wide. If none does, the banks are not
     valid, and the bathymetry treats the channel as a single cell (single_cell_banks). None of 2 to 4 gives a bank on a
-    side whose water runs off the raster: its edge is the raster's, not a bank.
+    side whose water runs off the raster: its edge is the raster's, not a bank. Nor do 3 and 4 on a side whose water
+    drains away from the stream, over ground more than MAX_BANK_DIP below it.
     """
     if land_cover is None:
         values, water = _NO_LAND_COVER, np.nan
@@ -300,15 +331,15 @@ def banks_by_width_to_depth_ratio(xs: XSection) -> Banks:
     """
     spacing = float(xs.ordinate_distance)
     left, right, _ = _width_to_depth_banks(xs.elevations, spacing)
-    left, right = _on_the_raster(xs.elevations, spacing, left, right)
+    left, right = _held(xs.elevations, spacing, left, right)
     return _banks(xs, _WIDTH_TO_DEPTH, left, right, _resolved(left, right, spacing))
 
 
 def banks_by_flat_water(xs: XSection) -> Banks:
     """Banks at the water's edges 0.1 m above the stream cell, where the ground stops being flat water. No bank on a
-    side whose water runs off the raster."""
+    side whose water runs off the raster, or drains away from the stream."""
     spacing = float(xs.ordinate_distance)
-    left, right = _on_the_raster(xs.elevations, spacing, *_flat_water_banks(xs.elevations, spacing))
+    left, right = _held(xs.elevations, spacing, *_flat_water_banks(xs.elevations, spacing))
     return _banks(xs, _FLAT_WATER, left, right, _resolved(left, right, spacing))
 
 
