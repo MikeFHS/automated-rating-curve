@@ -36,6 +36,9 @@ _CURVE2FLOOD_KEYS = {
     'outshp', 'fs_adjust_flow_by_fraction'}
 # Keys that ARC input files often carry (Create_ARC_Model_Input_File writes some of them) but ARC doesn't use
 _IGNORED_KEYS = {'spatial_units', 'str_limit_val', 'print_vdt'}
+# Keys ARC used to read and no longer does, with why: they're ignored with a warning
+_RETIRED_KEYS = {'x_section_dist': "each cross section reaches as far as its water needs, out to the raster's edge "
+                                   "(see arc.pipeline)"}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -73,7 +76,6 @@ class Configs:
     exponent_width: float | None = None
 
     # Cross section orientation
-    x_section_dist: float = 5000.0
     degree_manip: float = 1.1
     degree_interval: float = 1.0
     low_spot_range: int = 0
@@ -193,15 +195,19 @@ class Configs:
             if obsolete_name in params:
                 raise ValueError(f'{obsolete_name} has been replaced by shallow_factor and deep_factor; update your ARC inputs.')
 
+        for retired, reason in _RETIRED_KEYS.items():
+            if retired in params:
+                LOG.warning(f"{retired} is no longer used, and is ignored: {reason}.")
+
         known = {f.name for f in fields(cls) if f.init}
-        unknown = sorted(set(params) - known - _CURVE2FLOOD_KEYS - _IGNORED_KEYS)
+        unknown = sorted(set(params) - known - _CURVE2FLOOD_KEYS - _IGNORED_KEYS - set(_RETIRED_KEYS))
         if unknown:
             described = []
             for key in unknown:
                 close = difflib.get_close_matches(key, sorted(known), n=1)
                 described.append(f'{key!r}' + (f' (did you mean {close[0]!r}?)' if close else ''))
             raise ValueError(f'Unrecognized config key(s): {", ".join(described)}')
-        # The curve2flood and ignored keys are allowed in the inputs, but aren't fields
+        # The curve2flood, ignored and retired keys are allowed in the inputs, but aren't fields
         return {key: value for key, value in params.items() if key in known}
 
     def _coerce_types(self) -> None:

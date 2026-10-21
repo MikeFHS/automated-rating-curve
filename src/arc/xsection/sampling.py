@@ -112,11 +112,8 @@ def _ordinates(stream_direction, cross_section_length, dx, dy):
 
 
 @njit(cache=True, error_model="numpy")
-def _interpolate(raster, x, y):
-    """The raster's value at column x and row y, or OFF_RASTER_ELEVATION off the raster."""
-    rows, cols = raster.shape
-    if not (0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1):
-        return OFF_RASTER_ELEVATION
+def _corners(rows, cols, x, y):
+    """The four cells around column x and row y of a raster rows by cols, which must be on it, and their weights."""
     # The cells either side along each axis (x and y aren't negative, so int() is floor), and like map_coordinates,
     # the last two on the last cell
     c, r = min(int(x), max(cols - 2, 0)), min(int(y), max(rows - 2, 0))
@@ -124,11 +121,82 @@ def _interpolate(raster, x, y):
     c1, r1 = min(c + 1, cols - 1), min(r + 1, rows - 1)
     wy0, wx0 = 1.0 - fy, 1.0 - fx
     wy1, wx1 = 1.0 - wy0, 1.0 - wx0  # scipy's second weights, which aren't always fy and fx
+    return r, c, r1, c1, wy0, wx0, wy1, wx1
+
+
+@njit(cache=True, error_model="numpy")
+def _interpolate(raster, x, y):
+    """The raster's value at column x and row y, or OFF_RASTER_ELEVATION off the raster."""
+    rows, cols = raster.shape
+    if not (0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1):
+        return OFF_RASTER_ELEVATION
+    r, c, r1, c1, wy0, wx0, wy1, wx1 = _corners(rows, cols, x, y)
     value = raster[r, c] * wy0 * wx0
     value += raster[r, c1] * wy0 * wx1
     value += raster[r1, c] * wy1 * wx0
     value += raster[r1, c1] * wy1 * wx1
     return value
+
+
+@njit(cache=True, error_model="numpy")
+def _class_value(classes, water, lookup, water_value, r, c):
+    return water_value if water[r, c] else lookup[classes[r, c]]
+
+
+@njit(cache=True, error_model="numpy")
+def _interpolate_classes(classes, water, lookup, water_value, x, y):
+    """As _interpolate, on the raster whose cells are lookup[classes], or water_value where water is set."""
+    rows, cols = classes.shape
+    if not (0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1):
+        return OFF_RASTER_ELEVATION
+    r, c, r1, c1, wy0, wx0, wy1, wx1 = _corners(rows, cols, x, y)
+    value = _class_value(classes, water, lookup, water_value, r, c) * wy0 * wx0
+    value += _class_value(classes, water, lookup, water_value, r, c1) * wy0 * wx1
+    value += _class_value(classes, water, lookup, water_value, r1, c) * wy1 * wx0
+    value += _class_value(classes, water, lookup, water_value, r1, c1) * wy1 * wx1
+    return value
+
+
+@njit(cache=True, error_model="numpy")
+def sample_classes(classes, water, lookup, water_value, row, col, stream_direction, cross_section_length, dx, dy):
+    """As sample_elevations, from the float64 raster whose cells are lookup[classes], or water_value where water is
+    set, without making it: a Manning's n raster kept as its land cover classes."""
+    cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
+    values = np.empty(2 * half + 1)
+    for k in range(-half, half + 1):
+        distance = spacing * k
+        values[k + half] = _interpolate_classes(classes, water, lookup, water_value, col + cos * distance / dx,
+                                                row + sin * distance / dy)
+    return values
+
+
+@njit(cache=True, error_model="numpy")
+def ordinates_above(raster, row, col, stream_direction, cross_section_length, dx, dy, height):
+    """How many ordinates either side of its centre the cross section sample_elevations takes with these arguments
+    needs, to take in on each side an ordinate more than `height` above its centre (as stored; ordinates off the raster
+    are), or all of them if it doesn't."""
+    cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
+    stored = np.empty(1, _values_like(raster).dtype)
+    center = ordinate_value(raster, row, col, cos, sin, spacing, 0, dx, dy, stored)
+    needed = 0
+    for step in (-1, 1):
+        k = 0
+        while k < half:
+            k += 1
+            if ordinate_value(raster, row, col, cos, sin, spacing, step * k, dx, dy, stored) - center > height:
+                break
+        needed = max(needed, k)
+    return needed
+
+
+@njit(cache=True, error_model="numpy")
+def ordinate_value(raster, row, col, cos, sin, spacing, k, dx, dy, stored):
+    """Ordinate k (negative to the left) of the cross section with this direction (cos, sin) and spacing, as
+    sample_elevations samples and stores it: stored is a one-element array of the stored type, which it goes
+    through."""
+    distance = spacing * k
+    stored[0] = _interpolate(raster, col + cos * distance / dx, row + sin * distance / dy)
+    return stored[0]
 
 
 @njit(cache=True, error_model="numpy")

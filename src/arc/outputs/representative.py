@@ -287,13 +287,22 @@ def representative_cross_section_dataframe(samples: Sequence[RepresentativeSampl
     grouped: dict[int, list[RepresentativeSample]] = {}
     for sample in samples:
         grouped.setdefault(int(sample.comid), []).append(sample)
-    stage_count = max(int(round(min(MAX_DEPTH, 25.0) / DEPTH_INCREMENT)), 0)
+    stage_count = _stage_count()
     reaches = [_reach_columns(comid, grouped[comid], parameters, slope_factor, stage_count) for comid in sorted(grouped)]
     reaches = [columns for columns in reaches if columns is not None]
     if not reaches:
         return pd.DataFrame(columns=REPRESENTATIVE_CROSS_SECTION_COLUMNS)
     return pd.DataFrame({column: np.concatenate([reach[column] for reach in reaches])
                          for column in REPRESENTATIVE_CROSS_SECTION_COLUMNS})
+
+
+def _stage_count() -> int:
+    return max(int(round(min(MAX_DEPTH, 25.0) / DEPTH_INCREMENT)), 0)
+
+
+def highest_stage(thalweg: float) -> float:
+    """The water surface of a cross section's highest stage, the highest level its hydraulics are worked out at."""
+    return thalweg + _stage_count() * DEPTH_INCREMENT
 
 
 def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLike) -> pd.DataFrame:

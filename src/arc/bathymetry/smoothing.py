@@ -110,10 +110,10 @@ def filter_reach_widths(sections: Sequence[XSection], banks: Sequence[Banks]) ->
     if len(sections) != len(banks):
         raise ValueError(f"There are {len(sections)} cross sections but {len(banks)} banks.")
     banks = list(banks)
-    widths = np.array([b.top_width for b in banks if b.valid and math.isfinite(b.top_width) and b.top_width > 0.0])
-    if widths.size == 0:
+    widths = reach_widths(banks)
+    if widths is None:
         return banks, None
-    q25, median, q75 = (float(p) for p in np.percentile(widths, [25, 50, 75]))
+    q25, median, q75 = widths
     for k, (xs, b) in enumerate(zip(sections, banks)):
         if b.valid and b.method == WATER_BANKS:
             continue
@@ -121,7 +121,16 @@ def filter_reach_widths(sections: Sequence[XSection], banks: Sequence[Banks]) ->
             rebuilt = banks_for_width(xs, median)
             if rebuilt.valid:
                 banks[k] = rebuilt
-    return banks, ReachWidths(q25, median, q75)
+    return banks, widths
+
+
+def reach_widths(banks: Sequence[Banks]) -> ReachWidths | None:
+    """The percentiles of a reach's valid channel widths that filter_reach_widths works from, or None if none is
+    valid."""
+    widths = np.array([b.top_width for b in banks if b.valid and math.isfinite(b.top_width) and b.top_width > 0.0])
+    if widths.size == 0:
+        return None
+    return ReachWidths(*(float(p) for p in np.percentile(widths, [25, 50, 75])))
 
 
 def reach_bank_observations(sections: Sequence[XSection], banks: Sequence[Banks]) -> tuple[np.ndarray, float, float]:

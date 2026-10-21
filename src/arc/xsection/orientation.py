@@ -10,6 +10,10 @@ rasterised edges of a channel a cell or two wide.
 
 Where the water reaches the end of a cross section, or of the raster, on one side, the widths there are compared
 only as far out as every direction's cross section reaches, so such ties go to the direction the search started from.
+
+The search samples each direction's cross section only as far out as the water's edge (and where a reach could still
+limit the widths, as far as that), so its cost doesn't grow with the cross sections' length. It finds what it would on
+whole cross sections, bit for bit.
 """
 from __future__ import annotations
 
@@ -18,8 +22,7 @@ import math
 import numpy as np
 from numba import njit
 
-from arc.hydraulics import top_widths
-from arc.xsection.sampling import OFF_RASTER_ELEVATION, sample_elevations
+from arc.xsection.sampling import OFF_RASTER_ELEVATION, _ordinates, _values_like, ordinate_value
 
 TEST_DEPTH = 5.0  # how far above the stream cell the search measures the water's width
 _SAME_DIRECTION = 1e-12  # radians
@@ -73,20 +76,15 @@ def angle_offsets(degree_manipulation: float, degree_interval: float) -> np.ndar
 
 
 @njit(cache=True, error_model="numpy")
-def _reach(elevations, center, step, spacing):
-    """How far the cross section reaches on one side before its first ordinate off the raster (or NaN)."""
-    end = elevations.size - 1 if step > 0 else 0
-    j = center
-    while j != end and elevations[j + step] < OFF_RASTER_ELEVATION:
-        j += step
-    return spacing * abs(j - center)
-
-
-@njit(cache=True, error_model="numpy")
 def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, dx, dy, offsets, test_depth):
     tried = np.empty(offsets.size)
     widths = np.empty((offsets.size, 2))
     reaches = np.empty((offsets.size, 2))
+    known = np.zeros((offsets.size, 2), np.bool_)  # whether each reach is known, or only that it's at least so far
+    walked = np.zeros((offsets.size, 2), np.int64)  # and if not, how many ordinates out the side was sampled
+    cosines, sines, spacings = np.empty(offsets.size), np.empty(offsets.size), np.empty(offsets.size)
+    halves = np.empty(offsets.size, np.int64)
+    stored = np.empty(1, _values_like(dem).dtype)
     count = 0
     for offset in offsets:
         # The same cross section, turned half a turn, is the same direction with its sides swapped. Keep every
@@ -100,17 +98,60 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
                 repeat = True
         if repeat:
             continue
-        elevations, spacing = sample_elevations(dem, row, col, stream_direction + offset, cross_section_length, dx,
-                                                dy)
-        center = elevations.size // 2
-        left, right = top_widths(elevations, spacing, elevations[center] + test_depth)
-        left_reach, right_reach = _reach(elevations, center, -1, spacing), _reach(elevations, center, 1, spacing)
-        # Water that reaches the raster's edge, or data it can't see past, spans at least the reach
+        cos, sin, spacing, half = _ordinates(stream_direction + offset, cross_section_length, dx, dy)
+        center_elevation = ordinate_value(dem, row, col, cos, sin, spacing, 0, dx, dy, stored)
+        wse = center_elevation + test_depth
+        for side in range(2):
+            step = -1 if side == 0 else 1
+            # Out to the water's edge, as top_widths walks, counting the ordinates on the raster on the way
+            width = 0.0
+            on_raster = 0
+            reach_known = False
+            z_in = center_elevation
+            k = 0
+            edge = not wse > center_elevation  # no water, no width
+            while not edge and k < half:
+                k += 1
+                z = ordinate_value(dem, row, col, cos, sin, spacing, step * k, dx, dy, stored)
+                if not reach_known:
+                    if z < OFF_RASTER_ELEVATION:
+                        on_raster = k
+                    else:
+                        reach_known = True
+                if not wse > z:
+                    width = spacing * ((k - 1) + (wse - z_in) / (z - z_in))
+                    edge = True
+                z_in = z
+            if not edge:
+                width = spacing * half  # the water reaches the end of the cross section
+            if k == half:
+                reach_known = True
+            reach = spacing * on_raster
+            # Water that reaches the raster's edge, or data it can't see past, spans at least the reach. Where the
+            # reach isn't known yet, every ordinate out to the water's edge is on the raster, so it's no narrower
+            widths[count, side] = width if (width <= reach or not reach_known) else reach
+            reaches[count, side] = reach
+            known[count, side] = reach_known
+            walked[count, side] = k
         tried[count] = offset
-        widths[count, 0] = left if left <= left_reach else left_reach
-        widths[count, 1] = right if right <= right_reach else right_reach
-        reaches[count, 0], reaches[count, 1] = left_reach, right_reach
+        cosines[count], sines[count], spacings[count], halves[count] = cos, sin, spacing, half
         count += 1
+
+    # A reach not yet known only matters if it's narrower than the widest water on its side, so it's followed out
+    # only that far: one at least as wide limits nothing
+    for side in range(2):
+        step = -1 if side == 0 else 1
+        widest = widths[:count, side].max()
+        for j in range(count):
+            if known[j, side]:
+                continue
+            k = walked[j, side]
+            while spacings[j] * k < widest and k < halves[j]:
+                z = ordinate_value(dem, row, col, cosines[j], sines[j], spacings[j], step * (k + 1), dx, dy, stored)
+                if not z < OFF_RASTER_ELEVATION:
+                    break
+                k += 1
+            reaches[j, side] = spacings[j] * k
 
     left_limit, right_limit = reaches[:count, 0].min(), reaches[:count, 1].min()
     best, narrowest = 0, np.inf

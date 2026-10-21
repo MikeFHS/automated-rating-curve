@@ -155,7 +155,6 @@ def Create_ARC_Model_Input_File(
         out_file.write('\n' + 'Flow_File_BF	' + Q_BF_Param)
     out_file.write('\n' + 'Flow_File_QMax	' + Q_Param)
     out_file.write('\n' + 'Spatial_Units	deg')
-    out_file.write('\n' + 'X_Section_Dist	5000.0')
     out_file.write('\n' + 'Degree_Manip	6.1')
     out_file.write('\n' + 'Degree_Interval	1.5')
     out_file.write('\n' + 'Low_Spot_Range	10')

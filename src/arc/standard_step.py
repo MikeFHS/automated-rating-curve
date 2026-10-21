@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import networkx as nx
 import numpy as np
@@ -173,18 +173,19 @@ def _step_up(levels, alpha, area, conveyance, stations, elevations, mannings_n, 
              conveyance_down, head_down, eddy_head, eddy_steps):
     """step_up, given the upstream cross section's table and profile, and the downstream one's water surface, its
     critical depth, and its conveyance and velocity head there. Also returns the upstream critical depth, which the
-    next step up takes as its critical_down."""
+    next step up takes as its critical_down, and the highest water surface it worked out the upstream cross section's
+    hydraulics at, beyond its table's levels."""
     critical = _critical(levels, alpha, area, q_up)
     if wse_down < critical_down:
         # The water below is supercritical, and no subcritical water surface steps up from it
-        return max(critical, floor), True, critical
+        return max(critical, floor), True, critical, max(critical, floor)
     energy_down = wse_down + head_down
     flow_sum = q_up + q_down
     lowest = max(critical, floor)
     if _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
                lowest, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
                slope_factor) >= 0.0:
-        return lowest, lowest == critical, critical
+        return lowest, lowest == critical, critical, lowest
     # The first level above lowest with energy enough, by the table, brackets the root with the level below it
     first = -1
     for i in range(levels.size):
@@ -212,10 +213,10 @@ def _step_up(levels, alpha, area, conveyance, stations, elevations, mannings_n, 
             low, rise = high, 2.0 * rise
             high = low + rise
         if not enough:
-            return lowest, lowest == critical, critical
+            return lowest, lowest == critical, critical, high
     return _root(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
                  low, high, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
-                 slope_factor), False, critical
+                 slope_factor), False, critical, high
 
 
 @njit(cache=True, error_model="numpy")
@@ -225,11 +226,13 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
     each one's table (levels, alpha, area and conveyance, a row each) and profile (cross section m's from starts[m] to
     starts[m + 1]), the last one's water surface at each flow before the checks (start_wse), the flows each one holds
     its water at most at its hold level, the lengths from each to the next and its eddy loss's far end (far). Also the
-    number of steps, of those at critical depth, and of water surfaces held."""
+    number of steps, of those at critical depth, and of water surfaces held, and the highest water surface each cross
+    section's hydraulics were worked out at."""
     size, increments = flows.shape
     wse = np.empty((size, increments))
     heads = np.empty((size, increments))
     steps = critical_steps = held = 0
+    highest = np.full(size, -np.inf)
     last = size - 1
     for j in range(increments):
         # No cross section's water falls as the flow rises
@@ -240,6 +243,7 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
             w = max(hold_levels[last], floor)
             held += 1
         wse[last, j] = w
+        highest[last] = max(highest[last], w)
         a, b = starts[last], starts[last + 1]
         area_down, conveyance_down, alpha_down = _state(stations[a:b], elevations[a:b], mannings_n[a:b], centers[last],
                                                         left_banks[last], right_banks[last], w, k_decay,
@@ -249,7 +253,7 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
             floor = wse[m, j - 1] if j > 0 else -np.inf
             end = far[m]
             a, b = starts[m], starts[m + 1]
-            w, at_critical, critical = _step_up(levels[m], alpha[m], area[m], conveyance[m], stations[a:b],
+            w, at_critical, critical, top = _step_up(levels[m], alpha[m], area[m], conveyance[m], stations[a:b],
                                                 elevations[a:b], mannings_n[a:b], centers[m], left_banks[m],
                                                 right_banks[m], k_decay, shallow_factor, deep_factor, flows[m, j],
                                                 lengths[m], slope_factor, floor, wse[m + 1, j], flows[m + 1, j],
@@ -260,13 +264,14 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
                 w, at_critical = max(hold_levels[m], floor), False
                 held += 1
             wse[m, j] = w
+            highest[m] = max(highest[m], top, w)
             area_down, conveyance_down, alpha_down = _state(stations[a:b], elevations[a:b], mannings_n[a:b],
                                                             centers[m], left_banks[m], right_banks[m], w, k_decay,
                                                             shallow_factor, deep_factor)
             heads[m, j] = _velocity_head(alpha_down, area_down, flows[m, j])
             steps += 1
             critical_steps += int(at_critical)
-    return wse, steps, critical_steps, held
+    return wse, steps, critical_steps, held, highest
 
 
 @njit(cache=True, error_model="numpy")
@@ -370,7 +375,7 @@ def step_up(down: HydraulicTable, wse_down: float, q_down: float, up: HydraulicT
     head_d = _velocity_head(alpha_d, area_d, float(q_down))
     if eddy_head is None:
         eddy_head, eddy_steps = head_d, 1
-    wse, critical, _ = _step_up(up.levels, up.alpha, up.area, up.conveyance, *up.section, *up.parameters, float(q_up),
+    wse, critical, _, _ = _step_up(up.levels, up.alpha, up.area, up.conveyance, *up.section, *up.parameters, float(q_up),
                                 float(length), float(slope_factor), float(floor), float(wse_down), float(q_down),
                                 down.critical(q_down), conveyance_d, head_d, float(eddy_head),
                                 float(max(int(eddy_steps), 1)))
@@ -405,7 +410,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                         dx: float, dy: float, *, roughness: DepthRoughness | None = None,
                         slope_factor: float = 1.0, eddy_length: float = EDDY_LENGTH, stream_cells=None, outlets=None,
                         elevations: np.ndarray | None = None,
-                        baseflow_levels: np.ndarray | None = None) -> StepSummary:
+                        baseflow_levels: np.ndarray | None = None,
+                        ensure_level: Callable[[int, float], bool] | None = None) -> StepSummary:
     """Rewrite the rating curves of the cells that have them (see the notes above), in place.
 
     rows, cols and reaches are each cell's stream cell and reach, and sections its cross section (anything with an
@@ -419,6 +425,11 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
     reach's rows and columns), or by the cell where its line ends (outlets, each reach's (row, col)), and failing
     both with its higher end upstream, by elevations (each cell's stream cell's, NaN for none) or else its cross
     sections' beds (see order_reach).
+
+    ensure_level(k, level), if given, makes cell k's cross section reach above the water surface level on both sides
+    (a trimmed one, see arc.pipeline), and says whether it changed it. It is asked for each table's top level before
+    the table is made, and for the highest water surface the march worked each cross section out at after it, which
+    is marched again if any changed.
     """
     slope_factor = _check_slope_factor(slope_factor)
     increments = curves.number_of_increments
@@ -451,8 +462,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         order, stations = order_reach(network, reach, *cells[reach], dx, dy, cells, heights,
                                       stream_cells=stream_cells, outlets=outlets)
         ks, stations = ks[order], np.asarray(stations, dtype=np.float64)
-        tables = [HydraulicTable(sections[k].xs, float(np.nanmax(curves.increments[k, :, WSE])), roughness)
-                  for k in ks]
+        tops = [float(np.nanmax(curves.increments[k, :, WSE])) for k in ks]
+        tables = [_table_for(sections[k].xs, top, roughness, k, ensure_level) for k, top in zip(ks, tops)]
         flows = np.array([flows_for(float(max_flow[k]), float(baseflow[k]), increments) for k in ks])
         # Each cell's level and the flows it holds the water at most at it: those up to its baseflow
         levels = levels_all[ks]
@@ -469,10 +480,20 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         else:
             start = np.array([_outlet_wse(sections[ks[-1]].xs, tables[-1], flows[-1, j], float(slopes[ks[-1]]),
                                           roughness, slope_factor, cap[j]) for j in range(increments)])
-        packed = _packed(tables)
-        wse, reach_steps, reach_critical, reach_held = _march(
-            *packed, *tables[-1].parameters, flows, start, holds, levels, np.abs(np.diff(stations)),
-            _eddy_ends(stations, eddy_length), slope_factor)
+        far = _eddy_ends(stations, eddy_length)
+        while True:
+            packed = _packed(tables)
+            wse, reach_steps, reach_critical, reach_held, highest = _march(
+                *packed, *tables[-1].parameters, flows, start, holds, levels, np.abs(np.diff(stations)), far,
+                slope_factor)
+            if ensure_level is None:
+                break
+            changed = [ensure_level(int(k), float(level)) for k, level in zip(ks, highest)]
+            if not any(changed):
+                break
+            # The march worked a cross section out above where it reached: again, with it reaching further
+            tables = [HydraulicTable(sections[k].xs, top, roughness) if grew else table
+                      for k, top, table, grew in zip(ks, tops, tables, changed)]
         steps, critical_steps, held = steps + reach_steps, critical_steps + reach_critical, held + reach_held
         upstream_wse[reach] = wse[0]
         first_cell[reach] = (int(rows[ks[0]]), int(cols[ks[0]]))
@@ -480,6 +501,15 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         _rewrite(*packed[4:], *tables[-1].parameters, flows, wse, out)
         curves.increments[ks] = out
     return StepSummary(len(rated), steps, critical_steps, held)
+
+
+def _table_for(xs: XSection, top: float, roughness: DepthRoughness | None, k: int,
+               ensure_level: Callable[[int, float], bool] | None) -> HydraulicTable:
+    """A cross section's table, made again if ensure_level has to extend it to reach the table's top level."""
+    table = HydraulicTable(xs, top, roughness)
+    if ensure_level is not None and ensure_level(int(k), float(table.levels[-1])):
+        table = HydraulicTable(xs, top, roughness)
+    return table
 
 
 def _outlet_wse(xs: XSection, table: HydraulicTable, q: float, slope: float, roughness: DepthRoughness | None,

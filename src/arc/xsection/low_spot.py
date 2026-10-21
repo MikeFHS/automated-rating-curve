@@ -11,27 +11,28 @@ from __future__ import annotations
 import numpy as np
 from numba import njit
 
-from arc.xsection.sampling import sample_elevations
+from arc.xsection.sampling import _ordinates, _values_like, ordinate_value
 
 _ALONG_A_ROW = 1e-12  # a cross section whose direction's sine is smaller than this runs along a row
 
 
 @njit(cache=True, error_model="numpy")
 def _low_spot_cell(dem, row, col, stream_direction, cross_section_length, dx, dy, low_spot_range):
-    elevations, spacing = sample_elevations(dem, row, col, stream_direction, cross_section_length, dx, dy)
-    center = elevations.size // 2
-    xs_direction = stream_direction - np.pi / 2
-    cos, sin = np.cos(xs_direction), np.sin(xs_direction)
+    # Only the ordinates within low_spot_range of the stream cell are sampled, as sample_elevations would
+    cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
+    stored = np.empty(1, _values_like(dem).dtype)
     # Look at this side first: towards the higher rows, or along a row towards the higher columns
     first = 1 if sin > _ALONG_A_ROW or (abs(sin) <= _ALONG_A_ROW and cos > 0.0) else -1
     rows, cols = dem.shape
-    lowest, best = elevations[center], 0
-    for k in range(1, min(low_spot_range, center) + 1):
+    lowest, best = ordinate_value(dem, row, col, cos, sin, spacing, 0, dx, dy, stored), 0
+    for k in range(1, min(low_spot_range, half) + 1):
         for step in (first * k, -first * k):
             distance = spacing * step
             x, y = col + cos * distance / dx, row + sin * distance / dy
-            if 0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1 and elevations[center + step] < lowest:
-                lowest, best = elevations[center + step], step
+            if 0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1:
+                elevation = ordinate_value(dem, row, col, cos, sin, spacing, step, dx, dy, stored)
+                if elevation < lowest:
+                    lowest, best = elevation, step
     if best == 0:
         return row, col
     distance = spacing * best

@@ -19,9 +19,10 @@ The steps
 4. Roughness: the stream cells become water in the land cover (and in the water mask), and each land cover class
    takes its n from the Manning's n table.
 5. Cross sections (arc.xsection): the stream's direction at each stream cell, the low spot, the direction where the
-   channel is narrowest, and the cross section there.
+   channel is narrowest, and the cross section there, as far out as finding its banks looks (see below).
 6. Banks (arc.bathymetry.find_banks): where the water mask's water ends, if there is a mask, or where the land cover's
-   does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then the water's n between them.
+   does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then each cross section is trimmed to what the
+   later steps are expected to need (see below), and the water's n goes between the banks.
 7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed, and the
    bank elevations ramped to meet at each junction on a main stem (unless Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
    (unless Bathy_Smooth_Bed is off, as it is by default with Standard_Step or Bathy_Use_Banks), and the channel carved
@@ -41,6 +42,23 @@ A run asked for both makes them from the same cross sections, carved as they wou
 that asking for the representative cross sections doesn't change the rating curves. A run that only builds
 representative cross sections (one that asks for no output of the rating curves) makes no rating curves, and needs a
 flow file only to carve its channels for the baseflow (see arc.config).
+
+Cross section lengths
+---------------------
+A cross section has no set length (X_Section_Dist is no longer used): it reaches as far as its water needs, which can
+be out to the raster's edge, beyond which the ordinates are walls (OFF_RASTER_ELEVATION). The hydraulics only look at
+a cross section out to where its water ends, the first ground above the water on each side, so most of a cross section
+that long is never used, and holding all of it for every cell would take memory in proportion to the raster's size.
+So each one is first sampled only as far as finding its banks looks: on each side out to the first ground more than
+MAX_BANK_HEIGHT (25 m) above its centre, where the width-to-depth search's stages stop (ordinates_above), and with
+water at its centre in the water mask or land cover, out to where that water ends. The angle search before it samples
+each direction it tries only out to its own water's edge. The cross section is then fitted to the highest water surface
+the later steps are expected to work at (fit_section, trim_level): cut to the first ordinates above it, or extended to
+reach them. Any step that needs it longer extends it first, from the same rasters (Resampler). A step works on a cross
+section at a water surface only once it rises above it on both sides, or reaches the raster's edge on both, which is
+what makes the results the same as on cross sections sampled out to the raster's edge, bit for bit. The trim_level
+estimate only decides how often a step has to extend a cross section, and how far the cross sections in the
+cross-section file reach.
 """
 from __future__ import annotations
 
@@ -55,39 +73,47 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 import tqdm
+from numba import njit
 
 from arc import LOG
 from arc.bathymetry import (Banks, ReachSections, banks_for_width, bathymetry_depth, burn_into_raster, carve_channel,
                             fill_bathymetry_gaps, find_banks, in_bank, ordinate_cells, reach_network,
                             set_bank_distances, set_in_bank_roughness, single_cell_banks, smooth_bank_elevations,
                             smooth_channel_depths)
-from arc.bathymetry.banks import _on_raster_ordinates
+from arc.bathymetry.banks import MAX_BANK_HEIGHT, _on_raster_ordinates
 from arc.bathymetry.bed_smoothing import MAX_BED_GRADE, MEDIAN_WINDOW
 from arc.bathymetry.depth import power_law_geometry
-from arc.bathymetry.smoothing import WATER_BANKS
+from arc.bathymetry.smoothing import WATER_BANKS, reach_widths
 from arc.config import Configs
-from arc.hydraulics import DepthRoughness, wse_for_discharge
+from arc.hydraulics import DepthRoughness, hydraulic_profile, wse_for_discharge
 from arc.io import Raster, Vector
 from arc.outputs import (CrossSectionRecord, RatingCurves, RepresentativeSample,
                          representative_cross_section_dataframe, vdt_dataframe, write_ap, write_cross_sections,
                          write_curve_file, write_reach_average_curve_file, write_representative_cross_sections,
                          write_vdt)
 from arc.outputs.rating_curves import COL, COMID, ELEV, ROW, SLOPE, XS_ANGLE
-from arc.rating_curve import rating_curve
+from arc.outputs.representative import highest_stage
+from arc.rating_curve import RatingCurve, max_flow_wse, rating_curve
 from arc.standard_step import apply_standard_step
 from arc.xsection.low_spot import low_spot_cell
 from arc.xsection.orientation import angle_offsets, narrowest_direction, stream_direction
-from arc.xsection.sampling import OFF_RASTER_ELEVATION, sample_elevations
+from arc.xsection.sampling import (OFF_RASTER_ELEVATION, _ordinates, ordinates_above, sample_classes,
+                                   sample_elevations)
 from arc.xsection.slope import (corrected_local_slopes, end_point_slope, fill_unresolved_reach_slopes,
                                 local_average_slopes, local_fit_slopes, main_stem_above, reach_median_slope)
 from arc.xsection.stream_path import along_stream_stations, stream_cells_by_reach
-from arc.xsection.xsection import XSection
+from arc.xsection.xsection import Profile, XSection
 
 FLOODED_CELL = 3  # the flood raster's value at the centre cell of each cross section used
 _REQUIRED_MANUAL_COLUMNS = ("Row", "Col", "Ordinate_Dist", "XS1_Profile", "XS2_Profile", "LC1_Profile",
                             "LC2_Profile", "XS1_Row", "XS1_Col", "XS2_Row", "XS2_Col")
 _ALONG_A_ROW = 1e-12  # a cross section whose direction's sine is smaller than this runs along a row
 _METADATA_BUT_BASEFLOW = [COMID, ROW, COL, ELEV, SLOPE, XS_ANGLE]
+# How far above the water surface that carries a cell's maximum flow over the DEM's cross section to trim it, which
+# only decides how often a step has to extend it (see trim_level): this much above it, and with the standard step,
+# its table's top over a bed down to TRIM_CARVING below the stream cell
+TRIM_MARGIN = 3.0  # metres
+TRIM_CARVING = 8.0  # metres
 
 
 # --- What a run works with ------------------------------------------------------------------------------------------
@@ -143,6 +169,8 @@ class Section:
     baseflow_level: float = math.nan
     usable: bool = True  # False once the bathymetry drops its reach
     manual: bool = False
+    length: float = math.nan  # the length it's sampled to, which grows as steps extend it
+    full_half: int = 0  # how many ordinates either side of its centre it has out to the raster's edge (0 if manual)
 
 
 @dataclass
@@ -479,8 +507,8 @@ def _fitted_slopes(grid: Grid, rows, cols, cells: Cells, ks, distance) -> tuple[
 
 def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict, network=None) -> tuple[dict, dict]:
     """By a method that measures slopes between stream cells: each reach's slope, NaN where the DEM gives none, and
-    the slopes of the run's cells, by reach, NaN where a cell has none. Every reach on the stream raster gets a slope,
-    so that a reach without one can take its neighbours'.
+    the slopes of the run's cells, by reach, NaN where a cell has none. The run's reaches get a slope, and if one of them
+    gets none, which it then takes from its neighbours (cell_slopes), so does every other reach on the stream raster.
 
     With a stream network, the local averages take in the cells of the reach's main-stem neighbours too, so that a
     cell near a junction is averaged over both sides of it; the reach's percentiles and median slope are still its
@@ -490,12 +518,13 @@ def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict, netw
     stream_reaches = stream_cells_by_reach(grid.streams)
     empty = (np.empty(0, np.int64), np.empty(0, np.int64))
     reach_slopes, cell_values = {}, {}
-    for reach in sorted(set(stream_reaches) | set(by_reach)):
+
+    def measure(reach: int) -> None:
         rows, cols = stream_reaches.get(reach, empty)
         ks = by_reach.get(reach, [])
         if method == "local_fit":
             cell_values[reach], reach_slopes[reach] = _fitted_slopes(grid, rows, cols, cells, ks, distance)
-            continue
+            return
         if method in ("local_average", "local_average_corrected"):
             local, everywhere = _local_slopes(grid, rows, cols, cells, ks, distance,
                                               _main_stem_cells(network, reach, stream_reaches))
@@ -503,7 +532,7 @@ def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict, netw
             measured = everywhere[~np.isnan(everywhere)]
             reach_slopes[reach] = float(np.median(measured)) if measured.size else math.nan
             cell_values[reach] = local
-            continue
+            return
         stations = along_stream_stations(rows, cols, grid.dx, grid.dy)
         median, lower, upper = reach_median_slope(grid.dem[rows, cols], rows, cols, stations, grid.dx, grid.dy,
                                                   distance, configs.slope_low_percentile,
@@ -511,12 +540,18 @@ def _dem_slopes(configs: Configs, grid: Grid, cells: Cells, by_reach: dict, netw
         reach_slopes[reach] = median
         cell_values[reach] = np.full(len(ks), median) if method == "reach_average" \
             else corrected_local_slopes(local, lower, upper)
+
+    for reach in sorted(by_reach):
+        measure(reach)
+    if any(math.isnan(reach_slopes[reach]) for reach in by_reach):
+        for reach in sorted(set(stream_reaches) - set(by_reach)):
+            measure(reach)
     return reach_slopes, {reach: cell_values[reach] for reach in by_reach}
 
 
 def _end_point_slopes(configs: Configs, grid: Grid, layer, by_reach: dict) -> dict:
-    """Each reach's end-point slope, NaN where it can't be measured, for every reach on the stream raster or in the
-    run, so that a reach without one can take its neighbours'."""
+    """Each of the run's reaches' end-point slope, NaN where it can't be measured, and if one of them has none, which it
+    then takes from its neighbours, every other reach's on the stream raster."""
     if layer is None:
         raise ValueError("The 'end_points' stream slope method requires a strmshp_file.")
     id_field = configs.flow_file_id if configs.makes_rating_curves else configs.reach_id
@@ -525,7 +560,8 @@ def _end_point_slopes(configs: Configs, grid: Grid, layer, by_reach: dict) -> di
     dem = np.where(grid.dem >= OFF_RASTER_ELEVATION, np.nan, grid.dem)
     ids = layer[id_field]
     slopes = {}
-    for reach in sorted(set(np.unique(grid.streams[grid.streams > 0]).tolist()) | set(by_reach)):
+
+    def measure(reach: int) -> None:
         matches = np.flatnonzero((ids == reach).to_numpy())
         slope = math.nan
         if matches.size:
@@ -534,6 +570,12 @@ def _end_point_slopes(configs: Configs, grid: Grid, layer, by_reach: dict) -> di
             slope = end_point_slope(feature.to_crs(grid.reference.crs).geometry.iloc[0], length, dem,
                                     grid.reference.geotransform)
         slopes[int(reach)] = slope
+
+    for reach in sorted(by_reach):
+        measure(reach)
+    if any(math.isnan(slopes[int(reach)]) for reach in by_reach):
+        for reach in sorted(set(np.unique(grid.streams[grid.streams > 0]).tolist()) - set(by_reach)):
+            measure(reach)
     return slopes
 
 
@@ -624,21 +666,56 @@ def _bounded(n: np.ndarray) -> np.ndarray:
     return n
 
 
-def mannings_n_raster(configs: Configs, land_cover: np.ndarray) -> tuple[np.ndarray, float]:
-    """Each cell's Manning's n from its land cover class, and the water class's n, both bounded (see _bounded) and
-    at float32's precision."""
+def mannings_n_table(configs: Configs) -> tuple[np.ndarray, float]:
+    """Each land cover class's Manning's n (float64, by class number), and the water class's n, both bounded (see
+    _bounded) and at float32's precision."""
     path = str(configs.lu_manning_n)
     table = pd.read_parquet(path) if path.endswith('.parquet') else pd.read_csv(path, sep='\t')
     lookup = np.zeros(256, dtype=np.float32)
     lookup[table.iloc[:, 0].astype(np.uint8).values] = table.iloc[:, 2].values
-    n = _bounded(lookup).astype(np.float64)[land_cover]
     water_rows = table.loc[table.iloc[:, 0].astype(int) == configs.lc_water_value]
     if water_rows.empty:
         raise ValueError("The Manning's n table has no entry for the configured water class.")
     water_n = float(water_rows.iloc[-1, 2])
     if not math.isfinite(water_n):
         raise ValueError("Water-class Manning's n must be finite.")
-    return n, float(_bounded(np.array([water_n], dtype=np.float32))[0])
+    return _bounded(lookup).astype(np.float64), float(_bounded(np.array([water_n], dtype=np.float32))[0])
+
+
+def mannings_n_raster(configs: Configs, land_cover: np.ndarray) -> tuple[np.ndarray, float]:
+    """Each cell's Manning's n from its land cover class, and the water class's n (see mannings_n_table)."""
+    lookup, water_n = mannings_n_table(configs)
+    return lookup[land_cover], water_n
+
+
+class ManningsN:
+    """The Manning's n raster, kept as its land cover classes rather than as numbers, a byte a cell instead of eight:
+    each cell's n is its class's, or the water's where water_between_banks marks it. Cross sections are sampled from
+    it as from the raster of numbers, bit for bit."""
+
+    def __init__(self, classes: np.ndarray, lookup: np.ndarray, water_n: float):
+        self.classes = classes  # uint8
+        self.lookup = np.asarray(lookup, dtype=np.float64)  # each class's n
+        self.water_n = float(water_n)
+        self.water = np.zeros(classes.shape, dtype=np.bool_)
+
+    def water_between_banks(self, rows: np.ndarray, cols: np.ndarray) -> None:
+        """Give these cells (any off the raster are passed over) the water's n."""
+        on_raster = (rows >= 0) & (rows < self.classes.shape[0]) & (cols >= 0) & (cols < self.classes.shape[1])
+        self.water[rows[on_raster], cols[on_raster]] = True
+
+    def sample(self, row: int, col: int, direction: float, length: float, dx: float, dy: float) -> np.ndarray:
+        """Sampled as sample_elevations samples a raster."""
+        return sample_classes(self.classes, self.water, self.lookup, self.water_n, int(row), int(col),
+                              float(direction), float(length), float(dx), float(dy))
+
+    def at(self, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+        """Each cell's n, OFF_RASTER_ELEVATION off the raster."""
+        on_raster = (rows >= 0) & (rows < self.classes.shape[0]) & (cols >= 0) & (cols < self.classes.shape[1])
+        n = np.full(rows.size, OFF_RASTER_ELEVATION)
+        r, c = rows[on_raster], cols[on_raster]
+        n[on_raster] = np.where(self.water[r, c], self.water_n, self.lookup[self.classes[r, c]])
+        return n
 
 
 # --- 5. Cross sections --------------------------------------------------------------------------------------------
@@ -652,21 +729,51 @@ def _side_one(direction: float) -> int:
     return 1 if sin > _ALONG_A_ROW or (abs(sin) <= _ALONG_A_ROW and cos > 0.0) else -1
 
 
+def reach_length(grid: Grid, row: int, col: int) -> float:
+    """A cross section length that takes any cross section centred on a cell past the raster's edge on both sides:
+    each ordinate is a cell further along the axis the cross section crosses fastest, and no more than hypot(dx, dy)
+    from the last."""
+    rows, cols = grid.dem.shape
+    cells = max(row, rows - 1 - row, col, cols - 1 - col) + 2
+    return 2.0 * cells * math.hypot(grid.dx, grid.dy)
+
+
 def sample_section(configs: Configs, grid: Grid, row: int, col: int, offsets: np.ndarray,
-                   length: float) -> Section | None:
-    """A stream cell's cross section, with its elevations but not yet its roughness: centred on the low spot and
-    turned to where the channel is narrowest. None if its centre has no data."""
+                   whole: bool = False) -> Section | None:
+    """A stream cell's cross section, with its elevations but not yet its roughness: centred on the low spot and turned
+    to where the channel is narrowest, and out on each side to the first ground more than MAX_BANK_HEIGHT above its
+    centre, or with whole, to the raster's edge on both sides. None if its centre has no data."""
     direction = stream_direction(grid.streams, row, col, configs.gen_dir_dist, grid.dx, grid.dy)
     if configs.low_spot_range > 0:
-        row, col = low_spot_cell(grid.dem, row, col, direction, length, grid.dx, grid.dy, configs.low_spot_range)
+        row, col = low_spot_cell(grid.dem, row, col, direction, reach_length(grid, row, col), grid.dx, grid.dy,
+                                 configs.low_spot_range)
+    length = reach_length(grid, row, col)
     direction = narrowest_direction(grid.dem, row, col, direction, length, grid.dx, grid.dy, offsets)
+    _, _, spacing, full_half = _ordinates(direction, length, grid.dx, grid.dy)
+    # Out to the first ground more than MAX_BANK_HEIGHT above the centre on each side, as far as finding banks looks,
+    # or with whole, to the raster's edge
+    half = full_half if whole else ordinates_above(grid.dem, row, col, direction, length, grid.dx, grid.dy,
+                                                   MAX_BANK_HEIGHT)
+    length = _length_for(max(half, 1), spacing)
     elevations, spacing = sample_elevations(grid.dem, row, col, direction, length, grid.dx, grid.dy)
     center = elevations.size // 2
     if not elevations[center] < OFF_RASTER_ELEVATION:
         return None
     rows, cols = ordinate_cells(row, col, direction, length, grid.dx, grid.dy)
     return Section(XSection(elevations, np.empty(0), float(spacing)), int(row), int(col), float(direction),
-                   float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(direction), float(elevations[center]))
+                   float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(direction), float(elevations[center]),
+                   length=float(length), full_half=int(full_half))
+
+
+def reaches_its_banks(section: Section, along: np.ndarray | None, water_value) -> bool:
+    """Whether a cross section sampled as far as ground MAX_BANK_HEIGHT up (sample_section) also reaches, with water
+    at its centre in the water raster (along), to where the water ends on each side, as finding its banks looks."""
+    if along is None:
+        return True
+    center = along.size // 2
+    if not along[center] == water_value:
+        return True
+    return bool((along[:center] != water_value).any() and (along[center + 1:] != water_value).any())
 
 
 def bank_water(configs: Configs, grid: Grid) -> tuple[np.ndarray | None, int | None]:
@@ -695,16 +802,163 @@ def water_along(section: Section, water: np.ndarray | None, grid: Grid) -> np.nd
     return values
 
 
-def sample_roughness(section: Section, grid: Grid, mannings_n: np.ndarray, length: float) -> None:
+def sample_roughness(section: Section, grid: Grid, mannings_n: ManningsN) -> None:
     """Give a section its Manning's n: sampled like its elevations, or for a manual one, each ordinate's cell's."""
     if section.manual:
-        on_raster = (section.rows >= 0) & (section.rows < mannings_n.shape[0]) & (section.cols >= 0) \
-            & (section.cols < mannings_n.shape[1])
-        n = np.full(section.xs.elevations.size, OFF_RASTER_ELEVATION)
-        n[on_raster] = mannings_n[section.rows[on_raster], section.cols[on_raster]]
+        section.xs.mannings_n = mannings_n.at(section.rows, section.cols)
     else:
-        n, _ = sample_elevations(mannings_n, section.row, section.col, section.direction, length, grid.dx, grid.dy)
-    section.xs.mannings_n = n
+        section.xs.mannings_n = mannings_n.sample(section.row, section.col, section.direction, section.length,
+                                                  grid.dx, grid.dy)
+
+
+# --- 6. Trimming the cross sections (see the notes above) -----------------------------------------------------------
+
+
+def trim_level(configs: Configs, section: Section, n: np.ndarray, max_flow: float, slope: float,
+               roughness: DepthRoughness | None) -> float:
+    """The highest water surface the later steps are expected to work at on a cross section, its banks and Manning's
+    n as found: TRIM_MARGIN above the water that carries its maximum flow over the DEM's cross section, and with the
+    standard step, above its table's top over a bed TRIM_CARVING below the stream cell; or, for representative cross
+    sections, their highest stage. Without either, the stream cell's elevation. n is its Manning's n before the water's
+    goes between banks."""
+    xs = section.xs
+    thalweg = float(xs.elevations[xs.elevations.size // 2])
+    level = highest_stage(thalweg) if configs.build_representative_cross_section else thalweg
+    if max_flow > 0.0 and slope > 0.0:
+        wse = wse_for_discharge(XSection(xs.elevations, n, xs.ordinate_distance), max_flow, slope,
+                                roughness=roughness, slope_factor=configs.slope_adjustment_factor)
+        if math.isfinite(wse):
+            if configs.standard_step:
+                wse += max(3.0, 0.5 * (wse - thalweg + TRIM_CARVING))  # as HydraulicTable reaches above the top
+            level = max(level, wse + TRIM_MARGIN)
+    return level
+
+
+def fit_section(configs: Configs, section: Section, grid: Grid, mannings_n: ManningsN, resampler: Resampler,
+                max_flow: float, slope: float, roughness: DepthRoughness | None, target_width: float) -> None:
+    """Cut a cross section to just above the highest water surface the later steps are expected to work at
+    (trim_level), extending it first where it doesn't reach that high, and working the estimate out again on it
+    extended."""
+    while True:
+        n = mannings_n.sample(section.row, section.col, section.direction, section.length, grid.dx, grid.dy)
+        level = trim_level(configs, section, n, max_flow, slope, roughness)
+        if reaches_above(section, level):
+            break
+        thalweg = float(section.xs.elevations[section.xs.elevations.size // 2])
+        spacing = float(section.xs.ordinate_distance)
+        needed = ordinates_above(grid.dem, section.row, section.col, section.direction,
+                                 _length_for(section.full_half, spacing), grid.dx, grid.dy, level - thalweg)
+        if not resampler.extend(section, max(needed, 2 * (section.xs.elevations.size // 2))):
+            break
+    trim_section(section, level, (target_width,))
+
+
+def _ordinates_to(elevations: np.ndarray, step: int, level: float) -> int:
+    """How many ordinates out from the centre on one side the first above level is, or more than the side has."""
+    center = elevations.size // 2
+    side = elevations[center + 1:] if step > 0 else elevations[center - 1::-1]
+    above = np.flatnonzero(side > level)
+    return int(above[0]) + 1 if above.size else elevations.size
+
+
+def _ordinates_for(distance: float, spacing: float) -> int:
+    """Ordinates enough either side for a bank or a channel this far from the centre, with one to spare (0 for
+    none)."""
+    return int(math.ceil(distance / spacing)) + 2 if math.isfinite(distance) and distance > 0.0 else 0
+
+
+def trim_section(section: Section, level: float, widths=()) -> None:
+    """Keep only a cross section's ordinates out to the first above level on each side, and enough for its banks and
+    for channels these widths (any of them on one side). Its Manning's n isn't sampled yet."""
+    xs = section.xs
+    center, spacing = xs.elevations.size // 2, float(xs.ordinate_distance)
+    half = max(_ordinates_to(xs.elevations, -1, level), _ordinates_to(xs.elevations, 1, level),
+               *(_ordinates_for(distance, spacing) for distance in (section.banks.left, section.banks.right, *widths)))
+    if half >= center:
+        return
+    keep = slice(center - half, center + half + 1)
+    xs.elevations = xs.elevations[keep].copy()
+    section.rows, section.cols = section.rows[keep].copy(), section.cols[keep].copy()
+    section.length = _length_for(half, spacing)
+
+
+def _length_for(half: int, spacing: float) -> float:
+    """A cross section length that samples `half` ordinates either side of the centre at this spacing."""
+    return 2.0 * spacing * (half + 0.5)
+
+
+def reaches_above(section: Section, level: float) -> bool:
+    """Whether the hydraulics can work a cross section out at a water surface as they would on it untrimmed: it rises
+    above the water on both sides, or it's untrimmed (or manual). Only the latter for a level that isn't a number."""
+    if section.xs.elevations.size // 2 >= section.full_half:
+        return True
+    profile = hydraulic_profile(section.xs)
+    return bool(_rises_above(profile.elevations, profile.center, float(level)))
+
+
+@njit(cache=True, error_model="numpy")
+def _rises_above(elevations, center, level):
+    """Whether a profile has a vertex above level on both sides of its centre."""
+    left = right = False
+    for j in range(center):
+        if elevations[j] > level:
+            left = True
+            break
+    for j in range(center + 1, elevations.size):
+        if elevations[j] > level:
+            right = True
+            break
+    return left and right
+
+
+class Resampler:
+    """Extends trimmed cross sections, sampling the ordinates beyond their ends from the DEM and the Manning's n raster
+    as they were before they were trimmed."""
+
+    def __init__(self, grid: Grid, mannings_n: ManningsN):
+        self.grid = grid
+        self.mannings_n = mannings_n
+
+    def extend(self, section: Section, half: int) -> bool:
+        """Sample a cross section out to `half` ordinates either side of its centre (as far as it was before it was
+        trimmed at most), and say whether it grew. The arrays are replaced, never changed in place."""
+        xs, grid = section.xs, self.grid
+        old = xs.elevations.size // 2
+        half = min(int(half), section.full_half)
+        if half <= old:
+            return False
+        spacing = float(xs.ordinate_distance)
+        length = _length_for(half, spacing)
+        z, _ = sample_elevations(grid.dem, section.row, section.col, section.direction, length, grid.dx, grid.dy)
+        added = half - old
+        xs.elevations = np.concatenate([z[:added], xs.elevations, z[-added:]])
+        n = None
+        if xs.mannings_n.size:
+            n = self.mannings_n.sample(section.row, section.col, section.direction, length, grid.dx, grid.dy)
+            xs.mannings_n = np.concatenate([n[:added], xs.mannings_n, n[-added:]])
+        section.rows, section.cols = ordinate_cells(section.row, section.col, section.direction, length, grid.dx,
+                                                    grid.dy)
+        if xs.profile is not None:
+            # A carved channel's profile: the ground beyond its banks is the ordinates
+            p = xs.profile
+            stations = np.concatenate([np.arange(-half, -old) * spacing, p.stations,
+                                       np.arange(old + 1, half + 1) * spacing])
+            xs.profile = Profile(stations, np.concatenate([z[:added], p.elevations, z[-added:]]),
+                                 np.concatenate([n[:added], p.mannings_n, n[-added:]]), p.center + added)
+        section.length = length
+        return True
+
+    def reach_above(self, section: Section, level: float) -> bool:
+        """Extend a cross section, doubling it, until it reaches above a water surface (reaches_above), or is as
+        long as before it was trimmed, and say whether it grew."""
+        grew = False
+        while not reaches_above(section, level) and self.extend(section, 2 * (section.xs.elevations.size // 2)):
+            grew = True
+        return grew
+
+    def hold_width(self, section: Section, width: float) -> bool:
+        """Extend a cross section to hold a channel this wide on either side, and say whether it grew."""
+        return self.extend(section, _ordinates_for(width, float(section.xs.ordinate_distance)))
 
 
 # --- 7. Bathymetry ---------------------------------------------------------------------------------------------------
@@ -721,24 +975,28 @@ def unresolved_banks(xs: XSection, target_width: float) -> Banks:
 
 
 def bank_ceilings(sections: list, ks, max_flow, slopes, roughness: DepthRoughness | None,
-                  slope_factor: float) -> np.ndarray:
+                  slope_factor: float, resampler: Resampler | None = None) -> np.ndarray:
     """The ceilings of cross sections ks (see arc.bathymetry.smoothing.below_ceilings): the water surface that carries
     each one's maximum flow over its cross section as the DEM has it, before any carving and without banks. NaN, for
     no ceiling, where the banks are the water's (water mask or land cover) or not valid, or where there's no maximum
-    flow or slope to carry, or the cross section never carries it."""
+    flow or slope to carry, or the cross section never carries it. A resampler extends a trimmed cross section that
+    doesn't reach above its ceiling, and it's worked out again."""
     ceilings = np.full(len(ks), math.nan)
     for position, k in enumerate(ks):
         section = sections[k]
         q, slope = float(max_flow[k]), float(slopes[k])
         if section.banks.valid and section.banks.method != WATER_BANKS and q > 0.0 and slope > 0.0:
-            ceilings[position] = wse_for_discharge(section.xs, q, slope, roughness=roughness,
-                                                   slope_factor=slope_factor)
+            while True:
+                ceilings[position] = wse_for_discharge(section.xs, q, slope, roughness=roughness,
+                                                       slope_factor=slope_factor)
+                if resampler is None or not resampler.reach_above(section, ceilings[position]):
+                    break
     return ceilings
 
 
 def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list, network, slopes, baseflow,
                      target_depth, target_width, water_n: float, *, stream_cells=None, outlets=None, max_flow=None,
-                     roughness: DepthRoughness | None = None) -> np.ndarray:
+                     roughness: DepthRoughness | None = None, resampler: Resampler | None = None) -> np.ndarray:
     """Smooth the banks, find, smooth and carve each channel, and return the filled bathymetry raster.
 
     With Bathy_Use_Banks, the sections of a reach given no bank elevation become unusable (which happens only where
@@ -749,7 +1007,7 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
     found (run() gives it between those). stream_cells and outlets help order the cross sections of a reach none of
     whose neighbours has any (see order_reach). With max_flow, each cell's maximum flow, and the rating curves'
     roughness, a bank from the DEM above the water that carries the maximum flow isn't an observation of the bank
-    elevation (bank_ceilings).
+    elevation (bank_ceilings). A resampler extends trimmed cross sections where they're too short for a step.
     """
     if network is None:
         raise ValueError("Bathymetry needs the stream network, from StrmShp_File, reach_id and downstream_reach_id.")
@@ -758,10 +1016,18 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
     for k, section in enumerate(sections):
         if section is not None:
             by_reach.setdefault(int(cells.reaches[k]), []).append(k)
+    if resampler is not None and configs.bathy_smooth_banks:
+        # The width filter may give a cross section banks for its reach's median width
+        for ks in by_reach.values():
+            widths = reach_widths([sections[k].banks for k in ks])
+            if widths is not None:
+                for k in ks:
+                    resampler.hold_width(sections[k], widths.median)
     reaches = {reach: ReachSections(cells.rows[ks], cells.cols[ks], [sections[k].xs for k in ks],
                                     [sections[k].banks for k in ks],
                                     None if max_flow is None else bank_ceilings(
-                                        sections, ks, max_flow, slopes, roughness, configs.slope_adjustment_factor))
+                                        sections, ks, max_flow, slopes, roughness, configs.slope_adjustment_factor,
+                                        resampler))
                for reach, ks in by_reach.items()}
     smoothed = smooth_bank_elevations(network, reaches, grid.dx, grid.dy, smooth=configs.bathy_smooth_banks,
                                       stream_cells=stream_cells, outlets=outlets)
@@ -778,6 +1044,8 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
             continue
         for position, k in enumerate(ks):
             banks = result.banks[position]
+            if not banks.valid and resampler is not None:
+                resampler.hold_width(sections[k], float(target_width[k]))
             sections[k].hydraulic_banks = banks if banks.valid else unresolved_banks(sections[k].xs,
                                                                                      float(target_width[k]))
             sections[k].bank_elevation = float(result.bank_elevations[position])
@@ -827,11 +1095,28 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list,
 # --- 8. Rating curves ------------------------------------------------------------------------------------------------
 
 
+def _curve_top(curve: RatingCurve | None, xs: XSection, q_max: float, slope: float, increments: int,
+               roughness: DepthRoughness | None, slope_factor: float) -> float:
+    """The highest water surface rating_curve worked a cross section's hydraulics out at: the one that carries its
+    maximum flow, or where the discharge can fall, an increment above it (see arc.rating_curve)."""
+    if not (q_max > 0.0 and slope > 0.0):
+        return -math.inf
+    if curve is None:
+        return max_flow_wse(xs, q_max, slope, roughness=roughness, slope_factor=slope_factor)
+    if increments <= 0:
+        return curve.max_wse
+    profile = hydraulic_profile(xs)
+    thalweg = float(profile.elevations[profile.center])
+    return thalweg + (curve.max_wse - thalweg) / increments * (increments + 1)
+
+
 def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, slopes, baseflow, max_flow,
-                  roughness: DepthRoughness | None, quiet: bool = True) -> RatingCurves:
+                  roughness: DepthRoughness | None, quiet: bool = True,
+                  resampler: Resampler | None = None) -> RatingCurves:
     """Each cell's rating curve and metadata, NaN where it has none. The elevation is that of the centre of the cross
     section the rating curve is worked out on: the carved bed with bathymetry, and otherwise the DEM's (or a manual
-    cross section's own)."""
+    cross section's own). A resampler extends a trimmed cross section that doesn't reach above the water its rating
+    curve was worked out at, and it's worked out again."""
     increments = int(configs.vdt_database_numiterations)
     curves = RatingCurves.empty(cells.count, max(increments, 0))
     reach_average = configs.reach_average_curve_file
@@ -849,9 +1134,14 @@ def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, sl
                 curves.metadata[k, _METADATA_BUT_BASEFLOW] = [comid, row, col, elevation, 0.0, xs_angle]
             continue
         elevation = _centre(section)
-        curve = rating_curve(section.xs, float(max_flow[k]), float(slopes[k]), increments,
-                             baseflow=float(baseflow[k]), roughness=roughness,
-                             slope_factor=configs.slope_adjustment_factor)
+        while True:
+            curve = rating_curve(section.xs, float(max_flow[k]), float(slopes[k]), increments,
+                                 baseflow=float(baseflow[k]), roughness=roughness,
+                                 slope_factor=configs.slope_adjustment_factor)
+            if resampler is None or not resampler.reach_above(section, _curve_top(
+                    curve, section.xs, float(max_flow[k]), float(slopes[k]), increments, roughness,
+                    configs.slope_adjustment_factor)):
+                break
         if curve is not None and curve.valid:
             curves.increments[k] = curve.increments
             curves.metadata[k] = [comid, section.row, section.col, elevation, baseflow[k], slopes[k],
@@ -923,8 +1213,10 @@ def write_outputs(configs: Configs, grid: Grid, results: Results, flows: pd.Data
 # --- The whole run -------------------------------------------------------------------------------------------------
 
 
-def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results:
-    """Run ARC for a configuration, write the outputs it names (unless write is False), and return what it made."""
+def run(configs: Configs, *, quiet: bool = False, write: bool = True, trim: bool = True) -> Results:
+    """Run ARC for a configuration, write the outputs it names (unless write is False), and return what it made.
+    With trim False, the cross sections are all kept out to the raster's edge, which gives the same results with
+    more memory, and cross sections in the cross-section file that reach that far (see the notes above)."""
     started = time.perf_counter()
     flows = read_flows(configs)
     grid = read_grid(configs)
@@ -932,15 +1224,6 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
     network = stream_network(configs, layer)
     targets = power_law_targets(configs, layer)
     manual = read_manual_sections(configs) if configs.manual_cross_sections_file else None
-
-    length = float(configs.x_section_dist)
-    if manual:
-        needed = max(2.0 * (max(r["xs1_profile"].size, r["xs2_profile"].size) - 1) * r["ordinate_dist"]
-                     for r in manual.values())
-        if needed > length:
-            LOG.info(f"Increasing X_Section_Dist from {length} to {needed} to accommodate the supplied manual "
-                     "cross sections.")
-            length = needed
 
     cells = stream_cells(configs, grid, flows, manual)
     slopes, keep = cell_slopes(configs, grid, cells, network, layer)
@@ -958,9 +1241,13 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         water_mask = grid.water_mask.copy()
         water_mask[cells.rows, cells.cols] = 1
     grid = grid._replace(land_cover=land_cover, water_mask=water_mask)
-    mannings_n, water_n = mannings_n_raster(configs, land_cover)
+    lookup, water_n = mannings_n_table(configs)
+    mannings_n = ManningsN(land_cover, lookup, water_n)
+    roughness = DepthRoughness(configs.k_decay, configs.shallow_factor, configs.deep_factor) \
+        if configs.depth_varying_n else None
 
-    # Each cell's cross section and banks
+    resampler = Resampler(grid, mannings_n)
+    # Each cell's cross section and banks, and then the cross section trimmed (see the notes above)
     offsets = angle_offsets(configs.degree_manip, configs.degree_interval)
     water, water_value = bank_water(configs, grid)
     sections: list[Section | None] = []
@@ -968,13 +1255,19 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         if manual:
             section = manual_section(manual[int(cells.comids[k])])
         else:
-            section = sample_section(configs, grid, int(cells.rows[k]), int(cells.cols[k]), offsets, length)
+            section = sample_section(configs, grid, int(cells.rows[k]), int(cells.cols[k]), offsets, whole=not trim)
         if section is not None:
             width = None if math.isnan(target_width[k]) else float(target_width[k])
             along = water_along(section, water, grid)
+            while not reaches_its_banks(section, along, water_value) and \
+                    resampler.extend(section, 2 * (section.xs.elevations.size // 2)):
+                along = water_along(section, water, grid)
             section.banks = find_banks(section.xs, target_width=width, land_cover=along,
                                        water_value=water_value if along is not None else None)
             section.hydraulic_banks = section.banks
+            if trim and not section.manual:
+                fit_section(configs, section, grid, mannings_n, resampler, float(max_flow[k]), float(slopes[k]),
+                            roughness, float(target_width[k]))
         sections.append(section)
 
     # The water's n between each cross section's banks, put in the raster so that the cross sections crossing it get
@@ -982,14 +1275,12 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
     for section in sections:
         if section is not None:
             wet = in_bank(section.xs, section.banks)
-            rows, cols = section.rows[wet], section.cols[wet]
-            on_raster = (rows >= 0) & (rows < mannings_n.shape[0]) & (cols >= 0) & (cols < mannings_n.shape[1])
-            mannings_n[rows[on_raster], cols[on_raster]] = water_n
+            mannings_n.water_between_banks(section.rows[wet], section.cols[wet])
     for section in sections:
         if section is not None:
-            sample_roughness(section, grid, mannings_n, length)
+            sample_roughness(section, grid, mannings_n)
             set_in_bank_roughness(section.xs, section.banks, water_n)
-    del mannings_n  # the cross sections have their n, and the raster is as big as the DEM
+    resampler = resampler if trim else None
 
     # Where every reach lies, which orders the cross sections of a reach none of whose neighbours has any
     stream_reaches = outlets = None
@@ -997,21 +1288,19 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
         stream_reaches = stream_cells_by_reach(grid.streams)
         outlets = line_outlets(configs, grid, layer, cells.reaches)
 
-    roughness = DepthRoughness(configs.k_decay, configs.shallow_factor, configs.deep_factor) \
-        if configs.depth_varying_n else None
     results = Results(configs, cells, slopes, baseflow, max_flow, sections)
     if configs.bathy_out_file:
         results.bathymetry = apply_bathymetry(configs, grid, cells, sections, network, slopes, baseflow,
                                               target_depth, target_width, water_n, stream_cells=stream_reaches,
-                                              outlets=outlets, max_flow=max_flow, roughness=roughness)
+                                              outlets=outlets, max_flow=max_flow, roughness=roughness,
+                                              resampler=resampler)
     usable = [(k, s) for k, s in enumerate(sections) if s is not None and s.usable]
     for _, section in usable:
         set_bank_distances(section.xs, section.hydraulic_banks)
-    if configs.xs_out_file:
-        results.cross_sections = [cross_section_record(s, cells.comids[k]) for k, s in usable]
 
     if configs.makes_rating_curves:
-        results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet)
+        results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet,
+                                       resampler)
         if configs.standard_step:
             elevations = grid.dem[cells.rows, cells.cols]
             levels = np.array([math.nan if s is None else s.baseflow_level for s in sections])
@@ -1020,10 +1309,17 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True) -> Results
                                           slope_factor=configs.slope_adjustment_factor, stream_cells=stream_reaches,
                                           outlets=outlets, elevations=np.where(elevations >= OFF_RASTER_ELEVATION,
                                                                                np.nan, elevations),
-                                          baseflow_levels=levels)
+                                          baseflow_levels=levels,
+                                          ensure_level=None if resampler is None else
+                                          lambda k, level: resampler.reach_above(sections[k], level))
             LOG.info(f"Standard step: {summary.cells} rating curves linked, {summary.critical} of {summary.steps} "
                      f"steps at critical depth, {summary.held} water surfaces held at the baseflow level")
+    if configs.xs_out_file:
+        results.cross_sections = [cross_section_record(s, cells.comids[k]) for k, s in usable]
     if configs.build_representative_cross_section:
+        if resampler is not None:
+            for _, s in usable:
+                resampler.reach_above(s, highest_stage(_centre(s)))
         samples = [RepresentativeSample(int(cells.comids[k]), s.xs, float(s.xs.elevations[s.xs.elevations.size // 2]),
                                         float(slopes[k])) for k, s in usable]
         results.representative = representative_cross_section_dataframe(
