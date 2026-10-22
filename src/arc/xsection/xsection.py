@@ -1,8 +1,11 @@
 """The cross section and its exact ground profile, as the hydraulics see them."""
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from arc.xsection.valley import Valley
 
 
 class Profile(NamedTuple):
@@ -30,3 +33,9 @@ class XSection:
     # A carved channel's exact shape, whose corners can fall between the ordinates (arc.bathymetry.carve_channel).
     # When it's set, the hydraulics use it, and the elevations are only its values at the ordinates.
     profile: Profile | None = field(init=False, default=None)
+    # With Valley_Sections, the overbanks from lines out from the banks square to the valley (arc.xsection.valley):
+    # when it's set, the hydraulics take the channel from this cross section and the overbanks from those
+    valley: "Valley | None" = field(init=False, default=None)
+    # The last spliced profile and what it was spliced from (arc.hydraulics.hydraulic_profile), which it knows by
+    # identity: arrays changed in place after a splice aren't seen, so replace them instead
+    _spliced: tuple | None = field(init=False, default=None)

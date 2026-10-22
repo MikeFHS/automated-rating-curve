@@ -1,11 +1,23 @@
 """Distances along a reach's stream cells.
 
 A reach's stream cells join their eight neighbours: dx apart along a row, dy along a column, and hypot(dx, dy) across
-a diagonal. The distance along the stream between two cells is the length of the shortest path between them through
-the reach's cells. Where the cells don't all join up, as where a reach leaves the raster and comes back or its
-rasterisation skips a cell, the path jumps each gap in a straight line, across the narrowest part of the gap.
+a diagonal. The path along the stream between two cells is the shortest through the reach's cells. Where the cells
+don't all join up, as where a reach leaves the raster and comes back or its rasterisation skips a cell, the path jumps
+each gap in a straight line, across the narrowest part of the gap.
 
-A station is a cell's distance along the stream from one end of the reach.
+A station is a cell's distance along the stream from one end of the reach. It isn't the path's own length: a stream at
+an angle to the grid crosses it in steps along a row or column and across a diagonal, a stair-step path up to 8% longer
+than the stream (at 22.5 degrees), which made its slopes that much too gentle. So the stations are measured along the
+path from the far end of the reach back to its start (stepping each time to the neighbour on a shortest path nearest
+the start, and the lowest row and then column of any that tie), with each of its cells moved towards the mean of the
+cells SMOOTHING_CELLS either side of it along the path (fewer near its ends, as many each side), but no more than half
+a cell along a row or a column: about as far as a stair step strays from the stream it follows, so that a tight bend,
+whose mean lies further inside it, keeps most of its length. A straight stream at any angle then comes out within 0.3%
+of its length, a meander of 60 cells or more from crest to crest within 1%, one of 20 cells 5% short (its cells' path
+is 5% long), and a stream along a row or a diagonal exactly. Across a gap the station still takes the path's straight
+jump, and the means don't reach across it. A cell off that path, such as the corner cell where a rasterised line steps
+along a row and then a column rather than across the diagonal, takes the station at its own distance along the
+shortest path.
 """
 from __future__ import annotations
 
@@ -13,6 +25,8 @@ import math
 
 import numpy as np
 from numba import njit
+
+SMOOTHING_CELLS = 3  # how many cells either side along the path each cell's centre is averaged with for the stations
 
 
 @njit(cache=True, error_model="numpy")
@@ -162,7 +176,76 @@ def _along_stream_stations(rows, cols, dx, dy):
     """Stations from one end of the reach: the cell farthest along the stream from the first cell."""
     start, neighbours, lengths = _adjacency(rows, cols, dx, dy)
     end = np.argmax(_distances_from(rows, cols, dx, dy, 0, start, neighbours, lengths))
-    return _distances_from(rows, cols, dx, dy, end, start, neighbours, lengths)
+    return _stations_from(rows, cols, dx, dy, end, SMOOTHING_CELLS)[1]
+
+
+@njit(cache=True, error_model="numpy")
+def _stations_from(rows, cols, dx, dy, source, cells):
+    """Each cell's distance from cell `source` along the shortest path through the cells, and its station from there
+    (see the notes above), with the path's cells moved to the means of `cells` either side."""
+    start, neighbours, lengths = _adjacency(rows, cols, dx, dy)
+    distances = _distances_from(rows, cols, dx, dy, source, start, neighbours, lengths)
+    n = rows.size
+    # The path back from the farthest cell to the source
+    path = np.empty(n, np.int64)
+    current = np.argmax(distances)
+    path[0] = current
+    count = 1
+    while distances[current] > 0.0 and count < n:
+        tolerance = 1e-9 * (1.0 + distances[current])
+        best = -1
+        for k in range(start[current], start[current + 1]):
+            v = neighbours[k]
+            if distances[v] < distances[current] and abs(distances[v] + lengths[k] - distances[current]) <= tolerance:
+                if best < 0 or distances[v] < distances[best] or (distances[v] == distances[best] and (
+                        rows[v] < rows[best] or (rows[v] == rows[best] and cols[v] < cols[best]))):
+                    best = v
+
+        if best < 0:
+            # A gap: back to the cell the path jumped it from
+            error = np.inf
+            for v in range(n):
+                if distances[v] < distances[current]:
+                    jump = math.hypot((cols[v] - cols[current]) * dx, (rows[v] - rows[current]) * dy)
+                    if abs(distances[v] + jump - distances[current]) < error:
+                        error, best = abs(distances[v] + jump - distances[current]), v
+
+        path[count] = best
+        count += 1
+        current = best
+
+    path = path[:count][::-1]
+    d = distances[path]
+    x = cols[path] * dx
+    y = rows[path] * dy
+    gap = 1.5 * math.hypot(dx, dy)
+    # Where the run of joined-up cells each of the path's cells is in starts and ends
+    run_start = np.zeros(count, np.int64)
+    run_end = np.zeros(count, np.int64)
+    first = 0
+    for i in range(1, count + 1):
+        if i == count or d[i] - d[i - 1] > gap:
+            for k in range(first, i):
+                run_start[k], run_end[k] = first, i - 1
+            first = i
+
+    mx = np.empty(count)
+    my = np.empty(count)
+    for i in range(count):
+        h = min(cells, i - run_start[i], run_end[i] - i)
+        sx = sy = 0.0
+        for k in range(i - h, i + h + 1):
+            sx += x[k]
+            sy += y[k]
+        mx[i] = x[i] + min(max(sx / (2 * h + 1) - x[i], -0.5 * dx), 0.5 * dx)
+        my[i] = y[i] + min(max(sy / (2 * h + 1) - y[i], -0.5 * dy), 0.5 * dy)
+
+    along = np.zeros(count)
+    for i in range(1, count):
+        step = d[i] - d[i - 1] if run_start[i] == i else math.hypot(mx[i] - mx[i - 1], my[i] - my[i - 1])
+        along[i] = along[i - 1] + step
+
+    return distances, np.interp(distances, d, along)
 
 
 @njit(cache=True, error_model="numpy")
@@ -186,13 +269,15 @@ def _cell_arrays(rows, cols) -> tuple[np.ndarray, np.ndarray]:
 
 
 def along_stream_distances(rows, cols, dx: float, dy: float, source: int) -> np.ndarray:
-    """Each cell's distance along the stream from cell `source`, in metres."""
+    """Each cell's distance along the shortest path through the reach's cells from cell `source`, in metres. Not
+    smoothed, as stations are (see the notes above): the source can be anywhere along the reach."""
     rows, cols = _cell_arrays(rows, cols)
     return _along_stream_distances(rows, cols, float(dx), float(dy), int(source))
 
 
 def along_stream_stations(rows, cols, dx: float, dy: float) -> np.ndarray:
-    """Each cell's distance along the stream from one end of the reach, in metres. Which end isn't defined."""
+    """Each cell's station: its distance along the stream from one end of the reach, in metres (see the notes above).
+    Which end isn't defined."""
     rows, cols = _cell_arrays(rows, cols)
     if rows.size == 0:
         return np.empty(0)
@@ -212,15 +297,17 @@ def downstream_order(rows, cols, dx: float, dy: float, *, downstream_cells=None,
     dx, dy = float(dx), float(dy)
     if rows.size <= 1:
         return np.arange(rows.size), np.zeros(rows.size)
+    
     downstream = _neighbour_cell(rows, cols, dx, dy, downstream_cells)
     if downstream < 0:
         upstream = _neighbour_cell(rows, cols, dx, dy, upstream_cells)
         if upstream < 0:
             return None
         downstream = int(np.argmax(_along_stream_distances(rows, cols, dx, dy, upstream)))
-    to_downstream = _along_stream_distances(rows, cols, dx, dy, downstream)
+
+    to_downstream, stations = _stations_from(rows, cols, dx, dy, downstream, SMOOTHING_CELLS)
     order = np.argsort(-to_downstream, kind="stable")
-    return order, to_downstream[order[0]] - to_downstream[order]
+    return order, stations[order[0]] - stations[order]
 
 
 def _neighbour_cell(rows, cols, dx, dy, cells) -> int:

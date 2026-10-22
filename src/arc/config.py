@@ -123,6 +123,16 @@ class Configs:
     # Link the water surfaces along the stream network by the standard-step method (arc.standard_step), instead of
     # each cross section's normal depth
     standard_step: bool = False
+    # How far downstream (m) the standard step reckons each step's eddy loss over (arc.standard_step.EDDY_LENGTH):
+    # 0 charges each step the change from the cross section below alone
+    standard_step_eddy_length: float = 300.0
+    # Take the overbanks' flow on lines out from the banks square to the valley, at the valley's slope, and the
+    # channel's on the cell's own cross section (arc.xsection.valley): over the floodplain of a meandering river the
+    # water runs down the valley, not along the channel, and Manning's equation takes the flow square to the section
+    valley_sections: bool = False
+    # How many cells each way along the stream the valley's direction and sinuosity are taken over (a Gaussian of half
+    # that, arc.xsection.valley.valley_axes): about a meander's length
+    valley_dir_dist: int = 40
 
     # Output files
     print_vdt_database: os.PathLike | None = None
@@ -361,6 +371,10 @@ class Configs:
             raise ValueError('k_decay must be finite and positive.')
         if not self.bathy_bankless_max_baseflow >= 0.0:
             raise ValueError('Bathy_Bankless_Max_Baseflow must be 0 or more.')
+        if not (np.isfinite(self.standard_step_eddy_length) and self.standard_step_eddy_length >= 0.0):
+            raise ValueError('Standard_Step_Eddy_Length must be finite and 0 or more.')
+        if self.valley_sections and not self.valley_dir_dist >= 2:
+            raise ValueError('Valley_Dir_Dist must be at least 2 cells.')
         if not np.isfinite(self.shallow_factor) or self.shallow_factor < 1.0:
             raise ValueError('shallow_factor must be finite and >= 1.')
         if not np.isfinite(self.deep_factor) or not 0.0 < self.deep_factor <= 1.0:

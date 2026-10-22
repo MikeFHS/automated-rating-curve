@@ -1,7 +1,9 @@
 """Stream slopes from the DEM at a reach's stream cells.
 
 The slope between two stream cells is the difference in their elevations over the distance between them along the
-stream (see arc.xsection.stream_path), and never over less than the straight line between them.
+stream: the difference in their stations (see arc.xsection.stream_path), or the straight line between them where
+that's 0, as for two cells side by side across the stream. Not the larger of the two: on a stream at an angle to the
+grid, the straight line between two of its stair-step cells is longer than the stream between them.
 
 The slope methods (Stream_Slope_Method), and when each can't give a slope:
 
@@ -43,11 +45,14 @@ NO_DATA = -9999.0  # an elevation at or below this is missing
 
 @njit(cache=True, error_model="numpy")
 def _between(rows, cols, stations, dx, dy, i, k):
-    """How far apart two cells are along the stream, and never less than the straight line between them."""
+    """How far apart two cells are along the stream: the difference in their stations, or the straight line between
+    them where that's 0."""
     along = abs(stations[k] - stations[i])
+    if along > 0.0:
+        return along
+    
     across, down = (cols[k] - cols[i]) * dx, (rows[k] - rows[i]) * dy
-    straight_squared = across * across + down * down
-    return along if along * along >= straight_squared else math.sqrt(straight_squared)
+    return math.sqrt(across * across + down * down)
 
 
 @njit(cache=True, error_model="numpy")

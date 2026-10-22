@@ -21,7 +21,8 @@ The steps
 5. Cross sections (arc.xsection): the stream's direction at each stream cell, the low spot, the direction where the
    channel is narrowest, and the cross section there, as far out as finding its banks looks (see below).
 6. Banks (arc.bathymetry.find_banks): where the water mask's water ends, if there is a mask, or where the land cover's
-   does, with FindBanksBasedOnLandCover, and otherwise from the DEM. Then each cross section is trimmed to what the
+   does, with FindBanksBasedOnLandCover, and otherwise from the DEM; where none of them resolves a channel, a single
+   cell as wide as a drainage-area width prior narrower than a cell. Then each cross section is trimmed to what the
    later steps are expected to need (see below), and the water's n goes between the banks.
 7. Bathymetry, if BATHY_Out_File is set (arc.bathymetry): each reach's banks and bank elevations smoothed, and the
    bank elevations ramped to meet at each junction on a main stem (unless Bathy_Smooth_Banks is off), each channel's depth found, the depths filled in and the beds smoothed along the network
@@ -102,6 +103,8 @@ from arc.xsection.sampling import (OFF_RASTER_ELEVATION, _ordinates, ordinates_a
 from arc.xsection.slope import (corrected_local_slopes, end_point_slope, fill_unresolved_reach_slopes,
                                 local_average_slopes, local_fit_slopes, main_stem_above, reach_median_slope)
 from arc.xsection.stream_path import along_stream_stations, stream_cells_by_reach
+from arc.xsection.valley import (Valley, fill_other_water, ray_classes, ray_reach, ray_values, slope_ratio, valley_axes,
+                                worth_splitting)
 from arc.xsection.xsection import Profile, XSection
 
 FLOODED_CELL = 3  # the flood raster's value at the centre cell of each cross section used
@@ -890,7 +893,9 @@ def _length_for(half: int, spacing: float) -> float:
 def reaches_above(section: Section, level: float) -> bool:
     """Whether the hydraulics can work a cross section out at a water surface as they would on it untrimmed: it rises
     above the water on both sides, or it's untrimmed (or manual). Only the latter for a level that isn't a number."""
-    if section.xs.elevations.size // 2 >= section.full_half:
+    valley = section.xs.valley
+    if (valley.elevations.size // 2 >= valley.full_half) if valley is not None else \
+            (section.xs.elevations.size // 2 >= section.full_half):
         return True
     profile = hydraulic_profile(section.xs)
     return bool(_rises_above(profile.elevations, profile.center, float(level)))
@@ -952,13 +957,104 @@ class Resampler:
         """Extend a cross section, doubling it, until it reaches above a water surface (reaches_above), or is as
         long as before it was trimmed, and say whether it grew."""
         grew = False
-        while not reaches_above(section, level) and self.extend(section, 2 * (section.xs.elevations.size // 2)):
+        while not reaches_above(section, level):
+            valley = section.xs.valley
+            if valley is not None:
+                # The overbanks are the lines square to the valley (arc.xsection.valley): it's they that grow
+                if not self.extend_valley(section, 2 * (valley.elevations.size // 2)):
+                    break
+            elif not self.extend(section, 2 * (section.xs.elevations.size // 2)):
+                break
             grew = True
         return grew
+
+    def extend_valley(self, section: Section, half: int) -> bool:
+        """Sample a cross section's overbanks square to the valley out to `half` ordinates from each bank (to the
+        raster's edge at most), and say whether they grew."""
+        valley = section.xs.valley
+        if min(int(half), valley.full_half) <= valley.elevations.size // 2:
+            return False
+        section.xs.valley = sample_valley(self.grid, self.mannings_n, section, valley.direction, valley.sinuosity,
+                                          valley.slope_ratio, int(half))
+        return True
 
     def hold_width(self, section: Section, width: float) -> bool:
         """Extend a cross section to hold a channel this wide on either side, and say whether it grew."""
         return self.extend(section, _ordinates_for(width, float(section.xs.ordinate_distance)))
+
+
+# --- Valley overbanks (Valley_Sections) ------------------------------------------------------------------------------
+
+
+def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction: float, sinuosity: float,
+                  ratio: float, half: int | None = None) -> Valley:
+    """A cross section's overbanks square to the valley (arc.xsection.valley): from each of its banks, a line in the
+    valley's direction, out `half` ordinates, or without it, to the first ground above the lower of the ends of the
+    cross section itself (as far as it was trimmed to reach), with the water they cross filled
+    (fill_other_water)."""
+    xs = section.xs
+    row, col, dx, dy = section.row, section.col, grid.dx, grid.dy
+    own = section.direction - math.pi / 2
+    left, right = float(xs.left_bank_distance), float(xs.right_bank_distance)
+    across = direction - math.pi / 2
+    cos, sin = math.cos(across), math.sin(across)
+    spacing = 1.0 / max(abs(cos) / dx, abs(sin) / dy)  # a cell a step along the axis it crosses fastest
+    lines = (((col - math.cos(own) * left / dx, row - math.sin(own) * left / dy), -cos, -sin),
+             ((col + math.cos(own) * right / dx, row + math.sin(own) * right / dy), cos, sin))
+    z = xs.elevations
+    center = float(z[z.size // 2])
+    ends = [float(e) for e in (z[0], z[-1]) if e < OFF_RASTER_ELEVATION]
+    level = center + max(min(ends) - center if ends else MAX_BANK_HEIGHT, 0.0)
+    reaches = [ray_reach(grid.dem, x0, y0, c, s, spacing, dx, dy, level) for (x0, y0), c, s in lines]
+    full_half = max(edge for _, edge in reaches)
+    half = max(above for above, _ in reaches) if half is None else int(half)
+    half = max(min(half, full_half), 1)
+    elevations, n, rows, cols = [], [], [], []
+    distances = np.arange(1, half + 1) * spacing
+    for (x0, y0), c, s in lines:
+        elevations.append(ray_values(grid.dem, x0, y0, c, s, spacing, half, dx, dy))
+        n.append(ray_classes(mannings_n.classes, mannings_n.water, mannings_n.lookup, mannings_n.water_n, x0, y0, c,
+                             s, spacing, half, dx, dy))
+        cols.append(np.rint(x0 + c * distances / dx).astype(np.intp))
+        rows.append(np.rint(y0 + s * distances / dy).astype(np.intp))
+    center_n = float(xs.mannings_n[xs.mannings_n.size // 2]) if xs.mannings_n.size else 0.0
+    rows = np.concatenate([rows[0][::-1], (row,), rows[1]])
+    cols = np.concatenate([cols[0][::-1], (col,), cols[1]])
+    on_raster = (rows >= 0) & (rows < grid.dem.shape[0]) & (cols >= 0) & (cols < grid.dem.shape[1])
+    wet = np.zeros(rows.size, bool)
+    wet[on_raster] = grid.streams[rows[on_raster], cols[on_raster]] > 0
+    if grid.water_mask is not None:
+        wet[on_raster] |= grid.water_mask[rows[on_raster], cols[on_raster]] > 0
+    wet[half] = False
+    elevations = fill_other_water(np.concatenate([elevations[0][::-1], (center,), elevations[1]]), wet)
+    return Valley(float(direction), float(sinuosity), float(ratio), elevations,
+                  np.concatenate([n[0][::-1], (center_n,), n[1]]), float(spacing), int(full_half), rows, cols)
+
+
+def attach_valleys(configs: Configs, grid: Grid, cells: Cells, sections: list, mannings_n: ManningsN,
+                   slopes: np.ndarray) -> int:
+    """With Valley_Sections, give each usable cross section with banks (not a manual one) overbanks square to its
+    valley (sample_valley), where the valley turns from it or the stream winds (arc.xsection.valley.worth_splitting),
+    with the valley's slope over its own (slope_ratio), and say how many. The left line runs out on the cross
+    section's left side."""
+    directions, sinuosities, mean_slopes = valley_axes(cells.rows, cells.cols, cells.reaches, grid.dx, grid.dy,
+                                                       configs.valley_dir_dist, slopes)
+    count = 0
+    for k, section in enumerate(sections):
+        if section is None or not section.usable or section.manual:
+            continue
+        xs = section.xs
+        if not (xs.left_bank_distance > 0.0 and xs.right_bank_distance > 0.0):
+            continue
+        direction, sinuosity = float(directions[k]), float(sinuosities[k])
+        if not worth_splitting(section.direction, direction, sinuosity):
+            continue
+        if math.cos(direction - section.direction) < 0.0:
+            direction += math.pi
+        xs.valley = sample_valley(grid, mannings_n, section, direction, sinuosity,
+                                  slope_ratio(float(slopes[k]), float(mean_slopes[k]), sinuosity))
+        count += 1
+    return count
 
 
 # --- 7. Bathymetry ---------------------------------------------------------------------------------------------------
@@ -1315,6 +1411,9 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True, trim: bool
     usable = [(k, s) for k, s in enumerate(sections) if s is not None and s.usable]
     for _, section in usable:
         set_bank_distances(section.xs, section.hydraulic_banks)
+    if configs.valley_sections:
+        split = attach_valleys(configs, grid, cells, sections, mannings_n, slopes)
+        LOG.info(f"Valley_Sections: {split} of {len(usable)} cross sections take their overbanks square to the valley")
 
     if configs.makes_rating_curves:
         results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet,
@@ -1324,7 +1423,8 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True, trim: bool
             levels = np.array([math.nan if s is None else s.baseflow_level for s in sections])
             summary = apply_standard_step(network, cells.rows, cells.cols, cells.reaches, sections, slopes, max_flow,
                                           baseflow, results.curves, grid.dx, grid.dy, roughness=roughness,
-                                          slope_factor=configs.slope_adjustment_factor, stream_cells=stream_reaches,
+                                          slope_factor=configs.slope_adjustment_factor,
+                                          eddy_length=configs.standard_step_eddy_length, stream_cells=stream_reaches,
                                           outlets=outlets, elevations=np.where(elevations >= OFF_RASTER_ELEVATION,
                                                                                np.nan, elevations),
                                           baseflow_levels=levels,

@@ -36,6 +36,7 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
+from arc.xsection.valley import splice
 from arc.xsection.xsection import Profile, XSection
 
 
@@ -146,10 +147,22 @@ def uniform_profile(elevations: np.ndarray, mannings_n: np.ndarray, spacing: flo
 
 def hydraulic_profile(xs: XSection) -> Profile:
     """The ground the hydraulics use: the carved channel's exact profile if the cross section has one, and otherwise
-    its ordinates."""
-    if xs.profile is not None:
-        return xs.profile
-    return uniform_profile(xs.elevations, xs.mannings_n, xs.ordinate_distance)
+    its ordinates; with a valley's overbanks (arc.xsection.valley), its channel between its banks joined to them."""
+    valley = xs.valley
+    if valley is None or not (xs.left_bank_distance > 0.0 and xs.right_bank_distance > 0.0):
+        if xs.profile is not None:
+            return xs.profile
+        return uniform_profile(xs.elevations, xs.mannings_n, xs.ordinate_distance)
+    # Spliced once for the same valley, ground and banks: the cache holds them, so none is a new object in their place
+    sources = (valley, xs.profile, xs.elevations, xs.mannings_n, xs.left_bank_distance, xs.right_bank_distance)
+    cached = xs._spliced
+    if cached is not None and all(a is b or (isinstance(a, float) and a == b) for a, b in zip(cached[0], sources)):
+        return cached[1]
+    profile = xs.profile if xs.profile is not None else uniform_profile(xs.elevations, xs.mannings_n,
+                                                                          xs.ordinate_distance)
+    spliced = splice(profile, float(xs.left_bank_distance), float(xs.right_bank_distance), valley)
+    xs._spliced = (sources, spliced)
+    return spliced
 
 
 @njit(cache=True, error_model="numpy")

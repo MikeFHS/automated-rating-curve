@@ -11,11 +11,16 @@ the stream:
 with Sf = ((Q_u + Q_d) / ((K_u + K_d) f))^2, the average-conveyance friction slope (K the conveyance, f the
 slope_adjustment_factor), a the velocity-head coefficient of the channel and the overbanks, and C 0.1 where the flow
 speeds up going downstream and 0.3 where it slows. The eddy loss (the last term) is reckoned on the change in velocity
-head from u to the cross section w, the first EDDY_LENGTH (1 km) or more downstream in the reach (or its last), n cross
-sections below u, and each step takes 1/n of it. A steady widening or narrowing is charged in full that way, but not the
-cross sections' differences from their neighbours: with cross sections a cell apart, those come and go over tens of
-metres, and charging each step's change (n = 1, as HEC-RAS does with cross sections hundreds of metres apart) added up
-to half the friction on a big braided river, and raised its water metres above normal depth.
+head from u to the cross section w, the first EDDY_LENGTH (300 m, Standard_Step_Eddy_Length) or more downstream in the
+reach (or its last), n cross sections below u, and each step takes 1/n of it. A steady widening or narrowing is charged
+in full that way, but not the cross sections' differences from their neighbours: with cross sections a cell apart, those
+come and go over tens of metres, and charging each step's change (n = 1, as HEC-RAS does with cross sections hundreds of
+metres apart) added up to half the friction on a big braided river, and raised its water metres above normal depth. The
+window has its own cost: a real change in velocity head, as where the water draws down to critical depth above a steep
+reach, is charged over the window above it, raising the water there. On Chow's (1959) channel drawn down to critical
+depth (testing/test_benchmarks.py), a window of 300 m puts the water up to 0.03 m above the exact profile, as 1 km
+does, but 0.002 m above normal depth upstream of the drawdown, where 1 km put it 0.006 m above; on a channel whose width
+varies by a fifth from cell to cell, the eddy loss raises the water 0.07 m (1 km: 0.02 m; each step's own: 0.46 m).
 
 The upstream water surface is the subcritical root, the lowest above critical depth and above the cross section's water
 at the flow before (so that it never falls as the flow rises, which the lowest root can in a compound channel), or
@@ -74,7 +79,7 @@ LEVELS = 240  # water surfaces in each cross section's table
 TOLERANCE = 1e-6  # metres: how closely each step's water surface is found
 CONTRACTION = 0.1  # loss coefficients on the change in velocity head, where the flow speeds up going downstream...
 EXPANSION = 0.3  # ...and where it slows
-EDDY_LENGTH = 1000.0  # metres: the eddy loss is reckoned on the change in velocity head over this far downstream
+EDDY_LENGTH = 300.0  # metres: the eddy loss is reckoned on the change in velocity head over this far downstream
 
 
 @njit(cache=True, error_model="numpy")
