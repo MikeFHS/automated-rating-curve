@@ -10,9 +10,10 @@ synthetic meandering river (docs/valley_sections.md), against a 2D model, ARC's 
 
 With Valley_Sections, each stream cell's cross section keeps its channel, between its banks, and takes each overbank
 from a line out from that bank square to the valley: one line across the valley, kinked at the banks. The valley's
-direction is the stream's, smoothed along it over Valley_Dir_Dist cells either way, and its sinuosity is the stream's
-length over the smoothed line's (valley_axes). The water lines it crosses beyond the banks (the river's other bends,
-other streams, lakes) are filled to their lips (fill_other_water). The two join in one profile (splice).
+direction is the stream's, smoothed along it about a meander either way (Valley_Dir_Widths of the reach's channel
+widths, arc.pipeline.valley_windows), and its sinuosity is the stream's length over the smoothed line's
+(valley_axes). The water lines it crosses beyond the banks (the river's other bends, other streams, lakes) are filled
+to their lips (fill_other_water). The two join in one profile (splice).
 
 The overbank water runs a shorter way down the valley than the channel's, by the sinuosity, so it falls more steeply:
 the valley's slope is the channel's times the sinuosity (slope_ratio takes the channel's slope averaged over the same
@@ -61,13 +62,13 @@ class Valley:
     cols: np.ndarray
 
 
-def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way: int,
+def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
                 slopes=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Each stream cell's valley direction (radians from +col towards +row, in [0, pi)), its stream's sinuosity (at
     least 1, at most MAX_SINUOSITY), and the channel slopes (slopes, one a cell) averaged the same way: the steps from
     each of the reach's cells to the next, by their stations along it (arc.xsection.stream_path), weighted by a
     Gaussian of half cells_each_way cells along the stream either side of the cell (out to three times that, as far as
-    the reach goes). The direction is the weighted sum's, the sinuosity the steps' weighted length over that sum's, and
+    the reach goes), one number for all, or one a cell, of which each reach takes its cells' median. The direction is the weighted sum's, the sinuosity the steps' weighted length over that sum's, and
     the slope the weighted mean of the cells' (those that are positive). NaN for a reach of fewer than three cells,
     and for the slopes without slopes.
 
@@ -80,13 +81,15 @@ def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way: int,
     direction = np.full(rows.size, np.nan)
     sinuosity = np.full(rows.size, np.nan)
     mean_slope = np.full(rows.size, np.nan)
-    sigma = 0.5 * float(cells_each_way) * math.sqrt((dx * dx + dy * dy) / 2.0)
+    cell = math.sqrt((dx * dx + dy * dy) / 2.0)
+    windows = np.broadcast_to(np.asarray(cells_each_way, np.float64), rows.shape)
     order = np.argsort(reaches, kind="stable")
     starts = np.flatnonzero(np.r_[True, reaches[order][1:] != reaches[order][:-1]])
     for begin, end in zip(starts, np.r_[starts[1:], order.size]):
         ks = order[begin:end]
         if ks.size < 3:
             continue
+        sigma = 0.5 * float(np.median(windows[ks])) * cell
         stations = along_stream_stations(rows[ks], cols[ks], dx, dy)
         by_station = np.argsort(stations, kind="stable")
         ks, stations = ks[by_station], stations[by_station]

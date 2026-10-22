@@ -130,8 +130,10 @@ class Configs:
     # channel's on the cell's own cross section (arc.xsection.valley): over the floodplain of a meandering river the
     # water runs down the valley, not along the channel, and Manning's equation takes the flow square to the section
     valley_sections: bool = False
-    # How many cells each way along the stream the valley's direction and sinuosity are taken over (a Gaussian of half
-    # that, arc.xsection.valley.valley_axes): about a meander's length
+    # How far each way along the stream the valley's direction and sinuosity are taken over (a Gaussian of half that,
+    # arc.xsection.valley.valley_axes), about a meander's length: as many of the reach's channel widths (its cross
+    # sections' median bank-to-bank width), or with 0, or for a reach without banks, Valley_Dir_Dist cells
+    valley_dir_widths: float = 16.0
     valley_dir_dist: int = 40
 
     # Output files
@@ -375,6 +377,8 @@ class Configs:
             raise ValueError('Standard_Step_Eddy_Length must be finite and 0 or more.')
         if self.valley_sections and not self.valley_dir_dist >= 2:
             raise ValueError('Valley_Dir_Dist must be at least 2 cells.')
+        if self.valley_sections and not (np.isfinite(self.valley_dir_widths) and self.valley_dir_widths >= 0.0):
+            raise ValueError('Valley_Dir_Widths must be finite and 0 or more.')
         if not np.isfinite(self.shallow_factor) or self.shallow_factor < 1.0:
             raise ValueError('shallow_factor must be finite and >= 1.')
         if not np.isfinite(self.deep_factor) or not 0.0 < self.deep_factor <= 1.0:

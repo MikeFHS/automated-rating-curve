@@ -1031,14 +1031,39 @@ def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction
                   np.concatenate([n[0][::-1], (center_n,), n[1]]), float(spacing), int(full_half), rows, cols)
 
 
+def valley_windows(configs: Configs, grid: Grid, cells: Cells, sections: list) -> np.ndarray:
+    """How many cells each way along the stream each cell's valley is taken over (arc.xsection.valley.valley_axes):
+    Valley_Dir_Widths of its reach's channel widths, the median of the bank-to-bank widths of the reach's usable
+    cross sections with banks, in cells along the stream (at least 2); or Valley_Dir_Dist, for a reach without banks
+    or with Valley_Dir_Widths 0. A meander runs down the valley about 10 to 14 channel widths, so a window a fixed
+    number of cells long is a whole meander on a small river and part of one on a big river: on synthetic meanders of
+    natural proportions, 12 to 16 widths did as well as the best fixed window for each."""
+    windows = np.full(cells.count, float(configs.valley_dir_dist))
+    if not configs.valley_dir_widths > 0.0:
+        return windows
+    widths = np.array([s.xs.left_bank_distance + s.xs.right_bank_distance
+                       if s is not None and s.usable and s.xs.left_bank_distance > 0.0
+                       and s.xs.right_bank_distance > 0.0 else np.nan for s in sections])
+    cell = math.sqrt((grid.dx ** 2 + grid.dy ** 2) / 2.0)
+    order = np.argsort(cells.reaches, kind="stable")
+    starts = np.flatnonzero(np.r_[True, cells.reaches[order][1:] != cells.reaches[order][:-1]])
+    for begin, end in zip(starts, np.r_[starts[1:], order.size]):
+        ks = order[begin:end]
+        known = widths[ks][np.isfinite(widths[ks])]
+        if known.size:
+            windows[ks] = max(configs.valley_dir_widths * float(np.median(known)) / cell, 2.0)
+    return windows
+
+
 def attach_valleys(configs: Configs, grid: Grid, cells: Cells, sections: list, mannings_n: ManningsN,
                    slopes: np.ndarray) -> int:
     """With Valley_Sections, give each usable cross section with banks (not a manual one) overbanks square to its
     valley (sample_valley), where the valley turns from it or the stream winds (arc.xsection.valley.worth_splitting),
     with the valley's slope over its own (slope_ratio), and say how many. The left line runs out on the cross
     section's left side."""
+    windows = valley_windows(configs, grid, cells, sections)
     directions, sinuosities, mean_slopes = valley_axes(cells.rows, cells.cols, cells.reaches, grid.dx, grid.dy,
-                                                       configs.valley_dir_dist, slopes)
+                                                       windows, slopes)
     count = 0
     for k, section in enumerate(sections):
         if section is None or not section.usable or section.manual:
