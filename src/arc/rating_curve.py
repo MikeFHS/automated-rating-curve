@@ -16,8 +16,9 @@ Some cross sections need care:
   maximum flow is the bank's top, where the channel carries less. A cross section only gets a rating curve if the
   discharge at its top is within half of the maximum flow either way, and no increment may carry more than 1% more
   than that discharge.
-- With a baseflow above 0.001 m^3/s, the first increment's discharge is set just below the baseflow if it was at or
-  above it.
+- With a baseflow above 0.001 m^3/s, the discharge of the first increment with its own values (after any whose
+  geometry wasn't valid) is set just below the baseflow if it was at or above it, and its velocity to that discharge
+  over its area. Its top width, water surface and wetted perimeter stay its depth's.
 """
 from __future__ import annotations
 
@@ -27,8 +28,8 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
-from arc.hydraulics import (DepthRoughness, _check_slope_factor, _conveyance, _parameters, hydraulic_profile,
-                            profile_compound_geometry, wse_for_discharge)
+from arc.hydraulics import (DepthRoughness, _check_slope_factor, _conveyance, _parameters, _profile_sides,
+                            hydraulic_profile, profile_compound_geometry, wse_for_discharge)
 from arc.xsection.xsection import XSection
 
 FIX_UP_STEP = 0.01  # metres: how far at a time to look above an increment whose discharge fell
@@ -48,7 +49,8 @@ class RatingCurve(NamedTuple):
 
     @property
     def valid(self) -> bool:
-        """Whether the increments go in the VDT database: at least one has its own values."""
+        """Whether the increments go in the VDT database: one after the last whose geometry wasn't valid has its own
+        values."""
         return self.last > max(self.start, 0)
 
 
@@ -66,6 +68,35 @@ def section_hydraulics(stations, elevations, mannings_n, center, left_bank, righ
     channel_k = _conveyance(channel[0], channel[3])
     k = _conveyance(left[0], left[3]) + channel_k + _conveyance(right[0], right[3])
     return area, perimeter, top_width, k, channel[0], channel_k
+
+
+@njit(cache=True, error_model="numpy")
+def section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, right_bank, levels, k_decay,
+                          shallow_factor, deep_factor):
+    """section_hydraulics at each of the water surface elevations levels, which must ascend, a row each, worked out
+    together (arc.hydraulics._profile_sides): the same numbers, in half the time."""
+    m = levels.size
+    first = 0
+    while first < m and not levels[first] > elevations[center]:
+        first += 1  # dry, all zero, as profile_compound_geometry has it
+    lo = np.zeros((m, 8))
+    hi = np.zeros((m, 8))
+    _profile_sides(stations, elevations, mannings_n, center, -1, levels, first, left_bank, k_decay, shallow_factor,
+                   deep_factor, lo)
+    _profile_sides(stations, elevations, mannings_n, center, 1, levels, first, right_bank, k_decay, shallow_factor,
+                   deep_factor, hi)
+    result = np.zeros((m, 6))
+    for i in range(first, m):
+        # The sides put together as _profile_parts and section_hydraulics put them
+        channel_area = lo[i, 0] + hi[i, 0]
+        channel_k = _conveyance(channel_area, lo[i, 3] + hi[i, 3])
+        result[i, 0] = lo[i, 4] + channel_area + hi[i, 4]
+        result[i, 1] = lo[i, 5] + (lo[i, 1] + hi[i, 1]) + hi[i, 5]
+        result[i, 2] = lo[i, 6] + (lo[i, 2] + hi[i, 2]) + hi[i, 6]
+        result[i, 3] = _conveyance(lo[i, 4], lo[i, 7]) + channel_k + _conveyance(hi[i, 4], hi[i, 7])
+        result[i, 4] = channel_area
+        result[i, 5] = channel_k
+    return result
 
 
 @njit(cache=True, error_model="numpy")
@@ -155,5 +186,9 @@ def rating_curve(xs: XSection, q_max: float, slope: float, increments: int, *, b
     start, last = _increments(*profile, left, right, *parameters, thalweg, wse, count, discharge_scale,
                               float(q_top), out)
     if last > start and baseflow > BASEFLOW_MARGIN and out[start, Q] >= baseflow:
-        out[start, Q] = baseflow - BASEFLOW_MARGIN
+        # Its velocity stays its discharge over its area, the area at its water surface (its discharge over its
+        # velocity before)
+        q = baseflow - BASEFLOW_MARGIN
+        out[start, V] *= q / out[start, Q]
+        out[start, Q] = q
     return RatingCurve(out, wse, int(start), int(last))

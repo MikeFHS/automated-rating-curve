@@ -105,7 +105,8 @@ def Create_ARC_Model_Input_File(
     FloodMapFile: str
         The path and file name of the output raster that provides a flood inundation map that will be output by FloodSpreader
     DepthMapFile: str
-        The path and file name of the output raster that provides a depth-grid flood inundation map that will be output by FloodSpreader
+        Not used: the input file names no depth map (add Curve2Flood's ``OutDEP`` to it for one). Kept so that existing
+        calls still work.
     ARC_BathyFile: str
         The path and file name of the output raster containing the bathymetry estimates output by ARC
     XS_Out_File: str
@@ -115,17 +116,23 @@ def Create_ARC_Model_Input_File(
     bathy_use_banks: bool
         True/False argument on whether to run ARC bathymetry estimation using the bank elevations (True) or water surface elevation (False)
     use_land_cover_to_find_banks: bool
-        True/False argument on whether to use land cover to find banks (True) or to use the flat water surface in the DEM (False)
+        True/False argument on whether to look for the banks first where the land cover's water ends (True), before
+        the DEM's methods (the width-to-depth ratio, then the flat water), or to take them from the DEM alone (False)
     drainage_area_field: str, optional
         Name of the drainage-area field in ``STRM_SHP_File`` to use when
         estimating bathymetry depth/width from power laws.
     coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
-        Power-law coefficients and exponents used by ARC when ``Flow_File_BF``
-        is intentionally omitted for bathymetry estimation.
+        Power-law coefficients and exponents for the bathymetry. A reach's
+        depth from the depth law takes the place of the depth from
+        ``Flow_File_BF`` wherever it is valid, so with it ``Q_BF_Param`` may be
+        empty; the width law sets the width of channels whose banks aren't
+        found.
     reach_id_field, downstream_reach_id_field: str, optional
         The fields in ``STRM_SHP_File`` holding each reach's ID and the ID of the
         reach downstream of it (``reach_id`` and ``downstream_reach_id``). The
-        bathymetry needs both.
+        bathymetry needs both, and the input file always asks for it
+        (``AROutBATHY``): ARC only leaves it out, with a warning, when there is
+        neither a baseflow column nor a depth power law.
     lc_water_value: int, optional
         The water class in ``LAND_File`` and ``ManningN`` (``LC_Water_Value``).
         ARC defaults to 80, ESA WorldCover's water class.
@@ -165,7 +172,7 @@ def Create_ARC_Model_Input_File(
     out_file.write('\n\n#Output CurveFile')
     out_file.write('\n' + 'Print_Curve_File	' + Curve_File)
     
-    out_file.write('\n\n#VDT File For Testing Purposes Only')
+    out_file.write('\n\n#Print_VDT is an old key ARC ignores: ARC writes the VDT database to Print_VDT_Database, below')
     out_file.write('\n' + 'Print_VDT	' + VDT_File)
     
     
@@ -189,7 +196,7 @@ def Create_ARC_Model_Input_File(
     out_file.write('\n\n#Cross Section Information')
     out_file.write('\n' + 'XS_Out_File	' + XS_Out_File)
 
-    out_file.write('\n\n#Current FloodSpreader Inputs')
+    out_file.write('\n\n#The VDT database ARC writes, which Curve2Flood reads, and Curve2Flood inputs ARC ignores')
     out_file.write('\n' + 'Print_VDT_Database	' + VDT_File)
     if DEM_Cleaner_File is not False:
         out_file.write('\n' + 'COMID_Flow_File	' + DEM_Cleaner_File)
@@ -604,28 +611,39 @@ def Process_ARC_Geospatial_Data(
     Main_Directory: str
         Path to the directory where ARC inputs are stored and outputs will be written.
     id_field: str
-        Name of the unique identifier field in the stream shapefile (e.g., COMID).
+        Name of the unique identifier field in the stream shapefile (e.g., LINKNO
+        for the GEOGLOWS streams). It is burned into the stream raster and
+        written to the input file as both ``reach_id`` and ``Flow_File_ID``, so
+        the flow file needs a column of the same name holding the same IDs.
     max_flow_field: str
         Name of the maximum-flow field/column (must exist in the flow file).
     baseflow_field: str
-        Name of the baseflow/bankfull field/column (must exist in the flow file).
+        Name of the baseflow/bankfull field/column (must exist in the flow
+        file), or ``""`` to leave ``Flow_File_BF`` out: the bathymetry's depth
+        then comes from the depth power law, and without that there is no
+        bathymetry.
     flow_file_path: str
         Path to the flow file (CSV) used to populate the ARC run.
     bathy_use_banks: bool
         Whether bathymetry estimation should use bank elevations (``True``) vs.
         a WSE-derived approach (``False``).
     use_land_cover_to_find_banks: bool
-        Whether bank finding should use land cover (``True``) vs. "flat water"
-        in the DEM (``False``).
+        Whether bank finding should look first where the land cover's water
+        ends (``True``), or use the DEM alone (``False``): its width-to-depth
+        ratio, then its flat water.
     drainage_area_field: str, optional
         Name of the drainage-area field in the stream shapefile to use when the
         optional bathymetry power-law mode is desired.
     coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
         Power-law parameters used to estimate bathymetry depth and fallback
-        width from the drainage area field.
+        width from the drainage area field. The depth law's depth takes the
+        place of the baseflow's wherever it is valid.
     downstream_id_field: str, optional
         Name of the field in the stream shapefile holding the ID of the reach
-        downstream of each reach. The bathymetry needs it.
+        downstream of each reach (e.g., DSLINKNO). The input file always asks
+        for bathymetry, which ARC makes whenever there is a ``baseflow_field``
+        or a depth power law, and the bathymetry needs this field: without it ARC
+        stops with an error.
 
     Returns
     -------

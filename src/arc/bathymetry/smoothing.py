@@ -11,20 +11,22 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
    (reach_bank_observations). The banks the width filter gave a cross section aren't observations: they are the ground
    wherever the reach's median width puts them, which in a gorge whose reach widens downstream is far up its walls
    (35-38 m up, at the head of a Karnali reach whose median width is the plain's). Nor is a bank the water didn't
-   show (from the DEM: width-to-depth or flat water) that is above its cross section's ceiling, the water surface
-   that carries its largest flow over the DEM's own cross section (below_ceilings): no flood reaches it, so it is a
-   valley wall. Where the DEM can't resolve a creek in a V-shaped valley, those are all ARC finds; counted, they put
-   a Karnali tributary's bank elevation 10 m up, and with it the bed it carved. Only where that would leave the whole
-   site without an observation (deep channels that hold even the largest flow, and no water mask) are they kept.
+   show (from the DEM, width-to-depth or flat water, or a single cell's) that is above its cross section's ceiling,
+   the water surface that carries its largest flow over the DEM's own cross section (below_ceilings): no flood
+   reaches it, so it is a valley wall. Where the DEM can't resolve a creek in a V-shaped valley, those are all ARC
+   finds; counted, they put a Karnali tributary's bank elevation 10 m up, and with it the bed it carved. Only where
+   that would leave the whole site without an observation (deep channels that hold even the largest flow, and no
+   water mask) are they kept.
 3. Order: the cross sections are put in order from upstream to downstream (order_reach).
 4. Levels: the bank elevation is the stream cells' elevations, fitted never to rise downstream, plus the bank's
    height: the 10th percentile of the observations' heights above their stream cells within 500 m along the reach.
    Where fewer than MIN_BANK_OBSERVATIONS (5) are, it is the 10th percentile of the 5 nearest along the reach, or of
-   all the reach's if it has fewer, or the whole site's where it has none. Of one or two observations, the 10th
-   percentile is just the lowest, however high: where a creek is too narrow for the DEM to show its banks, ARC finds
-   only the odd rim of the floodplain, and one 0.92 m up set the bank height, and so the bed, for a whole kilometre
-   of an N39W109 creek, 0.96 m above the DEM; with the 5 nearest the bed is at most 0.17 m above it. The sum is
-   fitted never to rise again, and is never below the stream cell (reach_bank_levels).
+   all the reach's if it has fewer, or the whole site's where it has none. Of one observation, the 10th percentile is
+   its own height, and of two, a tenth of the way from the lower to the higher, however high: where a creek is too
+   narrow for the DEM to show its banks, ARC finds only the odd rim of the floodplain, and one 0.92 m up set the bank
+   height, and so the bed, for a whole kilometre of an N39W109 creek, 0.96 m above the DEM; with the 5 nearest the
+   bed is at most 0.17 m above it. The sum is fitted never to rise again, and is never below the stream cell
+   (reach_bank_levels).
 5. Junctions: each reach's levels are its own, so where one reach flows into the next they can differ by metres,
    their heights coming from different banks (by over 1 m at a fifth of the junctions of 68 test sites, where the
    stream cells differ by that at under 2%). With the standard step, a bed that steps like that drops the water
@@ -57,7 +59,7 @@ from arc.xsection.stream_path import along_stream_stations, downstream_order
 from arc.xsection.xsection import XSection
 
 OUTLIER_PERCENTILES = (2, 97)  # observations outside these percentiles of their reach's are left out
-ORIENTING_CELLS = 10  # how many cross sections at each end decide which end of an unconnected reach is upstream
+ORIENTING_CELLS = 10  # how many observations at each end decide which end of a reach without neighbours is upstream
 BANK_HEIGHT_QUANTILE = 0.1  # the bank's height above the water: this quantile of the observations' heights...
 BANK_HEIGHT_WINDOW = 500.0  # ...within this many metres either side along the reach...
 MIN_BANK_OBSERVATIONS = 5  # ...or, where fewer are, of this many nearest along it
@@ -177,8 +179,9 @@ def order_reach(network: nx.DiGraph, reach: int, rows, cols, dx: float, dy: floa
     stream raster (stream_cells, each reach's), and then the downstream end is the cell nearest the cell (row, col)
     where the reach's line ends (outlets, each reach's). A reach with none of these is ordered from one end of its
     cells to the other, then turned round to put the higher end upstream: an unconnected reach's highest observation
-    before its lowest, or else whichever end's first ten cross sections have the higher mean observation. Those are
-    noisy where the water is flat, which is why the network and the line come first.
+    before its lowest, or else (a reach with neighbours that have no cells, or highest and lowest at one cross
+    section) whichever end's ten nearest observations have the higher mean, wherever along the reach they are. Those
+    are noisy where the water is flat, which is why the network and the line come first.
     """
     rows = np.asarray(rows, dtype=np.int64)
     cols = np.asarray(cols, dtype=np.int64)

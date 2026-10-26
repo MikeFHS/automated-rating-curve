@@ -28,7 +28,13 @@ from numba import njit
 
 from arc.bathymetry.banks import Banks, _ground_at, single_cell_banks
 from arc.bathymetry.depth import _check_trapezoid_height
+from arc.hydraulics import DepthRoughness, _check_slope_factor, _parameters
+from arc.rating_curve import section_hydraulics
 from arc.xsection.xsection import Profile, XSection
+
+MIN_DEPTH = 1e-6  # metres: the depth carved_depth gives a channel whose ground below the level carries its flow
+_MIN_LOG_DEPTH = math.log(MIN_DEPTH)
+_MAX_LOG_DEPTH = math.log(1e4)  # no channel is solved deeper than 10 km
 
 
 @njit(cache=True, error_model="numpy")
@@ -185,6 +191,113 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
     while stream_cell < length - 1 and stations[stream_cell] != 0.0:
         stream_cell += 1
     return stations, profile, n, stream_cell
+
+
+@njit(cache=True, error_model="numpy")
+def _log_conveyance_carved(log_depth, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
+                           lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor):
+    """ln of the channel's conveyance with its water at the reference level, carved exp(log_depth) deep, as the
+    hydraulics work it out on the profile _channel_profile gives (the channel's between left_bank and right_bank, or
+    the whole section's where they're -1)."""
+    stations, elevations, n, center = _channel_profile(ground, mannings_n, spacing, left, right, reference,
+                                                       math.exp(log_depth), trapezoid_height, lower_only)
+    k = section_hydraulics(stations, elevations, n, center, left_bank, right_bank, reference, k_decay,
+                           shallow_factor, deep_factor)[5]
+    return math.log(k) if k > 0.0 else -np.inf
+
+
+@njit(cache=True, error_model="numpy")
+def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid_height, lower_only, left_bank,
+                  right_bank, k_decay, shallow_factor, deep_factor, target, guess):
+    """The depth at which the carved channel's ln conveyance at the reference level is target (see carved_depth).
+    The conveyance rises with the depth, so the root is bracketed out from guess, doubling the step in ln depth, and
+    then found by false position, halving the end that stays put (the Illinois method)."""
+    u = math.log(guess)
+    f = _log_conveyance_carved(u, ground, mannings_n, spacing, left, right, reference, trapezoid_height, lower_only,
+                               left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+    if f == 0.0:
+        return guess
+    step = 0.25
+    if f < 0.0:
+        lo, f_lo = u, f
+        hi = lo + step
+        f_hi = _log_conveyance_carved(hi, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
+                                      lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+        while f_hi < 0.0:
+            if hi > _MAX_LOG_DEPTH:
+                return math.nan
+            lo, f_lo = hi, f_hi
+            step *= 2.0
+            hi = lo + step
+            f_hi = _log_conveyance_carved(hi, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
+                                          lower_only, left_bank, right_bank, k_decay, shallow_factor,
+                                          deep_factor) - target
+    else:
+        hi, f_hi = u, f
+        lo = hi - step
+        f_lo = _log_conveyance_carved(lo, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
+                                      lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+        while f_lo > 0.0:
+            if lo < _MIN_LOG_DEPTH:
+                return MIN_DEPTH  # the ground below the level carries the flow already
+            hi, f_hi = lo, f_lo
+            step *= 2.0
+            lo = hi - step
+            f_lo = _log_conveyance_carved(lo, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
+                                          lower_only, left_bank, right_bank, k_decay, shallow_factor,
+                                          deep_factor) - target
+    if f_hi == 0.0:
+        return math.exp(hi)
+    if f_lo == 0.0:
+        return math.exp(lo)
+    side = 0
+    for _ in range(200):
+        if math.isfinite(f_lo) and math.isfinite(f_hi):
+            u = (lo * f_hi - hi * f_lo) / (f_hi - f_lo)
+        else:
+            u = 0.5 * (lo + hi)
+        f = _log_conveyance_carved(u, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
+                                   lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+        if abs(f) <= 1e-13 or hi - lo <= 1e-13 * (1.0 + abs(u)):
+            break
+        if f < 0.0:
+            lo, f_lo = u, f
+            if side == -1:
+                f_hi *= 0.5
+            side = -1
+        else:
+            hi, f_hi = u, f
+            if side == 1:
+                f_lo *= 0.5
+            side = 1
+    return math.exp(u)
+
+
+def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: float, *, trapezoid_height: float,
+                 roughness: DepthRoughness | None = None, slope_factor: float = 1.0,
+                 bank_elevation: float | None = None) -> float:
+    """How deep to carve the channel (as carve_channel would, with these banks and bank_elevation) for the cross
+    section to carry q at its reference level in its channel, by the hydraulics the rating curves use: the carved
+    profile, Manning's n varying with depth as roughness says, and slope_factor. The channel is the part between
+    the banks if they're valid, as arc.bathymetry.set_bank_distances gives the hydraulics, and the whole cross section
+    if not, though the carve is then one cell wide (single_cell_banks).
+
+    guess, a depth near it, starts the search. MIN_DEPTH where the ground already below the level carries q (without
+    bank elevations, the carve keeps ground below the channel), and guess itself where the carve would carve nothing.
+    """
+    trapezoid_height = _check_trapezoid_height(trapezoid_height)
+    carved = banks if banks.valid else single_cell_banks(xs)
+    spacing = float(xs.ordinate_distance)
+    elevations = np.asarray(xs.elevations, dtype=np.float64)
+    reference = float(elevations[elevations.size // 2]) if bank_elevation is None else float(bank_elevation)
+    if not (carved.valid and math.isfinite(reference) and carved.left > 1e-9 * spacing
+            and carved.right > 1e-9 * spacing and xs.mannings_n.size == elevations.size):
+        return guess
+    left_bank, right_bank = (float(banks.left), float(banks.right)) if banks.valid else (-1.0, -1.0)
+    target = math.log(q / (math.sqrt(slope) * _check_slope_factor(slope_factor)))
+    return float(_carved_depth(elevations, np.asarray(xs.mannings_n, dtype=np.float64), spacing, float(carved.left),
+                               float(carved.right), reference, trapezoid_height, bank_elevation is None, left_bank,
+                               right_bank, *_parameters(roughness), target, float(guess)))
 
 
 def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height: float,

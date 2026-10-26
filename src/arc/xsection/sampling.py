@@ -10,8 +10,8 @@ the outputs, and a manual cross section's XS_Angle):
 - A cross section runs from its left end to its right, as seen looking back along the stream direction on the grid
   drawn with row 0 at the top (on a north-up raster, as on the map), so its right end lies in the direction
   stream direction - pi / 2. That is looking upstream when the direction is the way the water flows, but
-  arc.pipeline's stream directions run from 0 up to pi and don't say which way that is, so its left and right
-  aren't the river's. The outputs use sides instead: side 1 of the cross-section file is the half towards the
+  arc.pipeline's stream directions run from 0 up to pi (the angle search can turn them a little past either end) and
+  don't say which way that is, so its left and right aren't the river's. The outputs use sides instead: side 1 of the cross-section file is the half towards the
   higher rows.
 
 The ordinates step one cell along whichever axis the cross section crosses fastest, so every ordinate lands on a row or
@@ -88,17 +88,23 @@ def _compute_dem_coordinates(
 # bit: the same two cells along each axis, the same weights, multiplied and summed in the same order.
 
 
-def _values_like(raster):
+def _values_like(raster, like=None):
     """An empty array of the type a raster's sampled values take: float32 for a float32 raster and float64 for any
-    other. Compiled code gets the type when it compiles, so it samples an integer raster without copying it."""
+    other, or like's type, if like (an array) is given. Compiled code gets the type when it compiles, so it samples an
+    integer raster without copying it. The values are worked out in float64 whatever the raster's type, so a float32
+    raster sampled like a float64 array gives what the float64 copy of it would, without the copy."""
+    if like is not None:
+        return like[:0]
     return np.empty(0, np.float32 if raster.dtype == np.float32 else np.float64)
 
 
 @overload(_values_like)
-def _compiled_values_like(raster):
+def _compiled_values_like(raster, like=None):
+    if like is not None and not isinstance(like, (types.NoneType, types.Omitted)):
+        return lambda raster, like=None: like[:0]
     if raster.dtype == types.float32:
-        return lambda raster: np.empty(0, np.float32)
-    return lambda raster: np.empty(0, np.float64)
+        return lambda raster, like=None: np.empty(0, np.float32)
+    return lambda raster, like=None: np.empty(0, np.float64)
 
 
 @njit(cache=True, error_model="numpy")
@@ -171,12 +177,12 @@ def sample_classes(classes, water, lookup, water_value, row, col, stream_directi
 
 
 @njit(cache=True, error_model="numpy")
-def ordinates_above(raster, row, col, stream_direction, cross_section_length, dx, dy, height):
+def ordinates_above(raster, row, col, stream_direction, cross_section_length, dx, dy, height, like=None):
     """How many ordinates either side of its centre the cross section sample_elevations takes with these arguments
     needs, to take in on each side an ordinate more than `height` above its centre (as stored; ordinates off the raster
-    are), or all of them if it doesn't."""
+    are), or all of them if it doesn't. like is as sample_elevations takes it."""
     cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
-    stored = np.empty(1, _values_like(raster).dtype)
+    stored = np.empty(1, _values_like(raster, like).dtype)
     center = ordinate_value(raster, row, col, cos, sin, spacing, 0, dx, dy, stored)
     needed = 0
     for step in (-1, 1):
@@ -200,11 +206,11 @@ def ordinate_value(raster, row, col, cos, sin, spacing, k, dx, dy, stored):
 
 
 @njit(cache=True, error_model="numpy")
-def sample_elevations(dem, row, col, stream_direction, cross_section_length, dx, dy):
+def sample_elevations(dem, row, col, stream_direction, cross_section_length, dx, dy, like=None):
     """The elevations and ordinate spacing of the cross section sample_cross_section takes with these arguments,
-    for compiled code."""
+    for compiled code. like, an array, stores the elevations in its type instead of the DEM's (see _values_like)."""
     cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
-    elevations = np.empty(2 * half + 1, _values_like(dem).dtype)
+    elevations = np.empty(2 * half + 1, _values_like(dem, like).dtype)
     for k in range(-half, half + 1):
         distance = spacing * k
         elevations[k + half] = _interpolate(dem, col + cos * distance / dx, row + sin * distance / dy)

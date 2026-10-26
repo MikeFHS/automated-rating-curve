@@ -56,6 +56,35 @@ def stream_direction(streams, row, col, distance, dx, dy):
                 sxx += x * x
                 syy += y * y
                 sxy += x * y
+    return _principal_axis(n, sx, sy, sxx, syy, sxy)
+
+
+@njit(cache=True, error_model="numpy")
+def reach_direction(rows, cols, row, col, distance, dx, dy):
+    """stream_direction, from the cell's reach's cells (rows and cols, in order of row and then column, as
+    arc.xsection.stream_path.stream_cells_by_reach gives them) instead of the stream raster: the same cells, taken in
+    the same order, so the same direction, bit for bit, without the raster or a look at every cell of the square."""
+    first = np.searchsorted(rows, row - distance)
+    last = np.searchsorted(rows, row + distance, side="right")
+    n = 0
+    sx = sy = sxx = syy = sxy = 0.0
+    for i in range(first, last):
+        c = cols[i]
+        if col - distance <= c <= col + distance:
+            x = (c - col) * dx
+            y = (rows[i] - row) * dy
+            n += 1
+            sx += x
+            sy += y
+            sxx += x * x
+            syy += y * y
+            sxy += x * y
+    return _principal_axis(n, sx, sy, sxx, syy, sxy)
+
+
+@njit(cache=True, error_model="numpy")
+def _principal_axis(n, sx, sy, sxx, syy, sxy):
+    """The direction of the principal axis of n cells' positions, given their sums, or pi / 2 for fewer than 2."""
     if n < 2:
         return np.pi / 2
     # The principal axis of the cells' positions, from their covariances
@@ -76,7 +105,8 @@ def angle_offsets(degree_manipulation: float, degree_interval: float) -> np.ndar
 
 
 @njit(cache=True, error_model="numpy")
-def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, dx, dy, offsets, test_depth):
+def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, dx, dy, offsets, test_depth,
+                         like=None):
     tried = np.empty(offsets.size)
     widths = np.empty((offsets.size, 2))
     reaches = np.empty((offsets.size, 2))
@@ -84,7 +114,7 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
     walked = np.zeros((offsets.size, 2), np.int64)  # and if not, how many ordinates out the side was sampled
     cosines, sines, spacings = np.empty(offsets.size), np.empty(offsets.size), np.empty(offsets.size)
     halves = np.empty(offsets.size, np.int64)
-    stored = np.empty(1, _values_like(dem).dtype)
+    stored = np.empty(1, _values_like(dem, like).dtype)
     count = 0
     for offset in offsets:
         # The same cross section, turned half a turn, is the same direction with its sides swapped. Keep every
@@ -163,18 +193,20 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
 
 
 def narrowest_direction(dem: np.ndarray, row: int, col: int, stream_direction: float, cross_section_length: float,
-                        dx: float, dy: float, offsets: np.ndarray, test_depth: float = TEST_DEPTH) -> float:
+                        dx: float, dy: float, offsets: np.ndarray, test_depth: float = TEST_DEPTH,
+                        like: np.ndarray | None = None) -> float:
     """The stream direction, turned by one of the offsets (see angle_offsets), whose cross section is narrowest
     test_depth above the stream cell.
 
     The arguments are sample_cross_section's. Each side's width is compared only as far out as every direction's
-    cross section reaches on that side (the raster's edge, or the first NaN, can be nearer than its end). Of
+    cross section reaches on that side (the raster's edge, or the first ordinate without data, can be nearer than its
+    end). Of
     directions equally narrow, the first offset wins, so with angle_offsets the direction the search started from.
     An offset of more than a quarter turn either way is taken half a turn round, which is the same cross section with
-    its sides swapped.
+    its sides swapped. like, an array, samples the DEM as arc.xsection.sampling.sample_elevations does with it.
     """
     offsets = np.asarray(offsets, dtype=np.float64).ravel()
     if offsets.size == 0 or (offsets.size == 1 and offsets[0] == 0.0):
         return float(stream_direction)
     return float(_narrowest_direction(dem, int(row), int(col), float(stream_direction), float(cross_section_length),
-                                      float(dx), float(dy), offsets, float(test_depth)))
+                                      float(dx), float(dy), offsets, float(test_depth), like))

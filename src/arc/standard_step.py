@@ -27,29 +27,30 @@ at the flow before (so that it never falls as the flow rises, which the lowest r
 critical depth where there's none (where the water below is supercritical, or the cross section above needs more energy
 even at critical depth).
 
-Each reach's rated cells are put in order along the stream (arc.bathymetry.order_reach): by the reaches next to it in
-the network, on the stream raster if they have no rating curves, or else by where its line ends, and only failing
-those by its stream cells' elevations. A march from the wrong end piles water up from there, and the elevations, the
-carved beds above all, are noisy where the water is flat. Their rating curves are then worked out again at flows
-common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N
-(VDT_Database_NumIterations), with the first at or above the baseflow set just below it, so that the baseflow is one
-of them (rating_curve does the same when that is the first). A reach starts from the water surface of the first rated cell of the reach below it at the same j (the same share
-of that reach's maximum flow), and an outlet from its last cell's normal depth (arc.hydraulics.wse_for_discharge), both
-at least critical depth. Where the reaches below have no rated cells (one in a lake, or one the flow file leaves out),
-the reach starts as an outlet does, but no higher than the water at the top of the first reach further down that has
+Each reach's rated cells are put in order along the stream (arc.bathymetry.smoothing.order_reach): by the reaches next
+to it in the network, on the stream raster if they have no rating curves, or else by where its line ends, and only
+failing those by its stream cells' elevations. A march from the wrong end piles water up from there, and the
+elevations, the carved beds above all, are noisy where the water is flat. Their rating curves are then worked out
+again at flows common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N (VDT_Database_NumIterations),
+with the first at or above the baseflow set just below it, so that the baseflow is one of them (rating_curve does the
+same when that is the first). A reach starts from the water surface of the first rated cell of the reach below it at
+the same j (the same share of that reach's maximum flow), and an outlet from its last cell's normal depth
+(arc.hydraulics.wse_for_discharge), both at least critical depth. Where the reaches below have no rated cells (one in
+a lake, or one the flow file leaves out), the reach starts as an outlet does, but no higher than the water at the top of the first reach further down that has
 them, risen by the reach's median slope over the straight distance between them: normal depth at one cross section, a
 choke as like as not on flat water, could otherwise stand the whole reach metres above the river below it. The water
 below isn't passed on in full, as it is from a reach next to it, as the gap's fall is only an estimate. Each
 increment's velocity, top width and wetted perimeter are then the cell's own cross section's at its water surface.
 
 The baseflow stays in the channel. The bathymetry carves each channel to carry its baseflow, by Manning's equation,
-with its water at a level (its bank elevation with Bathy_Use_Banks, its stream cell's otherwise), so normal depth puts
-the baseflow there. The step needn't: where a channel was carved for a steeper slope than the levels fall, its water
-loses more to friction than the banks drop, and rises over them going upstream (on 68 test sites, the friction with
-full banks added up to 1.26 times the banks' fall, and the baseflow stood over half a metre above the banks at 23% of
-cells, and over 0.1 m at 55%). So at every flow up to its baseflow, a cell's water is held at most at its level
-(baseflow_levels), the energy above that taken as lost there, as over a riffle, and the march goes on upstream from
-the held water. A steep section is held there too where its critical depth is higher: supercritical water is below
+with its water at a level (its bank elevation with Bathy_Use_Banks, its stream cell's otherwise), by the hydraulics
+the rating curves use (arc.bathymetry.channel.carved_depth), so normal depth puts the baseflow there. The step
+needn't: where a channel was carved for a steeper slope than the levels fall, its water loses more to friction than
+the banks drop, and rises over them going upstream (on 68 test sites, the friction with full banks added up to 1.26 times the banks' fall, and the baseflow
+stood over half a metre above the banks at 23% of cells, and over 0.1 m at 55%). So at every flow up to its baseflow,
+a cell whose channel's depth came from its baseflow (not a drainage-area depth) has its water held at most at its
+level (baseflow_levels), the energy above that taken as lost there, as over a riffle, and the march goes on upstream
+from the held water. A steep section is held there too where its critical depth is higher: supercritical water is below
 critical depth. With the baseflow one of the flows, curve2flood reads the held water at it, not a line from the flows
 either side of it.
 
@@ -71,7 +72,7 @@ from numba import njit
 from arc.bathymetry.smoothing import order_reach
 from arc.hydraulics import DepthRoughness, _check_slope_factor, _parameters, hydraulic_profile, wse_for_discharge
 from arc.outputs.rating_curves import RatingCurves
-from arc.rating_curve import BASEFLOW_MARGIN, P, Q, T, V, WSE, _banks, section_hydraulics
+from arc.rating_curve import BASEFLOW_MARGIN, P, Q, T, V, WSE, _banks, section_hydraulics, section_hydraulics_at
 from arc.xsection.xsection import XSection
 
 G = 9.81
@@ -85,7 +86,7 @@ EDDY_LENGTH = 300.0  # metres: the eddy loss is reckoned on the change in veloci
 @njit(cache=True, error_model="numpy")
 def _alpha(area, conveyance, channel_area, channel_conveyance):
     """The velocity-head coefficient of the channel and the overbanks taken together:
-    sum(K_i^3 / A_i^2) A^2 / K^3."""
+    sum(K_i^3 / A_i^2) A^2 / K^3, over the channel and the two overbanks lumped as one."""
     terms = 0.0
     if channel_area > 0.0:
         terms += channel_conveyance ** 3 / channel_area ** 2
@@ -160,12 +161,16 @@ def _velocity_head(alpha, area, q):
 
 
 @njit(cache=True, error_model="numpy")
-def _critical(levels, alpha, area, q):
+def _critical(levels, alpha, area, q, ordered=False):
     """The level of a table whose water surface plus velocity head is least, carrying q: critical depth. The first
-    such level, or the first whose energy is NaN, as np.argmin picks."""
+    such level, or the first whose energy is NaN, as np.argmin picks. ordered says the table is (_ordered), so that
+    the search can stop at the first level at or above the least energy so far: no energy is NaN or below its level."""
     best = 0
     least = levels[0] + _velocity_head(alpha[0], area[0], q)
+    stop = ordered and abs(q) < 1e100  # and so is every velocity head finite
     for i in range(1, levels.size):
+        if stop and levels[i] >= least:
+            break
         energy = levels[i] + _velocity_head(alpha[i], area[i], q)
         if energy < least or (energy != energy and least == least):
             best, least = i, energy
@@ -173,14 +178,25 @@ def _critical(levels, alpha, area, q):
 
 
 @njit(cache=True, error_model="numpy")
+def _ordered(levels, alpha, area):
+    """Whether a table's levels ascend, all finite, with its alpha finite and at least 0 and its area finite."""
+    for i in range(levels.size):
+        if not (np.isfinite(levels[i]) and np.isfinite(alpha[i]) and alpha[i] >= 0.0 and np.isfinite(area[i])):
+            return False
+        if i > 0 and not levels[i] > levels[i - 1]:
+            return False
+    return True
+
+
+@njit(cache=True, error_model="numpy")
 def _step_up(levels, alpha, area, conveyance, stations, elevations, mannings_n, center, left_bank, right_bank, k_decay,
              shallow_factor, deep_factor, q_up, length, slope_factor, floor, wse_down, q_down, critical_down,
-             conveyance_down, head_down, eddy_head, eddy_steps):
+             conveyance_down, head_down, eddy_head, eddy_steps, ordered=False):
     """step_up, given the upstream cross section's table and profile, and the downstream one's water surface, its
     critical depth, and its conveyance and velocity head there. Also returns the upstream critical depth, which the
     next step up takes as its critical_down, and the highest water surface it worked out the upstream cross section's
-    hydraulics at, beyond its table's levels."""
-    critical = _critical(levels, alpha, area, q_up)
+    hydraulics at, beyond its table's levels. ordered is whether the table is (_ordered)."""
+    critical = _critical(levels, alpha, area, q_up, ordered)
     if wse_down < critical_down:
         # The water below is supercritical, and no subcritical water surface steps up from it
         return max(critical, floor), True, critical, max(critical, floor)
@@ -193,7 +209,17 @@ def _step_up(levels, alpha, area, conveyance, stations, elevations, mannings_n, 
         return lowest, lowest == critical, critical, lowest
     # The first level above lowest with energy enough, by the table, brackets the root with the level below it
     first = -1
-    for i in range(levels.size):
+    start = 0
+    if ordered:
+        # The levels up to lowest, by bisection
+        high_index = levels.size
+        while start < high_index:
+            middle = (start + high_index) // 2
+            if levels[middle] > lowest:
+                high_index = middle
+            else:
+                start = middle + 1
+    for i in range(start, levels.size):
         if levels[i] > lowest:
             head = _velocity_head(alpha[i], area[i], q_up)
             loss = (CONTRACTION if eddy_head > head else EXPANSION) * abs(head - eddy_head) / eddy_steps
@@ -239,10 +265,13 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
     steps = critical_steps = held = 0
     highest = np.full(size, -np.inf)
     last = size - 1
+    ordered = np.empty(size, np.bool_)  # whether each table is (_ordered), for the critical depth searches
+    for m in range(size):
+        ordered[m] = _ordered(levels[m], alpha[m], area[m])
     for j in range(increments):
         # No cross section's water falls as the flow rises
         floor = wse[last, j - 1] if j > 0 else -np.inf
-        critical = _critical(levels[last], alpha[last], area[last], flows[last, j])
+        critical = _critical(levels[last], alpha[last], area[last], flows[last, j], ordered[last])
         w = max(start_wse[j], critical, floor)
         if holds[last, j] and w > hold_levels[last]:
             w = max(hold_levels[last], floor)
@@ -263,7 +292,7 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
                                                 right_banks[m], k_decay, shallow_factor, deep_factor, flows[m, j],
                                                 lengths[m], slope_factor, floor, wse[m + 1, j], flows[m + 1, j],
                                                 critical, conveyance_down, heads[m + 1, j], heads[end, j],
-                                                float(end - m))
+                                                float(end - m), ordered[m])
             if holds[m, j] and w > hold_levels[m]:
                 # The baseflow stays in its channel: the energy over its level is lost here
                 w, at_critical = max(hold_levels[m], floor), False
@@ -305,6 +334,17 @@ def _table(stations, elevations, mannings_n, center, left_bank, right_bank, leve
     width = np.empty(m)
     conveyance = np.empty(m)
     alpha = np.empty(m)
+    ascending = True
+    for i in range(1, m):
+        ascending = ascending and levels[i] > levels[i - 1]
+    if ascending:
+        # All at once, which gives the same numbers in half the time
+        rows = section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, right_bank, levels, k_decay,
+                                     shallow_factor, deep_factor)
+        for i in range(m):
+            area[i], perimeter[i], width[i], conveyance[i] = rows[i, 0], rows[i, 1], rows[i, 2], rows[i, 3]
+            alpha[i] = _alpha(rows[i, 0], rows[i, 3], rows[i, 4], rows[i, 5])
+        return area, perimeter, width, conveyance, alpha
     for i in range(m):
         a, p, t, k, a_channel, k_channel = section_hydraulics(stations, elevations, mannings_n, center, left_bank,
                                                               right_bank, levels[i], k_decay, shallow_factor,
@@ -316,8 +356,8 @@ def _table(stations, elevations, mannings_n, center, left_bank, right_bank, leve
 
 class HydraulicTable:
     """A cross section's area, top width, wetted perimeter, conveyance and velocity-head coefficient at LEVELS water
-    surfaces, from just above its bed to `top` and some way beyond: a metre and a half for each two metres of depth,
-    and at least three."""
+    surfaces, from just above its bed to `top` and some way beyond: a metre for each two metres of depth, and at
+    least three metres."""
 
     def __init__(self, xs: XSection, top: float, roughness: DepthRoughness | None = None):
         profile = hydraulic_profile(xs)
@@ -432,9 +472,9 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
     sections' beds (see order_reach).
 
     ensure_level(k, level), if given, makes cell k's cross section reach above the water surface level on both sides
-    (a trimmed one, see arc.pipeline), and says whether it changed it. It is asked for each table's top level before
-    the table is made, and for the highest water surface the march worked each cross section out at after it, which
-    is marched again if any changed.
+    (a trimmed one, see arc.pipeline), and says whether it changed it. It is asked for each table's top level once the
+    table is made (which is made again if it did), and for the highest water surface the march worked each cross
+    section out at after it, which is marched again if any changed.
     """
     slope_factor = _check_slope_factor(slope_factor)
     increments = curves.number_of_increments

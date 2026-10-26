@@ -4,9 +4,11 @@ This module contains optional utilities for producing ARC-compatible flow tables
 from GEOGLOWS ECMWF Streamflow Service NetCDF inputs (historical retrospectives
 and recurrence interval products).
 
-The ARC core model only requires a reach ID column, a baseflow/bankfull column,
-and a maximum-flow column; richer flow tables can still be used as long as the
-MIF points ARC to the correct column names.
+The ARC core model only requires a reach ID column (Flow_File_ID) and a
+maximum-flow column (Flow_File_QMax); a baseflow/bankfull column
+(Flow_File_BF), which sets the bathymetry's depth, is optional. Richer flow
+tables can still be used as long as the MIF points ARC to the correct column
+names.
 """
 
 # Code written by Mike Follum to try and evaluate the mean flow from GEOGLOWS datasets.
@@ -121,8 +123,9 @@ def GetMedianFlowValues(NetCDF_Directory):
 
 def GetReturnPeriodFlowValues(NetCDF_File_Path):
     """
-    Estimates the maximum streamflow for all stream reaches by cycling through a directory of yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files, 
-    estimating the yearly maximum, and then estimating a maximum of those yearly maximums
+    Reads a recurrence interval streamflow NetCDF file from the GEOGLOWS ECMWF Streamflow Service into a dataframe,
+    as it is: a row for each stream reach and a column for each of the file's variables (such as qout_max and rp2 to
+    rp100). Nothing is estimated.
 
     Parameters
     ----------
@@ -132,7 +135,8 @@ def GetReturnPeriodFlowValues(NetCDF_File_Path):
     Returns
     -------
     qout_df: Pandas dataframe
-        A Pandas dataframe of the recurrence interval values contained in the recurrence interval streamflow file from the GEOGLOWS ECMWF Streamflow Service
+        A Pandas dataframe of the values contained in the recurrence interval streamflow file from the GEOGLOWS ECMWF
+        Streamflow Service, indexed by the file's stream reach IDs
 
     """
     # Open the NetCDF with xarray
@@ -146,12 +150,13 @@ def GetReturnPeriodFlowValues(NetCDF_File_Path):
 def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Historical_Folder, Outfile_file_path):
     """
     Creates a streamflow input file that can be used by the Automated Rating Curve (ARC) tool.
-    The Outfile_file_path will be a csv file that looks like that contains: 
+    The Outfile_file_path will be a csv file that contains:
 
-    - COMID or the stream reach's unique identifier
-    - average flow, cubic meters per second (qout_mean)
-    - median flow, cubic meters per second (qout_median)
-    - maximum flow, cubic meters per second (qout_max) 
+    - COMID or the stream reach's unique identifier (the recurrence interval file's)
+    - average flow, cubic meters per second (qout_mean): the mean of each retrospective file's mean
+    - median flow, cubic meters per second (qout_median): the median of each retrospective file's median, made positive
+    - maximum flow, cubic meters per second (qout_max), copied, like the return period flows below, from the
+      recurrence interval file
     - 2-year return period streamflow, cubic meters per second (rp2)
     - 5-year return period streamflow, cubic meters per second (rp5) 
     - 10-year return period streamflow, cubic meters per second (rp10)
@@ -171,9 +176,10 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
     Returns
     -------
     combined_df: Pandas dataframe
-        A Pandas dataframe of the mean, median, maximum, 2-year recurrence interval, 5-year recurrence interval, 10-year recurrence interval, 25-year recurrence interval,
-        50-year recurrence interval, and 100-year recurrence interval streamflow values contained in the recurrence interval streamflow file 
-        from the GEOGLOWS ECMWF Streamflow Service
+        A Pandas dataframe of the columns written to Outfile_file_path: the mean and median streamflow values from the
+        retrospective files, and the maximum, 2-year recurrence interval, 5-year recurrence interval, 10-year recurrence
+        interval, 25-year recurrence interval, 50-year recurrence interval, and 100-year recurrence interval streamflow
+        values contained in the recurrence interval streamflow file from the GEOGLOWS ECMWF Streamflow Service
 
     """
     print("Processing Median Values...\n")
@@ -204,8 +210,17 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
 def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, DEM_Tile, CSV_File_Name, OutShp_File_Name):
     """Compute retrospective summary flows for a single DEM tile.
 
-    This helper filters the stream network to features within the DEM tile
-    bounds and then writes a flow summary table for that subset.
+    This helper filters the stream network to features lying wholly within the
+    DEM tile bounds, writes them to OutShp_File_Name, and then writes a flow
+    summary table for that subset to CSV_File_Name: from the GEOGLOWS
+    retrospective data on S3, each reach's median flow (qout_median, exceeded
+    50% of the time), maximum flow (qout_max, exceeded 0% of the time) and
+    return period flows (rp2 and so on), and qout_max_premium and rp100_premium,
+    1.5 times qout_max and rp100.
+
+    Returns (CSV_File_Name, OutShp_File_Name, the reach IDs as integers, the
+    filtered stream network), or four Nones if the tile has no stream features
+    or no flows.
     """
 
     # Load the raster tile and get its bounds using gdal
@@ -247,13 +262,12 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     ODP_S3_BUCKET_REGION = 'us-west-2'
     s3 = s3fs.S3FileSystem(anon=True, client_kwargs=dict(region_name=ODP_S3_BUCKET_REGION))
 
-    # Load FDC data from S3 using Dask
-    # Convert to a list of integers
+    # Open the flow duration curve (FDC) data on S3, for the median (p_exceed 50) and maximum (p_exceed 0) flows
     fdc_s3_uri = 's3://geoglows-v2-retrospective/fdc.zarr'
     fdc_s3store = s3fs.S3Map(root=fdc_s3_uri, s3=s3, check=False)
     p_exceedance = [float(50.0), float(0.0)]
     fdc_ds = xr.open_zarr(fdc_s3store).sel(p_exceed=p_exceedance, river_id=rivids_str)
-    # Convert Xarray to Dask DataFrame
+    # Convert Xarray to a pandas DataFrame
     fdc_df = fdc_ds.to_dataframe().reset_index()
 
     # Check if fdc_df is empty
@@ -267,17 +281,17 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
 
     # Create 'qout_median' column where 'p_exceed' is 50.0
     fdc_df.loc[fdc_df['p_exceed'] == 50.0, 'qout_median'] = fdc_df['fdc']
-    # Create 'qout_max' column where 'p_exceed' is 100.0
+    # Create 'qout_max' column where 'p_exceed' is 0.0 (the flow exceeded 0% of the time)
     fdc_df.loc[fdc_df['p_exceed'] == 0.0, 'qout_max'] = fdc_df['fdc']
     # Group by 'river_id' and aggregate 'qout_median' and 'qout_max' by taking the non-null value
     fdc_df = fdc_df.groupby('river_id').agg({
-        'qout_median': 'max',  # or use 'max' as both approaches would work
+        'qout_median': 'max',  # each has one non-null value, so 'first' would work too
         'qout_max': 'max'
     }).reset_index()
 
     # making our index for this dataframe match the recurrence interval index 
     fdc_df['rivid'] = fdc_df['river_id'].astype(int)
-    # Drop two columns from the DataFrame
+    # Drop the river_id column from the DataFrame
     fdc_df = fdc_df.drop(['river_id'], axis=1)
     fdc_df = fdc_df.set_index('rivid')
 
@@ -285,12 +299,12 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     fdc_df['qout_median'] = fdc_df['qout_median'].round(3)
     fdc_df['qout_max'] = fdc_df['qout_max'].round(3)
     
-    # Load return periods data from S3 using Dask
+    # Open the return periods data on S3
     rp_s3_uri = 's3://geoglows-v2-retrospective/return-periods.zarr'
     rp_s3store = s3fs.S3Map(root=rp_s3_uri, s3=s3, check=False)
     rp_ds = xr.open_zarr(rp_s3store).sel(rivid=rivids_int)
     
-    # Convert Xarray to Dask DataFrame and pivot
+    # Convert Xarray to a pandas DataFrame, to pivot below
     rp_df = rp_ds.to_dataframe().reset_index()
 
     # Check if rp_df is empty
@@ -323,14 +337,15 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     columns = [target_column] + [col for col in final_df.columns if col != target_column]
     final_df = final_df[columns]
 
-    # Add a safety factor to one of the columns we could use to run the ARC model
+    # Add a safety factor to the columns we could use as ARC's maximum flow: qout_max_premium and rp100_premium,
+    # 1.5 times them
     for col in final_df.columns:
         if col in ['qout_max','rp100']:
             final_df[f'{col}_premium'] = round(final_df[col]*1.5, 3)
     
-    # Write the final Dask DataFrame to CSV
+    # Write the final pandas DataFrame to CSV
     final_df.to_csv(CSV_File_Name, index=False)
     
-    # Return the combined DataFrame as a Dask DataFrame
+    # Return the file names, the reach IDs and the tile's stream network
     
     return (CSV_File_Name, OutShp_File_Name, rivids_int, StrmShp_filtered_gdf)

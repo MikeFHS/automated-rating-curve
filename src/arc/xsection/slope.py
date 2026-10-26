@@ -14,7 +14,7 @@ The slope methods (Stream_Slope_Method), and when each can't give a slope:
   junction isn't averaged over one side of it alone: one-sided, the slopes jumped across junctions.
 - reach_average: every cell takes its reach's median slope, from the slopes between all pairs of the reach's cells
   within Gen_Slope_Dist cells of each other along each axis, leaving out level pairs. The median is of the slopes
-  between two percentiles of them, 25 and 75 by default (reach_median_slope). None for a reach without a pair of cells
+  between two percentiles of them, 5 and 95 by default (reach_median_slope). None for a reach without a pair of cells
   that isn't level. A uniform slope, with both percentiles the same, is a slope like any other.
 - local_average_corrected (the default): each cell's local average, kept between its reach's two percentiles
   (corrected_local_slopes). None for a reach without percentiles, as for reach_average.
@@ -257,8 +257,8 @@ def local_fit_slopes(z, stations, distance: int) -> tuple[np.ndarray, float]:
     return slopes, float(reach_slope)
 
 
-def reach_median_slope(z, rows, cols, stations, dx: float, dy: float, distance: int, low_percentile: float = 25,
-                       high_percentile: float = 75) -> tuple[float, float, float]:
+def reach_median_slope(z, rows, cols, stations, dx: float, dy: float, distance: int, low_percentile: float = 5,
+                       high_percentile: float = 95) -> tuple[float, float, float]:
     """A reach's slope, and the percentiles its slope is taken between.
 
     The slopes are between each pair of the reach's cells within `distance` cells of each other along each axis,

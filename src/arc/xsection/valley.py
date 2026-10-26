@@ -23,8 +23,9 @@ discharge, A R^(2/3) S^(1/2) / n, is the same with n / sqrt(S_v / S) and S as wi
 what HEC-RAS does with an overbank's flow length shorter than its channel's: the standard step's friction losses,
 worked out over the channel's length, come out the same.
 
-Where the valley runs within a degree of the cell's cross section's own direction and the stream barely winds
-(sinuosity under 1.005), there's nothing to change, and the cross section is left as it is.
+Where the cross section is within a degree of square to the valley (the stream direction it was cut square to is
+within a degree of the valley's) and the stream barely winds (sinuosity under 1.005), there's nothing to change, and
+the cross section is left as it is.
 """
 from __future__ import annotations
 
@@ -50,7 +51,7 @@ class Valley:
     slope over the channel's (slope_ratio), and the ground and Manning's n at the ordinates of the two lines out from
     the cross section's banks, as one array: the left line's from its far end in, the stream cell's, and the right
     line's from the bank out, ordinate_distance apart (and as far from the banks). full_half is how many ordinates
-    each line would have out to the raster's edge; rows and cols are the ordinates' cells."""
+    the longer line would have out to the raster's edge; rows and cols are the ordinates' cells."""
     direction: float
     sinuosity: float
     slope_ratio: float
@@ -169,8 +170,8 @@ def turn(a: float, b: float) -> float:
 
 
 def worth_splitting(section_direction: float, valley_direction: float, sinuosity: float) -> bool:
-    """Whether the valley is far enough from the cross section's own direction, or the stream winds enough, to change
-    anything (see the notes above)."""
+    """Whether the valley turns far enough from section_direction, the stream direction the cross section was cut
+    square to, or the stream winds enough, to change anything (see the notes above)."""
     if not (np.isfinite(valley_direction) and np.isfinite(sinuosity)):
         return False
     return turn(section_direction, valley_direction) >= MIN_TURN or sinuosity >= MIN_SINUOSITY

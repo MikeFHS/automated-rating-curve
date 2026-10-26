@@ -22,7 +22,8 @@ class Profile(NamedTuple):
 class XSection:
     """A cross section: its ground elevations and Manning's n at ordinates ordinate_distance metres apart, from its
     left end to its right (see arc.xsection.sampling for the convention), with the stream cell in the middle. The bank
-    distances are -1 until banks are found (arc.bathymetry.set_bank_distances)."""
+    distances are -1 until they're set from the banks the hydraulics use (arc.bathymetry.set_bank_distances), which
+    arc.pipeline does after the bathymetry."""
     elevations: np.ndarray
     mannings_n: np.ndarray
     ordinate_distance: float

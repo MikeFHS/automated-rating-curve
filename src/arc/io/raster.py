@@ -17,6 +17,16 @@ gdal.UseExceptions()
 
 _METRES = {"metre", "metres", "meter", "meters"}
 _TILE = 512  # the side of a compressed raster's tiles, in cells
+# The stored types that GDAL converts to each type exactly as numpy's astype does, every value kept
+_EXACTLY_AS = {np.dtype(np.float64): {np.dtype(t) for t in (np.float32, np.int8, np.uint8, np.int16, np.uint16,
+                                                             np.int32, np.uint32)},
+               np.dtype(np.float32): {np.dtype(t) for t in (np.int8, np.uint8, np.int16, np.uint16)}}
+
+
+def decode_threads() -> str:
+    """The threads to decode a raster on: GDAL_NUM_THREADS as it's set, as a GDAL configuration option or an
+    environment variable (which GDAL reads in that order), or else every CPU."""
+    return gdal.GetConfigOption("GDAL_NUM_THREADS") or "ALL_CPUS"
 
 
 class Raster:
@@ -135,9 +145,19 @@ class Raster:
     # --- Values ------------------------------------------------------------------------------------------------
 
     def read_array(self, dtype: np.dtype | type | None = None) -> np.ndarray:
-        """The first band's values, as stored or converted to dtype."""
-        ds = gdal.Open(str(self.filepath), gdal.GA_ReadOnly)
-        array = ds.GetRasterBand(1).ReadAsArray()
+        """The first band's values, as stored or converted to dtype.
+
+        The file is decoded on as many threads as GDAL_NUM_THREADS says, as a GDAL configuration option or an
+        environment variable, and on every CPU if it's not set (decode_threads). Decoding on more than one also decodes
+        it straight into the array rather than through GDAL's block cache. GDAL converts the values as it reads them
+        where that's exact, so a float32 DEM read as float64 takes its float64 array and no more."""
+        dtype = None if dtype is None else np.dtype(dtype)
+        with gdal.config_option("GDAL_NUM_THREADS", decode_threads()):
+            ds = gdal.Open(str(self.filepath), gdal.GA_ReadOnly)
+            band = ds.GetRasterBand(1)
+            if dtype is not None and dtype != self._dtype and self._dtype in _EXACTLY_AS.get(dtype, ()):
+                return band.ReadAsArray(buf_type=gdal_array.NumericTypeCodeToGDALTypeCode(dtype))
+            array = band.ReadAsArray()
         return array if dtype is None else array.astype(dtype, copy=False)
 
     @classmethod

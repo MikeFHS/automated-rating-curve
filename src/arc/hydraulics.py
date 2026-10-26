@@ -100,7 +100,12 @@ def _conveyance(area, weighted_perimeter):
 @njit(cache=True, error_model="numpy")
 def _scaled_n_15(n0, depth, k_decay, shallow_factor, deep_factor):
     """(n0 scaled for water depth deep over it) ** 1.5."""
-    n = n0 * (deep_factor + (shallow_factor - deep_factor) / (1.0 + k_decay * max(depth, 0.0)))
+    if shallow_factor == deep_factor and depth == depth:
+        # n doesn't vary with depth: (shallow - deep) / (1 + k * depth) is 0 at any depth but NaN (k > 0 makes the
+        # denominator at least 1, or inf), and deep + 0 is deep, so this is the same number without the division
+        n = n0 * deep_factor
+    else:
+        n = n0 * (deep_factor + (shallow_factor - deep_factor) / (1.0 + k_decay * max(depth, 0.0)))
     return n * math.sqrt(n)
 
 
@@ -176,15 +181,14 @@ def _profile_side(stations, elevations, n0, center, step, wse, bank, extent, k_d
     channel.
     """
     end = elevations.size - 1 if step > 0 else 0
-    if extent < 0:
-        extent = center
-        while extent != end and wse > elevations[extent + step]:
-            extent += step
+    walk = extent < 0  # the water's edge is found on the way out: the first vertex at or above wse
     origin = stations[center]
     divided = bank >= 0.0 and bank < abs(stations[end] - origin)
     channel_area = channel_perimeter = channel_top_width = channel_weighted = 0.0
     overbank_area = overbank_perimeter = overbank_top_width = overbank_weighted = 0.0
     j = center
+    z_in = elevations[j]
+    d_in = abs(stations[j] - origin)
     while True:
         if j == end:
             # The water reaches the wall at the end, in the overbank if the bank is inside the section
@@ -197,14 +201,12 @@ def _profile_side(stations, elevations, n0, center, step, wse, bank, extent, k_d
                 channel_perimeter += depth_end
                 channel_weighted += depth_end * n_15
             break
-        z_in = elevations[j]
         z_out = elevations[j + step]
-        d_in = abs(stations[j] - origin)
         d_out = abs(stations[j + step] - origin)
         width = d_out - d_in
         rise = z_out - z_in
         depth_in = wse - z_in
-        full = j != extent
+        full = wse > z_out if walk else j != extent
         if full:
             wet = 1.0  # the fraction of the segment under water
             depth_out = wse - z_out
@@ -245,8 +247,123 @@ def _profile_side(stations, elevations, n0, center, step, wse, bank, extent, k_d
         if not full:
             break
         j += step
+        z_in, d_in = z_out, d_out
     return (channel_area, channel_perimeter, channel_top_width, channel_weighted,
             overbank_area, overbank_perimeter, overbank_top_width, overbank_weighted)
+
+
+@njit(cache=True, error_model="numpy")
+def _profile_sides(stations, elevations, n0, center, step, levels, first, bank, k_decay, shallow_factor, deep_factor,
+                   out):
+    """_profile_side, walking out to the water's edge, at each water surface levels[first:], which ascend: out[i] gets
+    its eight sums at levels[i], each summed in the order _profile_side sums it, so the same numbers. Each segment's
+    geometry is worked out once for all the water surfaces over it, which takes half the time of one at a time."""
+    m = levels.size
+    end = elevations.size - 1 if step > 0 else 0
+    origin = stations[center]
+    divided = bank >= 0.0 and bank < abs(stations[end] - origin)
+    constant_n = shallow_factor == deep_factor
+    j = center
+    z_in = elevations[j]
+    d_in = abs(stations[j] - origin)
+    while first < m:
+        if j == end:
+            # The water reaches the wall at the end
+            for i in range(first, m):
+                depth_end = levels[i] - elevations[end]
+                n_15 = _scaled_n_15(n0[end], depth_end, k_decay, shallow_factor, deep_factor)
+                if divided:
+                    out[i, 5] += depth_end
+                    out[i, 7] += depth_end * n_15
+                else:
+                    out[i, 1] += depth_end
+                    out[i, 3] += depth_end * n_15
+            break
+        z_out = elevations[j + step]
+        d_out = abs(stations[j + step] - origin)
+        width = d_out - d_in
+        rise = z_out - z_in
+        length = math.sqrt(width * width + rise * rise)
+        # The water surfaces that meet the ground on this segment, which are the lowest of those still walking out
+        split = first
+        while split < m and not levels[split] > z_out:
+            split += 1
+        for i in range(first, split):
+            depth_in = levels[i] - z_in
+            wet = depth_in / rise
+            n_15 = _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+            _add_segment(out, i, _in_channel(divided, bank, d_in, d_out, width, rise, wet), width, rise, length, wet,
+                         depth_in, 0.0, n_15)
+        if split < m:
+            # Those over it all the way, wet 1: how much of it is in the channel is the same for all of them, so each
+            # way of dividing it has a loop of its own
+            wet = 1.0
+            in_channel = _in_channel(divided, bank, d_in, d_out, width, rise, wet)
+            n_15_fixed = _scaled_n_15(n0[j], 0.0, k_decay, shallow_factor, deep_factor)
+            if in_channel == wet:
+                for i in range(split, m):
+                    depth_in, depth_out = levels[i] - z_in, levels[i] - z_out
+                    n_15 = n_15_fixed if constant_n and depth_in == depth_in else \
+                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+                    out[i, 0] += width * wet * (depth_in + depth_out) / 2
+                    out[i, 1] += wet * length
+                    out[i, 3] += wet * length * n_15
+                    out[i, 2] += width * wet
+            elif in_channel == 0.0:
+                for i in range(split, m):
+                    depth_in, depth_out = levels[i] - z_in, levels[i] - z_out
+                    n_15 = n_15_fixed if constant_n and depth_in == depth_in else \
+                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+                    out[i, 4] += width * wet * (depth_in + depth_out) / 2
+                    out[i, 5] += wet * length
+                    out[i, 7] += wet * length * n_15
+                    out[i, 6] += width * wet
+            else:
+                for i in range(split, m):
+                    depth_in, depth_out = levels[i] - z_in, levels[i] - z_out
+                    n_15 = n_15_fixed if constant_n and depth_in == depth_in else \
+                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+                    _add_segment(out, i, in_channel, width, rise, length, wet, depth_in, depth_out, n_15)
+        first = split
+        j += step
+        z_in, d_in = z_out, d_out
+
+
+@njit(cache=True, error_model="numpy")
+def _in_channel(divided, bank, d_in, d_out, width, rise, wet):
+    """How much of a segment's wet share is in the channel, as _profile_side divides it."""
+    if not divided or d_out < bank or (d_out == bank and (width > 0.0 or rise > 0.0)):
+        return wet
+    if d_in >= bank:
+        return 0.0
+    return min(wet, (bank - d_in) / width)  # the bank divides the segment
+
+
+@njit(cache=True, error_model="numpy")
+def _add_segment(sums, i, in_channel, width, rise, length, wet, depth_in, depth_out, n_15):
+    """Add a segment, in_channel of it in the channel (_in_channel), to _profile_side's eight sums, sums[i], as
+    _profile_side does."""
+    if in_channel == wet:
+        sums[i, 0] += width * wet * (depth_in + depth_out) / 2
+        sums[i, 1] += wet * length
+        sums[i, 3] += wet * length * n_15
+        sums[i, 2] += width * wet
+    elif in_channel == 0.0:
+        sums[i, 4] += width * wet * (depth_in + depth_out) / 2
+        sums[i, 5] += wet * length
+        sums[i, 7] += wet * length * n_15
+        sums[i, 6] += width * wet
+    else:
+        depth_bank = depth_in - in_channel * rise
+        outer = wet - in_channel
+        sums[i, 0] += width * in_channel * (depth_in + depth_bank) / 2
+        sums[i, 1] += in_channel * length
+        sums[i, 3] += in_channel * length * n_15
+        sums[i, 2] += width * in_channel
+        sums[i, 4] += width * outer * (depth_bank + depth_out) / 2
+        sums[i, 5] += outer * length
+        sums[i, 7] += outer * length * n_15
+        sums[i, 6] += width * outer
 
 
 @njit(cache=True, error_model="numpy")

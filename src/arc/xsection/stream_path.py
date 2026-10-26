@@ -15,9 +15,9 @@ a cell along a row or a column: about as far as a stair step strays from the str
 whose mean lies further inside it, keeps most of its length. A straight stream at any angle then comes out within 0.3%
 of its length, a meander of 60 cells or more from crest to crest within 1%, one of 20 cells 5% short (its cells' path
 is 5% long), and a stream along a row or a diagonal exactly. Across a gap the station still takes the path's straight
-jump, and the means don't reach across it. A cell off that path, such as the corner cell where a rasterised line steps
-along a row and then a column rather than across the diagonal, takes the station at its own distance along the
-shortest path.
+jump, and the means don't reach across a jump longer than one and a half diagonals. A cell off that path, such as the
+corner cell where a rasterised line steps along a row and then a column rather than across the diagonal, takes the
+station at its own distance along the shortest path.
 """
 from __future__ import annotations
 
@@ -290,8 +290,8 @@ def downstream_order(rows, cols, dx: float, dy: float, *, downstream_cells=None,
 
     The downstream end is the cell nearest the reach downstream (downstream_cells, a (rows, cols) pair). Without
     that, the upstream end is the cell nearest the reach upstream (upstream_cells), and the downstream end is the
-    cell farthest along the stream from it. None if neither is given, or if the reach has no cells. Cells equally far
-    along stay in the order given. A reach of one cell is in order already.
+    cell farthest along the stream from it. None if neither is given. Cells equally far along stay in the order given.
+    A reach of one cell, or of none, is in order already.
     """
     rows, cols = _cell_arrays(rows, cols)
     dx, dy = float(dx), float(dy)
@@ -319,10 +319,17 @@ def _neighbour_cell(rows, cols, dx, dy, cells) -> int:
     return int(_nearest_cell(rows, cols, dx, dy, other_rows, other_cols))
 
 
-def stream_cells_by_reach(streams: np.ndarray) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """The rows and columns of each reach's cells in a stream raster, whose cells above 0 hold their reach's ID."""
-    rows, cols = np.nonzero(streams > 0)
-    ids = streams[rows, cols]
+def stream_raster_cells(streams: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The rows and columns of a stream raster's cells above 0, row by row, and the IDs they hold."""
+    flat = np.flatnonzero(streams > 0)
+    rows, cols = np.divmod(flat, streams.shape[1])
+    return rows, cols, streams.ravel()[flat]
+
+
+def stream_cells_by_reach(streams: np.ndarray | None = None, *, cells=None) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """The rows and columns of each reach's cells in a stream raster, whose cells above 0 hold their reach's ID, or
+    in its cells as stream_raster_cells gives them."""
+    rows, cols, ids = stream_raster_cells(streams) if cells is None else cells
     order = np.argsort(ids, kind="stable")
     ids = ids[order]
     starts = np.flatnonzero(np.r_[True, ids[1:] != ids[:-1]])

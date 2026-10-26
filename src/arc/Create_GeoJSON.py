@@ -573,7 +573,9 @@ def infer_upstream_points_from_dem(
 
 def find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
     """
-    Finds the locations of SEED points, or the most upstream locations in our modeling domain, using the topology in the stream shapefile
+    Finds the locations of SEED points, or the most upstream locations in our modeling domain, using the topology in the
+    stream shapefile, and writes them to SEED_Output_File
+
     Parameters
     ----------
     StrmShp: str
@@ -587,8 +589,6 @@ def find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Fi
     SEED_Output_File: str
         The file path and file name of the output vector file that contains the
         SEED locations and the unique ID of the stream each represents
-    OutProjection: str
-        A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
     Stream_ID_Field: str
         The field in the StrmShp that is the streams unique identifier
     Downstream_ID_Field: str
@@ -597,7 +597,8 @@ def find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Fi
     Returns
     -------
     seed_gdf: geodataframe
-        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
+        The SEED points alone, in the StrmShp's coordinate system, with the ID of the stream each is on in a column
+        named LINKNO, whatever Stream_ID_Field is
     """
     # Load the hydrographic network data
     gdf = Read_Vector_GDF(StrmShp)
@@ -709,47 +710,66 @@ def find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Fi
     
     return (seed_gdf)
 
-def FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs):
+def FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs, stream_gdf=None, Stream_ID_Field=None,
+                          Downstream_ID_Field=None):
     """
-    Compares stream cell locations to SEED point locations (i.e., the uppermost headwater extents of the ARC model domain) and finds the closest stream cell for each SEED point 
+    Marks the stream cells at the upstream ends of the ARC model domain (i.e., the uppermost headwater extents) as SEED
+    locations: for each SEED point, the closest stream cell of the SEED point's own stream. A SEED point whose stream
+    has no stream cells (no flow, or all its cells thinned out) marks none. With the stream lines, each stream that has
+    stream cells while none of the streams flowing into it do is also marked at its upstream end: its stream cell
+    closest to those streams. So when only some streams have flows, the upstream ends of those streams are marked.
 
     Parameters
     ----------
     seed_gdf: geodataframe
-        A geodataframe of all SEED locations in your model domain, created using the find_SEED_locations function
+        A geodataframe of all SEED locations in your model domain, created using the find_SEED_locations function, with
+        the ID of the stream each is on in a column named LINKNO
     curve_data_gdf: geodataframe
         A geodataframe of all stream cell locations in the ARC model with depth, top-width, and velocity, all estimated using the ARC synthetic rating curves
     distance_crs: pyproj.CRS | str
         The projected coordinate system used when measuring distances between
         SEED points and stream-cell points
+    stream_gdf: geodataframe, optional
+        The stream lines (the StrmShp), to mark the upstream ends of streams below streams without stream cells
+    Stream_ID_Field: str, optional
+        The field in stream_gdf that is the streams unique identifier (needed with stream_gdf)
+    Downstream_ID_Field: str, optional
+        The field in stream_gdf that is used to identify the stream downstream of the stream (needed with stream_gdf)
 
     Returns
     -------
     curve_data_gdf: geodataframe
         A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations
     """
-    # Reproject both layers into the same projected CRS before the nearest-
-    # neighbor search so distances are evaluated in linear units.
+    # Reproject both layers into the same projected CRS before measuring
+    # distances so they are evaluated in linear units.
     seed_gdf = Reproject_GDF_If_Needed(seed_gdf, distance_crs)
     curve_data_gdf = Reproject_GDF_If_Needed(curve_data_gdf, distance_crs)
 
     # Prefill the curve data file with a SEED value, this will be set to 1 if the column is designated as a SEED column
     curve_data_gdf['SEED'] = "0"
 
-    # Spatial join to find the distance between each CP point and each SEED point
-    nearest_cp = gpd.sjoin_nearest(seed_gdf, curve_data_gdf, how='left', distance_col='dist')
+    # Pair each SEED point with every stream cell of its own stream, and keep the closest. A SEED point is never
+    # matched to another stream's cells: those can be kilometers away when its own stream has none.
+    seeds = pd.DataFrame({'LINKNO': seed_gdf['LINKNO'].to_numpy(), 'seed_geometry': seed_gdf.geometry.to_numpy()})
+    cells = pd.DataFrame({'COMID': curve_data_gdf['COMID'].to_numpy(), 'cell': curve_data_gdf.index,
+                          'cell_geometry': curve_data_gdf.geometry.to_numpy()})
+    pairs = seeds.reset_index(names='seed').merge(cells, left_on='LINKNO', right_on='COMID')
+    if len(pairs) > 0:
+        pairs['dist'] = gpd.GeoSeries(pairs['seed_geometry']).distance(gpd.GeoSeries(pairs['cell_geometry']))
+        curve_data_gdf.loc[pairs.loc[pairs.groupby('seed')['dist'].idxmin(), 'cell'], 'SEED'] = "1"
 
-    # Find the minimum distance for each unique gdf1 row
-    min_distance_idx = nearest_cp.groupby(nearest_cp.index)['dist'].idxmin()
-
-    # Get the rows with the minimum distance
-    nearest_cp = nearest_cp.loc[min_distance_idx]
-
-    # Create a boolean mask for matching rows in the original dataframe
-    mask = curve_data_gdf.set_index(['COMID', 'Row', 'Col']).index.isin(nearest_cp.set_index(['COMID', 'Row', 'Col']).index)
-
-    # Update the 'SEED' value to 1 for matching rows
-    curve_data_gdf.loc[mask, 'SEED'] = "1"
+    if stream_gdf is not None:
+        # The streams with stream cells whose inflowing streams all have none start the domain too
+        stream_gdf = Reproject_GDF_If_Needed(stream_gdf, distance_crs)
+        modeled = set(curve_data_gdf['COMID'])
+        cells_of = curve_data_gdf.groupby('COMID').groups
+        inflowing = stream_gdf[stream_gdf[Downstream_ID_Field].isin(modeled)]
+        for stream_id, inflows in inflowing.groupby(Downstream_ID_Field):
+            if inflows[Stream_ID_Field].isin(modeled).any():
+                continue
+            stream_cells = curve_data_gdf.loc[cells_of[stream_id]]
+            curve_data_gdf.loc[stream_cells.distance(inflows.geometry.union_all()).idxmin(), 'SEED'] = "1"
 
     return (curve_data_gdf)
 
@@ -762,7 +782,11 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
     CurveParam_File: str
         The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
-        The file path and file name of the file that contains the streamflow estimates for the streams in your domain
+        The file path and file name of the CSV file that contains the streamflow estimates for the streams in your
+        domain. Its columns are taken by position, whatever their names: the first is the stream ID, matched to the
+        curve file's COMID, and the second the flow.
+    comid_q_df: pandas DataFrame, optional
+        The same table, used when COMID_Q_File is None. One of the two is needed.
     DEM_Raster_File: str
         The file path and file name of the DEM raster aligned to the ARC grid.
         The vector workflow uses this raster for row/column georeferencing and
@@ -780,7 +804,8 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
         The field in the StrmShp that is used to identify the stream downstream of the stream
     SEED_Output_File: str
         The file path and file name of the output vector file that contains the
-        SEED locations and the unique ID of the stream each represents
+        SEED locations and the unique ID of the stream each represents. When it already exists, its SEED locations
+        are used instead of finding them again. See FindClosestSEEDPoints for the stream cells they mark.
     Thin_Output: bool
         True/False of whether or not to filter the output GeoJSON
     
@@ -872,8 +897,9 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
         print("SEED file exists, we're using it...")
         seed_gdf = Read_Vector_GDF(SEED_Output_File)
     else:
-        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
-    curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs)
+        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field)
+    curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs, Read_Vector_GDF(StrmShp),
+                                           Stream_ID_Field, Downstream_ID_Field)
 
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
@@ -884,12 +910,20 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
+    Each stream cell's WSE is interpolated linearly between its VDT database flows, and extrapolated beyond them. With
+    or without Thin_Output, the cells whose WSE is more than 2 standard deviations from their reach's mean are then
+    dropped, and so is the cell of a reach with only one.
+
     Parameters
     ----------
     VDTDatabaseFileName: str
         The file path and file name of the ARC VDT database file you are using to estimate water surface elevation and water depth
     COMID_Q_File: str
-        The file path and file name of the file that contains the streamflow estimates for the streams in your domain
+        The file path and file name of the CSV file that contains the streamflow estimates for the streams in your
+        domain. Its columns are taken by position, whatever their names: the first is the stream ID, matched to the VDT
+        database's COMID, and the second the flow.
+    comid_q_df: pandas DataFrame, optional
+        The same table, used when COMID_Q_File is None. One of the two is needed.
     DEM_Raster_File: str
         The file path and file name of the DEM raster aligned to the ARC grid.
         The vector workflow uses this raster for row/column georeferencing and
@@ -907,7 +941,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
         The field in the StrmShp that is used to identify the stream downstream of the stream
     SEED_Output_File: str
         The file path and file name of the output vector file that contains the
-        SEED locations and the unique ID of the stream each represents
+        SEED locations and the unique ID of the stream each represents. When it already exists, its SEED locations
+        are used instead of finding them again. See FindClosestSEEDPoints for the stream cells they mark.
     Thin_Output: bool
         True/False of whether or not to filter the output GeoJSON
     
@@ -1052,8 +1087,9 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
         seed_gdf = Read_Vector_GDF(SEED_Output_File)
         
     else:
-        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field) 
-    vdt_gdf = FindClosestSEEDPoints(seed_gdf, vdt_gdf, distance_crs)
+        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field)
+    vdt_gdf = FindClosestSEEDPoints(seed_gdf, vdt_gdf, distance_crs, Read_Vector_GDF(StrmShp), Stream_ID_Field,
+                                    Downstream_ID_Field)
 
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, vdt_gdf)
@@ -1081,22 +1117,27 @@ def Thin_Curve_data(gdf, use_depth=True):
     """
     Thins the stream cells out in two ways 
     
-    1. Removes stream cells that have depths that are greater than 3 times the median depth for the stream reach (with use_depth)
-    2. Removes stream cells that are within 50 meters of other streams and have water surface elevations that are within 0.05% of one another.
+    1. Removes stream cells whose depths are 3 or more times the median depth for the stream reach, and every cell of
+       a reach whose median depth is 0 (with use_depth)
+    2. Removes stream cells that are within 50 meters of other stream cells and have water surface elevations that are
+       within 0.05% of one another.
 
     Parameters
     ----------
-    curve_data_gdf: geodataframe
-        A geodataframe of all stream cell locations in the ARC model
+    gdf: geodataframe
+        A geodataframe of all stream cell locations in the ARC model, in a coordinate system in metres, with
+        WaterSurfaceElev_m, and with use_depth, CP_DEP and COMID_MedDEP
+    use_depth: bool
+        True/False of whether or not to apply the depth check (1)
 
     Returns
     -------
-    curve_data_gdf: geodataframe
+    gdf: geodataframe
         A geodataframe of all stream cell locations in the ARC model, now thinned 
     """
     
     # This is a filter Mike imposed to keep some of the outliers out
-    # We use it if we're using the VDT curve file
+    # We use it with the curve file; the VDT database's cells have no depths here
     if use_depth is True:
         gdf = gdf[(gdf['COMID_MedDEP']>0) & (gdf['CP_DEP']<3.0*gdf['COMID_MedDEP'])]
 
@@ -1141,14 +1182,18 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
     DEM_Raster_File: str
         The file name and full path to the digital elevation model (DEM) raster you are analyzing
     SEED_Point_File: str
-        The file name and full path to the text file that will store the potential SEED locations the function defines
+        The file name and full path to the text file that will store the potential SEED locations the function defines,
+        as comma separated values with the header COMID,Lat,Long,Row,Col,MinElev,MaxElev (Lat and Long being the y and
+        x below)
 
     Returns
     -------
     SEED_Lat: list
-        A list of float values that represent the latitude of the SEED locations in the stream raster
+        A list of float values that represent the y coordinates of the SEED cells' centres in the stream raster's
+        coordinate system (latitudes only if it is geographic)
     SEED_Lon: list
-        A list of float values that represent the longitude of the SEED locations in the stream raster
+        A list of float values that represent the x coordinates of the SEED cells' centres in the stream raster's
+        coordinate system (longitudes only if it is geographic)
     SEED_COMID: list
         A list of integer values that represent the unique identifier of the streams at each SEED location
     SEED_r: list
@@ -1223,7 +1268,9 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
             c=CC[x] + 1  #Need the plus one to get to the larger boundaries of the B raster
             
             n = np.count_nonzero(B[r-1:r+2,c-1:c+2])
-            if n<=2 or (r==0 or c==0 or c==ncols-1 or r==nrows-1):
+            # A stream cell with one stream neighbour or none is an end of its stream, and one on the raster's edge
+            # (its own row and column are r - 1 and c - 1) may be where the stream enters
+            if n<=2 or (r-1 == 0 or c-1 == 0 or r-1 == nrows-1 or c-1 == ncols-1):
                 lon_for_seed, lat_for_seed = (float(v) for v in Cell_Center_Coordinates(geotransform, r - 1, c - 1))
                 SEED_Lat.append( lat_for_seed )
                 SEED_Lon.append( lon_for_seed )
@@ -1253,20 +1300,25 @@ def GetSEED_Data_From_File(SEED_Point_File):
 
     Returns
     -------
+    Seven lists of strings, the file's columns as they are written, which FindClosestSEEDPoints_Based_On_LatLong
+    converts to numbers:
+
     SEED_Lat: list
-        A list of float values that represent the latitude of the SEED locations in the stream raster
+        The y coordinates of the SEED locations in the stream raster's coordinate system (latitudes only if it is
+        geographic)
     SEED_Lon: list
-        A list of float values that represent the longitude of the SEED locations in the stream raster
+        The x coordinates of the SEED locations in the stream raster's coordinate system (longitudes only if it is
+        geographic)
     SEED_COMID: list
-        A list of integer values that represent the unique identifier of the streams at each SEED location
+        The unique identifier of the streams at each SEED location
     SEED_r: list
-        A list of integer values that represent the row in stream and DEM raster where the SEED location is
+        The row in stream and DEM raster where the SEED location is
     SEED_c: list
-        A list of integer values that represent the column in stream and DEM raster where the SEED location is
+        The column in stream and DEM raster where the SEED location is
     SEED_MinElev: list
-        A list of float values that represent the minimum elevation of the stream cells on the stream reach of the SEED location
+        The minimum elevation of the stream cells on the stream reach of the SEED location
     SEED_MaxElev: list
-        A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
+        The maximum elevation of the stream cells on the stream reach of the SEED location
     """
     infile = open(SEED_Point_File,'r')
     lines = infile.readlines()
@@ -1295,9 +1347,8 @@ def Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf):
     OutProjection: str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
     curve_data_gdf: geodataframe
-        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations and water surface elevation estimates
-    Thin_GeoJSON: bool
-        True/False of whether or not to filter the output GeoJSON
+        A geodataframe of all stream cell locations in the ARC model, now amended with SEED locations and water surface
+        elevation estimates. Only its WaterSurfaceElev_m and SEED columns are written.
 
     Returns
     -------
@@ -1325,9 +1376,11 @@ def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_
     SEED_COMID: list
         A list of integer values that represent the unique identifier of the streams at each SEED location
     SEED_Lat: list
-        A list of float values that represent the latitude of the SEED locations in the stream raster
+        A list of values (numbers, or the strings GetSEED_Data_From_File returns) that represent the y coordinates of
+        the SEED locations in the stream raster's coordinate system (latitudes only if it is geographic)
     SEED_Lon: list
-        A list of float values that represent the longitude of the SEED locations in the stream raster
+        A list of values (numbers, or the strings GetSEED_Data_From_File returns) that represent the x coordinates of
+        the SEED locations in the stream raster's coordinate system (longitudes only if it is geographic)
     SEED_r: list
         A list of integer values that represent the row in stream and DEM raster where the SEED location is
     SEED_c: list
@@ -1418,9 +1471,11 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     OutProjection: str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
     SEED_Lat: list
-        A list of float values that represent the latitude of the SEED locations in the stream raster
+        A list of values (numbers, or the strings GetSEED_Data_From_File returns) that represent the y coordinates of
+        the SEED locations in the stream raster's coordinate system (latitudes only if it is geographic)
     SEED_Lon: list
-        A list of float values that represent the longitude of the SEED locations in the stream raster
+        A list of values (numbers, or the strings GetSEED_Data_From_File returns) that represent the x coordinates of
+        the SEED locations in the stream raster's coordinate system (longitudes only if it is geographic)
     SEED_COMID: list
         A list of integer values that represent the unique identifier of the streams at each SEED location
     SEED_r: list
@@ -1521,6 +1576,10 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     """
     Main program that generates GeoJSON file that contains stream cell locations and WSE estimates for a given domain and marks the appropriate stream cells as SEED locations
 
+    Each stream cell's WSE is interpolated linearly between its VDT database flows, and extrapolated beyond them. With
+    or without Thin_GeoJSON, the cells whose WSE is more than 2 standard deviations from their reach's mean are then
+    dropped, and so is the cell of a reach with only one.
+
     Parameters
     ----------
     VDTDatabaseFileName: str
@@ -1534,9 +1593,11 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     OutProjection: str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
     SEED_Lat: list
-        A list of float values that represent the latitude of the SEED locations in the stream raster
+        A list of values (numbers, or the strings GetSEED_Data_From_File returns) that represent the y coordinates of
+        the SEED locations in the stream raster's coordinate system (latitudes only if it is geographic)
     SEED_Lon: list
-        A list of float values that represent the longitude of the SEED locations in the stream raster
+        A list of values (numbers, or the strings GetSEED_Data_From_File returns) that represent the x coordinates of
+        the SEED locations in the stream raster's coordinate system (longitudes only if it is geographic)
     SEED_COMID: list
         A list of integer values that represent the unique identifier of the streams at each SEED location
     SEED_r: list
@@ -1684,6 +1745,14 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     return
 
 
+def _parse_bool(value):
+    """A True/False command line value. argparse's type=bool would take any non-empty string, "False" too, as True."""
+    if value.strip().lower() in ('true', '1', 'yes', 'y'):
+        return True
+    if value.strip().lower() in ('false', '0', 'no', 'n'):
+        return False
+    raise argparse.ArgumentTypeError(f"expected True or False, not {value!r}")
+
 def main_write_seed():
     parser = argparse.ArgumentParser(description="Write SEED data to a file using stream and DEM raster files.")
     parser.add_argument("--strm_raster_file", type=str, required=True, help="Path to the stream raster file (TIFF).")
@@ -1712,12 +1781,12 @@ def main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector():
     )
     parser.add_argument("--out_geojson_file", type=str, required=True, help="Output GeoJSON file path.")
     parser.add_argument("--out_projection", type=str, required=True, help="Output projection (e.g., EPSG:4269).")
-    parser.add_argument("--thin_geojson", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
     parser.add_argument("--strm_shp", type=str, required=True, help="Path to stream shapefile.")
     parser.add_argument("--stream_id_field", type=str, required=True, help="Field in shapefile with unique stream identifiers.")
     parser.add_argument("--downstream_id_field", type=str, required=True, help="Field in shapefile with downstream identifiers.")
     parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations vector file.")
-    parser.add_argument("--thin_output", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
+    parser.add_argument("--thin_output", "--thin_geojson", dest="thin_output", type=_parse_bool, default=True,
+                        help="Whether to thin the output GeoJSON: True or False (default: True).")
     parser.add_argument("--comid_q_file", type=str, required=True, help="Path to file with streamflow estimates (CSV).")
 
     args = parser.parse_args()
@@ -1758,8 +1827,10 @@ if __name__ == "__main__":
     curve_to_geojson_parser.add_argument("--stream_id_field", type=str, required=True, help="Field in shapefile with unique stream identifiers.")
     curve_to_geojson_parser.add_argument("--downstream_id_field", type=str, required=True, help="Field in shapefile with downstream identifiers.")
     curve_to_geojson_parser.add_argument("--seed_output_file", type=str, required=True, help="Output file path for SEED locations vector file.")
-    curve_to_geojson_parser.add_argument("--thin_output", type=bool, default=True, help="Whether to thin the output GeoJSON (default: True).")
-    curve_to_geojson_parser.add_argument("--comid_q_file", type=str, help="Path to file with streamflow estimates (optional).")
+    curve_to_geojson_parser.add_argument("--thin_output", type=_parse_bool, default=True,
+                                         help="Whether to thin the output GeoJSON: True or False (default: True).")
+    curve_to_geojson_parser.add_argument("--comid_q_file", type=str, required=True,
+                                         help="Path to file with streamflow estimates (CSV).")
 
     # Subparser for Write_SEED_Data_To_File
     write_seed_parser = subparsers.add_parser("write-seed-stream-raster", help="Write SEED data to a file")

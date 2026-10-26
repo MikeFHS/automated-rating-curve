@@ -1,8 +1,8 @@
 """
 Automated Rating Curve (ARC).
 
-ARC builds a rating curve (discharge, velocity, top width and water surface elevation) for every stream cell of a
-DEM, from cross sections sampled across the stream.
+ARC builds a rating curve (discharge, velocity, top width and water surface elevation) for each stream cell of the
+reaches in its flow file, from cross sections sampled across the stream.
 
 Entry points
 ------------

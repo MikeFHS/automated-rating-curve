@@ -103,15 +103,16 @@ def _main():
     """Command-line entry point for the ``arc`` console script."""
     parser = argparse.ArgumentParser(description='Run ARC')
     parser.add_argument('mifn', type=str, help='Model Input File Name')
-    parser.add_argument('-l', '--log', type=str, help='Log Level',
-                        default='warn', choices=['debug', 'info', 'warn', 'error'])
+    parser.add_argument('-l', '--log', type=str, help='Log level (default warn, or error with --quiet)',
+                        default=None, choices=['debug', 'info', 'warn', 'error'])
     parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output progress bar and other non-error messages')
     parser.add_argument('-p', '--processes', type=str, default='1', help='Ignored: ARC runs in one process. Kept for compatibility.')
     args = parser.parse_args()
     processes: int | Literal["auto"]
     processes = "auto" if args.processes.strip().lower() == "auto" else int(args.processes)
     arc = Arc(args.mifn, args=None, quiet=args.quiet, processes=processes)
-    arc.set_log_level(args.log)
+    if args.log or not args.quiet:  # --quiet keeps the errors alone unless a level is given
+        arc.set_log_level(args.log or 'warn')
     arc.run()
 
     LOG.info('Finished')

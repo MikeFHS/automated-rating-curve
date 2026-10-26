@@ -34,16 +34,41 @@ def _power(d_value: np.ndarray, d_coefficient: float, d_power: float):
 def fit_power_law(x: np.ndarray, y: np.ndarray, init_guess=(1.0, 1.0)) -> tuple[float, float, float]:
     """a, b and R² of y = a * x**b. R² isn't worked out, so it's -9999.9, and so are a and b when the fit doesn't
     converge."""
-    from scipy.optimize import curve_fit  # here, as importing it takes a quarter of a second
-
     coefficient, power, r2 = FAILED_FIT, FAILED_FIT, FAILED_FIT
     try:
-        (coefficient, power), _ = curve_fit(_power, x, y, p0=list(init_guess))
+        coefficient, power = _least_squares(x, y, init_guess)
     except TypingError as e:
         LOG.error(e)
     except RuntimeError:
         pass
     return coefficient, power, r2
+
+
+def _least_squares(x: np.ndarray, y: np.ndarray, init_guess) -> np.ndarray:
+    """a and b, as scipy's curve_fit(_power, x, y, p0=init_guess) fits them: by the MINPACK routine it fits them with,
+    lmdif, given the same residuals, start and settings, so the same numbers, in half the time, without the
+    covariance and the checks on it that curve_fit works out and fit_power_law doesn't keep. As curve_fit, it raises
+    ValueError for values that aren't finite, TypeError for fewer than two of them, and RuntimeError where lmdif
+    fails. With a SciPy that doesn't have lmdif where this looks for it, curve_fit itself."""
+    try:
+        from scipy.optimize._minpack import _lmdif  # here, as importing it takes a quarter of a second
+    except ImportError:
+        from scipy.optimize import curve_fit
+        return curve_fit(_power, x, y, p0=list(init_guess))[0]
+    x, y = np.asarray_chkfinite(x, float), np.asarray_chkfinite(y, float)
+    p0 = np.atleast_1d(np.asarray(init_guess, dtype=float))
+    if p0.size > y.size:
+        raise TypeError(f"The number of func parameters={p0.size} must not exceed the number of data points={y.size}")
+
+    def residuals(params):
+        return _power(x, *params) - y  # as curve_fit's
+
+    # leastsq's defaults: ftol, xtol, gtol, maxfev, epsfcn (the residuals' type's epsilon), factor and diag
+    popt, info = _lmdif(residuals, p0, (), 0, 1.49012e-08, 1.49012e-08, 0.0, 200 * (p0.size + 1),
+                        np.finfo(np.float64).eps, 100, None)
+    if info not in (1, 2, 3, 4):
+        raise RuntimeError(f"Optimal parameters not found: MINPACK's lmdif returned {info}.")
+    return popt
 
 
 def _round_metadata(df: pd.DataFrame) -> pd.DataFrame:
@@ -88,7 +113,8 @@ def curve_file_dataframe(curves: RatingCurves, qmax: pd.Series) -> pd.DataFrame:
 
 def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFrame, qmax: pd.Series) -> pd.DataFrame:
     """Each reach's power laws, fitted to all of its cells' rating curves in the VDT database, alongside each of
-    its cells' metadata."""
+    its cells' metadata. As in curve_file_dataframe, a reach whose fit fails, or gives a coefficient that isn't
+    positive, is left out."""
     n = curves.number_of_increments
     df = pd.DataFrame(curves.metadata, columns=METADATA_COLUMNS).dropna(how='all')
     df = df.rename(columns={'Elev': 'BaseElev'})[_METADATA]
@@ -128,7 +154,8 @@ def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFram
                             ('vel_a', vel_a), ('vel_b', vel_b)):
             fits[name].append(np.round(value, 3) if not np.isnan(value) else np.nan)
 
-    return df.merge(pd.DataFrame(fits), on="COMID", how="left").dropna()
+    df = df.merge(pd.DataFrame(fits), on="COMID", how="left").dropna()
+    return df.loc[(df['depth_a'] > 0) & (df['tw_a'] > 0) & (df['vel_a'] > 0)]
 
 
 def write_curve_file(curves: RatingCurves, qmax: pd.Series, path: os.PathLike) -> pd.DataFrame:

@@ -47,8 +47,9 @@ class Configs:
     """ARC's inputs, checked and typed.
 
     Make one with from_file (YAML, or text with a key and its value on each line) or from_mapping (a dictionary).
-    Keys are case-insensitive, so DEM_File and dem_file are the same. Keys that curve2flood reads from the same file
-    are allowed and ignored; any other unknown key raises ValueError, naming the closest known key. The fields after
+    Keys are case-insensitive, so DEM_File and dem_file are the same. Keys that curve2flood reads from the same file,
+    and a few older keys ARC no longer uses (_IGNORED_KEYS, and _RETIRED_KEYS with a warning), are allowed and
+    ignored; any other unknown key raises ValueError, naming the closest known key. The fields after
     compression are worked out from the others, by validate_options.
     """
     # Inputs files
@@ -83,14 +84,14 @@ class Configs:
     gen_dir_dist: int = 10
     gen_slope_dist: int = 10
     stream_slope_method: StreamSlopeMethod = "local_average_corrected"
-    slope_low_percentile: int = 25
-    slope_high_percentile: int = 75
+    slope_low_percentile: int = 5
+    slope_high_percentile: int = 95
 
     # Discharge adjustments
     slope_adjustment_factor: float = 1.0
     # Scale Manning's n with the depth of the water by k_decay, shallow_factor and deep_factor
-    # (arc.hydraulics.DepthRoughness). False keeps each land cover's n at every depth.
-    depth_varying_n: bool = True
+    # (arc.hydraulics.DepthRoughness). False, the default, keeps each land cover's n at every depth.
+    depth_varying_n: bool = False
     k_decay: float = 6.0
     shallow_factor: float = 2.0
     deep_factor: float = 1.0
@@ -135,6 +136,11 @@ class Configs:
     # sections' median bank-to-bank width), or with 0, or for a reach without banks, Valley_Dir_Dist cells
     valley_dir_widths: float = 16.0
     valley_dir_dist: int = 40
+    # Drop the rating curve of a cross section whose water reaches the raster's edge at its top flow, or comes within
+    # Edge_Margin metres of it on the map (arc.pipeline.drop_edge_curves): the edge cuts it off, so its water depends on
+    # where the raster ends, and the overlapping rasters of neighbouring tiles give the same cell different water
+    drop_edge_sections: bool = False
+    edge_margin: float = 0.0
 
     # Output files
     print_vdt_database: os.PathLike | None = None
@@ -332,20 +338,17 @@ class Configs:
             and provided_flags['exponent_width']
         )
 
+        # The bathymetry needs a depth: the baseflow's, or the depth law's. The width law alone only sets widths, and
+        # carved nothing, leaving an empty bathymetry raster
+        depth_powerlaw = provided_flags['coefficient_depth'] and provided_flags['exponent_depth']
         if representative_only:
-            has_bathymetry_source = bool(
-                b_use_representative_baseflow_bathymetry
-                or b_use_bathymetry_powerlaw
-                or b_use_bathymetry_powerlaw_width
-            )
+            has_bathymetry_source = bool(b_use_representative_baseflow_bathymetry or depth_powerlaw)
         else:
-            has_bathymetry_source = bool(
-                self.flow_file_bf or b_use_bathymetry_powerlaw
-            )
+            has_bathymetry_source = bool(self.flow_file_bf or depth_powerlaw)
         if self.bathy_out_file and not has_bathymetry_source:
             LOG.warning(
-                'Neither complete baseflow inputs nor drainage-area bathymetry '
-                'parameters were provided; disabling bathymetry estimation.'
+                'Neither complete baseflow inputs nor the drainage-area depth law (coefficient_depth and '
+                'exponent_depth) were provided, so there is no depth to carve; disabling bathymetry estimation.'
             )
             object.__setattr__(self, 'bathy_out_file', None)
         if self.bathy_out_file:
@@ -379,6 +382,8 @@ class Configs:
             raise ValueError('Valley_Dir_Dist must be at least 2 cells.')
         if self.valley_sections and not (np.isfinite(self.valley_dir_widths) and self.valley_dir_widths >= 0.0):
             raise ValueError('Valley_Dir_Widths must be finite and 0 or more.')
+        if not (np.isfinite(self.edge_margin) and self.edge_margin >= 0.0):
+            raise ValueError('Edge_Margin must be finite and 0 or more.')
         if not np.isfinite(self.shallow_factor) or self.shallow_factor < 1.0:
             raise ValueError('shallow_factor must be finite and >= 1.')
         if not np.isfinite(self.deep_factor) or not 0.0 < self.deep_factor <= 1.0:
