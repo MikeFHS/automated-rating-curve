@@ -78,7 +78,7 @@ class RepresentativeCelerityPowerLawTests(unittest.TestCase):
             assert group.Celerity_K_Power_Law_A.nunique() == 1
             assert group.Celerity_K_Power_Law_p.nunique() == 1
         assert list(frame.columns) == (
-            REPRESENTATIVE_CROSS_SECTION_COLUMNS + REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS[1:]
+            REPRESENTATIVE_CROSS_SECTION_COLUMNS + ['Celerity_K_Power_Law_A', 'Celerity_K_Power_Law_p']
         )
         assert list(build_representative_cross_section_dataframe([]).columns) == list(frame.columns)
 
@@ -133,6 +133,7 @@ class RepresentativeCelerityPowerLawTests(unittest.TestCase):
         coefficients = pd.read_csv(tmp_path / 'representative_exponents.csv')
         assert list(coefficients.columns) == REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS
         assert coefficients.COMID.tolist() == [1]
+        assert coefficients.Cross_Section_Count.tolist() == [1]
         np.testing.assert_allclose(coefficients.Celerity_K_Power_Law_A, 5000., rtol=1e-5)
         np.testing.assert_allclose(coefficients.Celerity_K_Power_Law_p, 1e-8, rtol=1e-5, atol=0)
 

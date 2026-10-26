@@ -45,6 +45,7 @@ REPRESENTATIVE_CROSS_SECTION_COLUMNS = [
 
 REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS = [
     'COMID',
+    'Cross_Section_Count',
     'Celerity_K_Power_Law_A',
     'Celerity_K_Power_Law_p',
 ]
@@ -407,7 +408,10 @@ def build_representative_cross_section_dataframe(
         and 0.10 m depth stage, including repeated per-COMID coefficients for
         internal use. The writer separates those coefficients from the stage CSV.
     """
-    columns = REPRESENTATIVE_CROSS_SECTION_COLUMNS + REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS[1:]
+    columns = REPRESENTATIVE_CROSS_SECTION_COLUMNS + [
+        col for col in REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS
+        if col not in REPRESENTATIVE_CROSS_SECTION_COLUMNS
+    ]
     if not cross_section_data:
         return pd.DataFrame(columns=columns)
 
