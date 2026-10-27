@@ -36,6 +36,7 @@ class Raster:
         self.filepath = Path(filepath)
         if not self.filepath.is_file():
             raise FileNotFoundError(f"Cannot find the raster {self.filepath}.")
+        
         ds = gdal.Open(str(self.filepath), gdal.GA_ReadOnly)
         band = ds.GetRasterBand(1)
         self._geotransform = tuple(float(v) for v in ds.GetGeoTransform())
@@ -119,11 +120,13 @@ class Raster:
             _, _, dy = geod.inv(0.0, latitude, 0.0, latitude + size_y)
             _, _, dx = geod.inv(0.0, latitude, size_x, latitude)
             return abs(float(dx)), abs(float(dy))
+        
         if self.crs.is_projected:
             units = self.axis_units()
             if not units <= _METRES:
                 raise ValueError(f"The raster {self.filepath} is projected in {', '.join(sorted(units))}, not metres.")
             return float(size_x), float(size_y)
+        
         raise ValueError(f"The raster {self.filepath} is neither geographic nor projected.")
 
     def _geod(self) -> Geod:
@@ -133,12 +136,14 @@ class Raster:
             if ellipsoid.inverse_flattening:
                 return Geod(a=ellipsoid.semi_major_metre, rf=ellipsoid.inverse_flattening)
             return Geod(a=ellipsoid.semi_major_metre, b=ellipsoid.semi_minor_metre)  # a sphere
+        
         return Geod(ellps="WGS84")
 
     def same_grid(self, other: Raster, tolerance: float = 1e-6) -> bool:
         """Whether another raster has this one's shape and cells, to within tolerance of a cell."""
         if self.shape != other.shape:
             return False
+        
         size = max(self.resolution)
         return all(abs(a - b) <= tolerance * size for a, b in zip(self._geotransform, other._geotransform))
 
@@ -153,11 +158,13 @@ class Raster:
         where that's exact, so a float32 DEM read as float64 takes its float64 array and no more."""
         dtype = None if dtype is None else np.dtype(dtype)
         with gdal.config_option("GDAL_NUM_THREADS", decode_threads()):
-            ds = gdal.Open(str(self.filepath), gdal.GA_ReadOnly)
-            band = ds.GetRasterBand(1)
+            ds: gdal.Dataset = gdal.Open(str(self.filepath), gdal.GA_ReadOnly)
+            band: gdal.Band = ds.GetRasterBand(1)
             if dtype is not None and dtype != self._dtype and self._dtype in _EXACTLY_AS.get(dtype, ()):
                 return band.ReadAsArray(buf_type=gdal_array.NumericTypeCodeToGDALTypeCode(dtype))
+            
             array = band.ReadAsArray()
+
         return array if dtype is None else array.astype(dtype, copy=False)
 
     @classmethod
@@ -173,15 +180,18 @@ class Raster:
         array = np.asarray(array)
         if array.shape != reference.shape:
             raise ValueError(f"The array is {array.shape}, but the reference raster is {reference.shape}.")
+        
         dtype = array.dtype if dtype is None else np.dtype(dtype)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         driver: gdal.Driver = gdal.GetDriverByName("GTiff")
         if output_path.exists():
             driver.Delete(str(output_path))
+
         options = []
         if compression and compression.upper() != "NONE":
             options += [f"COMPRESS={compression.upper()}", "TILED=YES", f"BLOCKXSIZE={_TILE}", f"BLOCKYSIZE={_TILE}"]
+
         ds = driver.Create(str(output_path), xsize=array.shape[1], ysize=array.shape[0], bands=1,
                            eType=gdal_array.NumericTypeCodeToGDALTypeCode(dtype), options=options)
         ds.SetGeoTransform(reference.geotransform)
@@ -189,6 +199,7 @@ class Raster:
         band = ds.GetRasterBand(1)
         if nodata_value is not None:
             band.SetNoDataValue(float(nodata_value))
+            
         band.WriteArray(array.astype(dtype, copy=False))
         band.FlushCache()
         band = None

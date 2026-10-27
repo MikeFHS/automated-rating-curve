@@ -45,10 +45,9 @@ def fit_power_law(x: np.ndarray, y: np.ndarray, init_guess=(1.0, 1.0)) -> tuple[
 
 
 def _least_squares(x: np.ndarray, y: np.ndarray, init_guess) -> np.ndarray:
-    """a and b, as scipy's curve_fit(_power, x, y, p0=init_guess) fits them: by the MINPACK routine it fits them with,
-    lmdif, given the same residuals, start and settings, so the same numbers, in half the time, without the
-    covariance and the checks on it that curve_fit works out and fit_power_law doesn't keep. As curve_fit, it raises
-    ValueError for values that aren't finite, TypeError for fewer than two of them, and RuntimeError where lmdif
+    """a and b, as scipy's curve_fit(_power, x, y, p0=init_guess) fits them. This function gives the same numbers, 
+    in half the time, without the covariance and the checks on it that curve_fit works out and fit_power_law doesn't keep. 
+    It raises ValueError for values that aren't finite, TypeError for fewer than two of them, and RuntimeError where lmdif
     fails. With a SciPy that doesn't have lmdif where this looks for it, curve_fit itself."""
     try:
         from scipy.optimize._minpack import _lmdif  # here, as importing it takes a quarter of a second
@@ -68,6 +67,7 @@ def _least_squares(x: np.ndarray, y: np.ndarray, init_guess) -> np.ndarray:
                         np.finfo(np.float64).eps, 100, None)
     if info not in (1, 2, 3, 4):
         raise RuntimeError(f"Optimal parameters not found: MINPACK's lmdif returned {info}.")
+    
     return popt
 
 
@@ -137,6 +137,7 @@ def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFram
         if matching.empty:
             LOG.warning(f"No matching BaseElev values found for COMID {comid}. Skipping...")
             continue
+
         aligned = group.set_index(["Row", "Col"]).join(matching.set_index(["Row", "Col"])["BaseElev"], how="inner")
         depth = np.concatenate([aligned[c].values - aligned["BaseElev"].values for c in wse_columns])
         q = np.concatenate([group[c].values for c in q_columns])
@@ -149,6 +150,7 @@ def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFram
         except Exception as e:
             LOG.warning(f"Regression failed for COMID {comid}: {e}")
             tw_a = tw_b = vel_a = vel_b = depth_a = depth_b = np.nan
+            
         fits['COMID'].append(comid)
         for name, value in (('depth_a', depth_a), ('depth_b', depth_b), ('tw_a', tw_a), ('tw_b', tw_b),
                             ('vel_a', vel_a), ('vel_b', vel_b)):

@@ -11,8 +11,7 @@ of more than one cross section (the low spot can move two onto one cell) takes t
 ordinates whose ground the carve changed, and the centre, are burned, and nothing of a cross section the carve left as
 it was (or that wasn't carved): its centre takes whatever its neighbours burn there, or the gap fill.
 
-Once every cross section is burned in, fill_bathymetry_gaps (or fill_sparse_gaps, on the sparse raster Burns makes,
-as arc.pipeline does) fills each cell without bathymetry that has some in at least four of the eight cells around it
+Once every cross section is burned in, fill_sparse_gaps fills each cell without bathymetry that has some in at least four of the eight cells around it
 with their mean. Without Bathy_Use_Banks the channel should only lower the ground, so given the DEM it first drops
 cells whose bathymetry is above the ground (on a cross section at an angle the ordinates are interpolated, so a cell's
 own ground can be lower than the ordinate), and doesn't fill a gap above the ground either.
@@ -24,7 +23,7 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
-from arc.xsection.sampling import OFF_RASTER_ELEVATION, _compute_dem_coordinates
+from arc.xsection.sampling import OFF_RASTER_ELEVATION
 
 GAP_NEIGHBOURS = 4  # a gap is filled if at least this many of the eight cells around it have bathymetry
 
@@ -49,6 +48,7 @@ def _ordinate_cells(row, col, cos, sin, spacing, half, dx, dy):
         x = spacing * k
         cols[k + half] = np.intp(np.rint(col + cos * x / dx))
         rows[k + half] = np.intp(np.rint(row + sin * x / dy))
+
     return rows, cols
 
 
@@ -81,6 +81,7 @@ def _burn_cell(raster, r, c, elevation, centre, count):
         return count  # a centre's cell
     else:
         count += 1
+
     current = raster[r, c]
     raster[r, c] = elevation if abs(count) == 1 else current + (elevation - current) / abs(count)
     return count
@@ -89,10 +90,11 @@ def _burn_cell(raster, r, c, elevation, centre, count):
 @njit(cache=True, error_model="numpy")
 def burn_into_raster(raster, burns, rows, cols, elevations, changed):
     """Burn a carved cross section into the bathymetry raster: its changed ordinates' elevations, and its centre's,
-    changed or not (see the notes above), unless the carve changed nothing. burns, an int32 array the shape of the
+    changed or not (see the notes above), unless the carve changed nothing. `burns`, an int32 array the shape of the
     raster that starts at 0, keeps each cell's count for the means, so pass the same one for every cross section."""
     if not changed.any():
         return
+    
     centre = elevations.size // 2
     for k in range(elevations.size):
         if not (changed[k] or k == centre):
@@ -137,6 +139,7 @@ class Burns:
         """The raster with them all burned in."""
         if not self._cells:
             return SparseRaster(self.shape, np.empty(0, np.int64), np.empty(0, np.float32))
+        
         cells = np.concatenate(self._cells)
         return SparseRaster(self.shape, *_burned_values(cells, np.concatenate(self._elevations),
                                                         np.concatenate(self._centres),
@@ -152,6 +155,7 @@ def _ordinates_to_burn(rows, cols, elevations, changed, nrows, ncols):
     centres = np.zeros(size, np.bool_)
     if not changed.any():
         return cells[:0], values[:0], centres[:0]
+    
     centre = size // 2
     count = 0
     for k in range(size):
@@ -163,6 +167,7 @@ def _ordinates_to_burn(rows, cols, elevations, changed, nrows, ncols):
             values[count] = elevations[k]
             centres[count] = k == centre
             count += 1
+
     return cells[:count], values[:count], centres[:count]
 
 
@@ -184,18 +189,18 @@ def _burned_values(cells, elevations, centres, order):
             cell[0, 0] = np.nan
             count = 0  # a cell not yet burned
         count = _burn_cell(cell, 0, 0, elevations[j], centres[j], count)
+
     if order.size:
         values[n] = cell[0, 0]
         n += 1
+
     return burned[:n], values[:n]
 
 
 def fill_sparse_gaps(raster: SparseRaster, dem: np.ndarray | None = None) -> SparseRaster:
-    """fill_bathymetry_gaps, on a sparse raster: the same raster as it gives, without the whole raster.
-
+    """
     Without Bathy_Use_Banks, pass the DEM, whose cells at or above OFF_RASTER_ELEVATION have no ground and others the
-    ground their elevation as float32 holds it, the same ground as fill_bathymetry_gaps given the DEM as float32 with
-    NaN for no ground."""
+    ground their elevation as float32 holds it"""
     rows, cols = raster.shape
     below_ground = dem is not None
     cells, values = _sparse_fill(rows, cols, raster.cells, raster.values,
@@ -233,6 +238,7 @@ def _sparse_fill(rows, cols, cells, values, dem, below_ground):
     for i in range(cells.size):
         keep[i] = not np.isnan(values[i]) and not (
             below_ground and values[i] > _ground(dem, cells[i] // cols, cells[i] % cols))
+        
     cells, values = cells[keep], values[keep]
     n = cells.size
     # Where each row's cells start among them (they're in order), for the rows that have any
@@ -245,6 +251,7 @@ def _sparse_fill(rows, cols, cells, values, dem, below_ground):
             present[count] = row_of[i]
             starts[count] = i
             count += 1
+
     starts[count] = n
     present = present[:count]
     # The rows above, at and below the one being filled, as whole rows of NaN but at their cells
@@ -262,15 +269,19 @@ def _sparse_fill(rows, cols, cells, values, dem, below_ground):
         if r < 0 or r >= rows:
             r += 1
             continue
+
         # Move the buffers down a row: each holds row r - 1, r and r + 1's cells
         while p < count and present[p] < r - 1:
             p += 1
+
         wanted = np.full(3, -1, np.int64)
         for q in range(p, min(p + 3, count)):
             if r - 1 <= present[q] <= r + 1:
                 wanted[present[q] - (r - 1)] = q
+
         if loaded[0] >= 0:
             _clear_row(above, cells, starts[loaded[0]], starts[loaded[0] + 1], cols)
+
         above, here, below = here, below, above
         loaded[0], loaded[1], loaded[2] = loaded[1], loaded[2], -1
         for slot in range(3):
@@ -281,20 +292,24 @@ def _sparse_fill(rows, cols, cells, values, dem, below_ground):
                 if wanted[slot] >= 0:
                     _load_row(buffer, cells, values, starts[wanted[slot]], starts[wanted[slot] + 1], cols)
                 loaded[slot] = wanted[slot]
+
         if loaded[0] < 0 and loaded[1] < 0 and loaded[2] < 0:
             # No cell near this row: skip ahead to the row before the next one with cells
             r = max(r + 1, present[p] - 1) if p < count else last_row + 1
             continue
+
         # The gaps in row r beside a cell with bathymetry
         for slot in range(3):
             q = loaded[slot]
             if q < 0:
                 continue
+
             for i in range(starts[q], starts[q + 1]):
                 c0 = cells[i] % cols
                 for c in range(max(c0 - 1, 0), min(c0 + 2, cols)):
                     if seen[c] == r or not np.isnan(here[c]):
                         continue
+
                     seen[c] = r
                     # As _fill_gaps: the neighbours summed row by row
                     neighbours = 0
@@ -302,17 +317,21 @@ def _sparse_fill(rows, cols, cells, values, dem, below_ground):
                     for rr in range(3):
                         if not 0 <= r - 1 + rr < rows:
                             continue
+
                         buffer = above if rr == 0 else (here if rr == 1 else below)
                         for cc in range(max(c - 1, 0), min(c + 2, cols)):
                             value = buffer[cc]
                             if not np.isnan(value):
                                 neighbours += 1
                                 total += value
+
                     if neighbours < GAP_NEIGHBOURS:
                         continue
+
                     fill = np.float32(total / neighbours)
                     if below_ground and fill > _ground(dem, r, c):
                         continue
+
                     filled[nfills] = r * cols + c
                     fills[nfills] = fill
                     nfills += 1
@@ -365,6 +384,7 @@ def _fill_gaps(bathymetry, ground, below_ground):
             fills[c] = np.nan
             if not np.isnan(bathymetry[r, c]) or counts[c] + counts[c + 1] + counts[c + 2] < GAP_NEIGHBOURS:
                 continue
+
             count = 0
             total = 0.0
             # The neighbours summed row by row
@@ -374,36 +394,12 @@ def _fill_gaps(bathymetry, ground, below_ground):
                     if not np.isnan(value):
                         count += 1
                         total += value
+
             fills[c] = total / count
             if below_ground and fills[c] > ground[r, c]:
                 fills[c] = np.nan
         _count_row(bathymetry, r - 1, counts, -1)  # as it was, before it takes its fills
         _write_row(bathymetry, r - 1, pending)
         fills, pending = pending, fills
+
     _write_row(bathymetry, rows - 1, pending)
-
-
-def fill_bathymetry_gaps(bathymetry: np.ndarray, ground: np.ndarray | None = None) -> np.ndarray:
-    """Fill the gaps in a bathymetry raster in place, and return it.
-
-    A cell without bathymetry (NaN) that has it in at least four of the eight cells around it gets their mean. Every
-    gap is filled from the raster as it was, so a gap filled doesn't help fill another. Beyond the raster's edge
-    counts as no bathymetry.
-
-    Without Bathy_Use_Banks, pass the DEM as ground. The channel then only lowers the ground, so cells above it are
-    dropped first, and a gap isn't filled above the ground there.
-    """
-    bathymetry = np.asarray(bathymetry)
-    if bathymetry.ndim != 2:
-        raise ValueError("Bathymetry NaN filling requires a 2-D array.")
-    if not np.issubdtype(bathymetry.dtype, np.floating):
-        raise TypeError("Bathymetry NaN filling requires a floating array.")
-    if ground is None:
-        _fill_gaps(bathymetry, bathymetry, False)
-        return bathymetry
-    ground = np.asarray(ground)
-    if ground.shape != bathymetry.shape:
-        raise ValueError(f"The ground is {ground.shape} but the bathymetry {bathymetry.shape}.")
-    _drop_above(bathymetry, ground)
-    _fill_gaps(bathymetry, ground, True)
-    return bathymetry

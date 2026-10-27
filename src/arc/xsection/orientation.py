@@ -40,6 +40,7 @@ def stream_direction(streams, row, col, distance, dx, dy):
     """
     if not streams[row, col] > 0:
         raise ValueError("The cell isn't a stream cell.")
+    
     reach = streams[row, col]
     first_row, last_row = max(row - distance, 0), min(row + distance, streams.shape[0] - 1)
     first_col, last_col = max(col - distance, 0), min(col + distance, streams.shape[1] - 1)
@@ -56,6 +57,7 @@ def stream_direction(streams, row, col, distance, dx, dy):
                 sxx += x * x
                 syy += y * y
                 sxy += x * y
+
     return _principal_axis(n, sx, sy, sxx, syy, sxy)
 
 
@@ -79,6 +81,7 @@ def reach_direction(rows, cols, row, col, distance, dx, dy):
             sxx += x * x
             syy += y * y
             sxy += x * y
+
     return _principal_axis(n, sx, sy, sxx, syy, sxy)
 
 
@@ -87,10 +90,12 @@ def _principal_axis(n, sx, sy, sxx, syy, sxy):
     """The direction of the principal axis of n cells' positions, given their sums, or pi / 2 for fewer than 2."""
     if n < 2:
         return np.pi / 2
+    
     # The principal axis of the cells' positions, from their covariances
     direction = 0.5 * math.atan2(2.0 * (sxy - sx * sy / n), (sxx - sx * sx / n) - (syy - sy * sy / n))
     if direction < 0.0:
         direction += np.pi
+
     return direction
 
 
@@ -101,6 +106,7 @@ def angle_offsets(degree_manipulation: float, degree_interval: float) -> np.ndar
     if degree_manipulation > 0.0 and degree_interval > 0.0:
         for step in range(1, int(degree_manipulation / (2.0 * degree_interval)) + 1):
             offsets += [-step * degree_interval, step * degree_interval]
+
     return np.multiply(offsets, math.pi / 180.0)
 
 
@@ -122,12 +128,15 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
         offset = offset % np.pi
         if offset > np.pi / 2:
             offset -= np.pi
+
         repeat = False
         for j in range(count):
             if abs(tried[j] - offset) < _SAME_DIRECTION:
                 repeat = True
+
         if repeat:
             continue
+
         cos, sin, spacing, half = _ordinates(stream_direction + offset, cross_section_length, dx, dy)
         center_elevation = ordinate_value(dem, row, col, cos, sin, spacing, 0, dx, dy, stored)
         wse = center_elevation + test_depth
@@ -151,11 +160,14 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
                 if not wse > z:
                     width = spacing * ((k - 1) + (wse - z_in) / (z - z_in))
                     edge = True
+
                 z_in = z
+
             if not edge:
                 width = spacing * half  # the water reaches the end of the cross section
             if k == half:
                 reach_known = True
+
             reach = spacing * on_raster
             # Water that reaches the raster's edge, or data it can't see past, spans at least the reach. Where the
             # reach isn't known yet, every ordinate out to the water's edge is on the raster, so it's no narrower
@@ -163,6 +175,7 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
             reaches[count, side] = reach
             known[count, side] = reach_known
             walked[count, side] = k
+
         tried[count] = offset
         cosines[count], sines[count], spacings[count], halves[count] = cos, sin, spacing, half
         count += 1
@@ -181,6 +194,7 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
                 if not z < OFF_RASTER_ELEVATION:
                     break
                 k += 1
+
             reaches[j, side] = spacings[j] * k
 
     left_limit, right_limit = reaches[:count, 0].min(), reaches[:count, 1].min()
@@ -189,6 +203,7 @@ def _narrowest_direction(dem, row, col, stream_direction, cross_section_length, 
         width = min(widths[j, 0], left_limit) + min(widths[j, 1], right_limit)
         if width < narrowest:
             best, narrowest = j, width
+
     return stream_direction + tried[best]
 
 
@@ -200,13 +215,13 @@ def narrowest_direction(dem: np.ndarray, row: int, col: int, stream_direction: f
 
     The arguments are sample_cross_section's. Each side's width is compared only as far out as every direction's
     cross section reaches on that side (the raster's edge, or the first ordinate without data, can be nearer than its
-    end). Of
-    directions equally narrow, the first offset wins, so with angle_offsets the direction the search started from.
+    end). Of directions equally narrow, the first offset wins, so with angle_offsets the direction the search started from.
     An offset of more than a quarter turn either way is taken half a turn round, which is the same cross section with
-    its sides swapped. like, an array, samples the DEM as arc.xsection.sampling.sample_elevations does with it.
+    its sides swapped. `like`, an array, samples the DEM as arc.xsection.sampling.sample_elevations does with it.
     """
     offsets = np.asarray(offsets, dtype=np.float64).ravel()
     if offsets.size == 0 or (offsets.size == 1 and offsets[0] == 0.0):
         return float(stream_direction)
+    
     return float(_narrowest_direction(dem, int(row), int(col), float(stream_direction), float(cross_section_length),
                                       float(dx), float(dy), offsets, float(test_depth), like))

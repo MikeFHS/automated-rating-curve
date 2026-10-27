@@ -9,14 +9,10 @@ The carve does two things. The ordinates between the banks, the banks included, 
 Those are what the bathymetry raster and the cross-section file get, so a channel narrower than a cell sets just its
 stream cell, to the bed. And the cross section gets the channel's exact profile (XSection.profile), for the
 hydraulics: the ground outside the banks, the channel's corners between them, and the ground running straight from
-each bank's top out to the first ordinate beyond it, as it ran between ordinates before. On the ordinates alone a
-channel couldn't be narrower than two spacings, and a trapezoid a few spacings wide came out another shape: one two
-spacings wide was a triangle, with 5/8 of the area of the trapezoid its depth was solved for (at a trapezoid height of
-0.2).
+each bank's top out to the first ordinate beyond it.
 
-Without bank elevations the reference level is the stream cell's elevation, and the channel only ever lowers the
-ground. Legacy didn't carve a depth of 25 m or more there; any depth is carved here. With bank elevations
-(Bathy_Use_Banks) the reference level is the bank elevation given, and the channel sets the ground whether that raises
+Without bank elevations (Bathy_Use_Banks) the reference level is the stream cell's elevation, and the channel only ever lowers the
+ground. With bank elevations the reference level is the bank elevation given, and the channel sets the ground whether that raises
 or lowers it.
 """
 from __future__ import annotations
@@ -43,6 +39,7 @@ def _channel_elevation(offset, left, right, reference, bed, depth, slope_width, 
     to_bank = max(min(offset + left, right - offset), 0.0)  # the distance to the nearer bank
     if slope_width > 0.0:
         return bed + depth * max(1.0 - to_bank / slope_width, 0.0)
+    
     return reference if to_bank <= tolerance else bed  # a rectangle: the banks are its top
 
 
@@ -120,6 +117,7 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
             if -left + tolerance < offset < right - tolerance:
                 candidates[count] = offset
                 count += 1
+
     inside = np.sort(candidates[:count])
     points = np.empty(count + 2)
     points[0] = -left
@@ -128,6 +126,7 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
         if inside[i] != points[total - 1]:
             points[total] = inside[i]
             total += 1
+
     points[total] = right
     total += 1
 
@@ -163,9 +162,11 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
         elevation = min(channel[i], channel[i] - below[i]) if lower_only else channel[i]
         vertices = _push(middle_stations, middle, middle_n, vertices, points[i], elevation,
                          _n_at(mannings_n, center, spacing, points[i], tolerance))
+        
     bank_top = _channel_elevation(right, left, right, reference, bed, depth, slope_width, tolerance)
     if lower_only:
         bank_top = min(bank_top, channel[total - 1] - below[total - 1])
+
     vertices = _push(middle_stations, middle, middle_n, vertices, right, bank_top,
                      _n_at(mannings_n, center, spacing, right, tolerance))
 
@@ -177,6 +178,7 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
     n = np.empty(length)
     for k in range(first):
         stations[k] = (k - center) * spacing
+
     profile[:first] = ground[:first]
     n[:first] = mannings_n[:first]
     stations[first:first + vertices] = middle_stations[:vertices]
@@ -184,12 +186,14 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
     n[first:first + vertices] = middle_n[:vertices]
     for k in range(outside):
         stations[first + vertices + k] = (last + 1 + k - center) * spacing
+
     profile[first + vertices:] = ground[last + 1:]
     n[first + vertices:] = mannings_n[last + 1:]
 
     stream_cell = first  # always among the points, strictly between the banks
     while stream_cell < length - 1 and stations[stream_cell] != 0.0:
         stream_cell += 1
+
     return stations, profile, n, stream_cell
 
 
@@ -217,6 +221,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
                                left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
     if f == 0.0:
         return guess
+    
     step = 0.25
     if f < 0.0:
         lo, f_lo = u, f
@@ -226,6 +231,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
         while f_hi < 0.0:
             if hi > _MAX_LOG_DEPTH:
                 return math.nan
+            
             lo, f_lo = hi, f_hi
             step *= 2.0
             hi = lo + step
@@ -240,6 +246,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
         while f_lo > 0.0:
             if lo < _MIN_LOG_DEPTH:
                 return MIN_DEPTH  # the ground below the level carries the flow already
+            
             hi, f_hi = lo, f_lo
             step *= 2.0
             lo = hi - step
@@ -250,6 +257,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
         return math.exp(hi)
     if f_lo == 0.0:
         return math.exp(lo)
+    
     side = 0
     for _ in range(200):
         if math.isfinite(f_lo) and math.isfinite(f_hi):
@@ -260,6 +268,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
                                    lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
         if abs(f) <= 1e-13 or hi - lo <= 1e-13 * (1.0 + abs(u)):
             break
+
         if f < 0.0:
             lo, f_lo = u, f
             if side == -1:
@@ -270,6 +279,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
             if side == 1:
                 f_lo *= 0.5
             side = 1
+
     return math.exp(u)
 
 
@@ -293,6 +303,7 @@ def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: floa
     if not (carved.valid and math.isfinite(reference) and carved.left > 1e-9 * spacing
             and carved.right > 1e-9 * spacing and xs.mannings_n.size == elevations.size):
         return guess
+    
     left_bank, right_bank = (float(banks.left), float(banks.right)) if banks.valid else (-1.0, -1.0)
     target = math.log(q / (math.sqrt(slope) * _check_slope_factor(slope_factor)))
     return float(_carved_depth(elevations, np.asarray(xs.mannings_n, dtype=np.float64), spacing, float(carved.left),
@@ -316,15 +327,19 @@ def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height:
     changed = np.zeros(elevations.size, dtype=bool)
     if xs.mannings_n.size != elevations.size:
         raise ValueError("Carving a channel needs the cross section's Manning's n, for its profile.")
+    
     reference = float(elevations[center]) if bank_elevation is None else float(bank_elevation)
     if not (math.isfinite(depth) and math.isfinite(reference)):
         return changed
+    
     if not banks.valid:
         banks = single_cell_banks(xs)
         if not banks.valid:
             return changed
+        
     if not (banks.left > 1e-9 * spacing and banks.right > 1e-9 * spacing):
         return changed  # no width either side of the stream cell to carve
+    
     left, right, lower_only = float(banks.left), float(banks.right), bank_elevation is None
     stations, profile, n, stream_cell = _channel_profile(elevations, xs.mannings_n, spacing, left, right, reference,
                                                          float(depth), trapezoid_height, lower_only)

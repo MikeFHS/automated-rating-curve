@@ -38,7 +38,7 @@ from numba import njit
 
 from arc.xsection.stream_path import _columns_between, _row_index
 
-MIN_SLOPE = 1e-5  # legacy's floor was 1e-4, which made level stretches steeper than the DEM shows
+MIN_SLOPE = 1e-5
 MAX_SLOPE = 0.5
 NO_DATA = -9999.0  # an elevation at or below this is missing
 
@@ -75,15 +75,18 @@ def _local_average_slopes(z, rows, cols, stations, dx, dy, distance):
                 if length > 0.0:
                     total += abs(z[i] - z[k]) / length
                     count += 1
+
         if count == 0:  # no other cell of the reach near enough to measure a slope to
             slopes[i] = np.nan
             continue
+
         slope = total / count
         if slope <= MIN_SLOPE:
             slope = MIN_SLOPE
         if slope >= MAX_SLOPE:
             slope = MAX_SLOPE
         slopes[i] = slope
+
     return slopes
 
 
@@ -103,17 +106,20 @@ def _pair_slopes(z, rows, cols, stations, dx, dy, distance):
                                       cols[i] - distance, cols[i] + distance)
             if row == rows[i]:
                 lo = p + 1  # in the cell's own row only the cells after it, so that each pair counts once
+
             for q in range(lo, hi):
                 k = order[q]
                 length = _between(rows, cols, stations, dx, dy, i, k)
                 if length == 0.0:
                     continue
+
                 slope = np.rint(abs(z[i] - z[k]) / length * 1e8) / 1e8  # np.round(..., 8), without its pow
                 if slope > 0.0:
                     if size == slopes.size:
                         slopes = np.concatenate((slopes, np.empty(slopes.size)))
                     slopes[size] = slope
                     size += 1
+
     return slopes[:size]
 
 
@@ -122,8 +128,10 @@ def _round_significant(x, digits):
     """x rounded to `digits` significant figures."""
     if x == 0.0:
         return 0.0
+    
     if not np.isfinite(x):
         return x
+    
     factor = 10.0 ** (digits - 1 - int(math.floor(math.log10(abs(x)))))
     return math.floor(x * factor + 0.5) / factor
 
@@ -132,9 +140,11 @@ def _round_significant(x, digits):
 def _reach_median_slope(z, rows, cols, stations, dx, dy, distance, low, high):
     if rows.size < 2:
         return np.nan, np.nan, np.nan
+    
     slopes = _pair_slopes(z, rows, cols, stations, dx, dy, distance)
     if slopes.size == 0:
         return np.nan, np.nan, np.nan
+    
     # The percentiles are of the slopes rounded to 8 significant figures. That changes nothing below 1, where the
     # slopes already have 8 decimals, so only those above need it
     rounded = slopes
@@ -143,6 +153,7 @@ def _reach_median_slope(z, rows, cols, stations, dx, dy, distance, low, high):
         for k in range(slopes.size):
             if slopes[k] >= 1.0:
                 rounded[k] = _round_significant(slopes[k], 8)
+
     percentiles = np.percentile(rounded, np.array([low, high]))
     lower, upper = np.round(percentiles[0], 8), np.round(percentiles[1], 8)
     kept = np.empty(slopes.size)
@@ -151,8 +162,10 @@ def _reach_median_slope(z, rows, cols, stations, dx, dy, distance, low, high):
         if lower <= slope <= upper:
             kept[count] = slope
             count += 1
+
     if count == 0:  # two slopes, neither between their percentiles
         return np.median(slopes), lower, upper
+    
     return np.median(kept[:count]), lower, upper
 
 
@@ -166,6 +179,7 @@ def _fitted_line_slope(s, z, lo, hi):
     for k in range(lo, hi):
         mean_s += s[k]
         mean_z += z[k]
+
     mean_s /= n
     mean_z /= n
     sxx = 0.0
@@ -174,6 +188,7 @@ def _fitted_line_slope(s, z, lo, hi):
         ds = s[k] - mean_s
         sxx += ds * ds
         sxz += ds * (z[k] - mean_z)
+
     return sxz / sxx if sxx > 0.0 else np.nan
 
 
@@ -187,8 +202,10 @@ def _local_fit_slopes(z, stations, distance):
         if math.isfinite(z[i]) and math.isfinite(stations[i]):
             index[count] = i
             count += 1
+
     if count < 2:
         return slopes, np.nan
+    
     index = index[:count]
     order = index[np.argsort(stations[index], kind="mergesort")]
     s = stations[order]
@@ -196,6 +213,7 @@ def _local_fit_slopes(z, stations, distance):
     whole = _fitted_line_slope(s, elevations, 0, count)
     if math.isnan(whole):
         return slopes, np.nan
+    
     width = min(2 * distance + 1, count)
     for p in range(count):
         lo = min(max(p - distance, 0), count - width)
@@ -205,6 +223,7 @@ def _local_fit_slopes(z, stations, distance):
         # The fall per metre the way the reach's line falls
         fall = -m if whole < 0.0 else (m if whole > 0.0 else abs(m))
         slopes[order[p]] = min(max(fall, MIN_SLOPE), MAX_SLOPE)
+
     return slopes, min(max(abs(whole), MIN_SLOPE), MAX_SLOPE)
 
 
@@ -216,19 +235,21 @@ def _reach_arrays(z, rows, cols, stations):
     if not rows.ndim == 1 or not rows.shape == cols.shape == z.shape == stations.shape:
         raise ValueError(f"z, rows, cols and stations must be 1-D and the same length, not {z.shape}, {rows.shape}, "
                          f"{cols.shape} and {stations.shape}.")
+    
     return z, rows, cols, stations
 
 
 def local_average_slopes(z, rows, cols, stations, dx: float, dy: float, distance: int) -> np.ndarray:
     """Each of a reach's cells' slope, the mean of its slopes to the reach's other cells within `distance` cells of
-    it along each axis, from 0.00001 to 0.5. NaN for a cell with no other cell that near.
+    it along each axis, from `MIN_SLOPE` to `MAX_SLOPE`. NaN for a cell with no other cell that near.
 
-    z is the DEM at the cells, rows and cols are the cells, which should be all of the reach's cells, and stations are
+    `z` is the DEM at the cells, rows and cols are the cells, which should be all of the reach's cells, and stations are
     their distances along the stream from one end (along_stream_stations).
     """
     z, rows, cols, stations = _reach_arrays(z, rows, cols, stations)
     if rows.size == 0:
         return np.empty(0)
+    
     return _local_average_slopes(z, rows, cols, stations, float(dx), float(dy), int(distance))
 
 
@@ -239,11 +260,11 @@ def local_fit_slopes(z, stations, distance: int) -> tuple[np.ndarray, float]:
     A cell's line is the least-squares fit of elevation against station through the 2 * distance + 1 cells nearest
     it along the stream: itself and `distance` either side, or more on one side near the reach's ends, so that every
     line has as many cells while the reach has them. The reach's line goes through all of its cells. A slope is the
-    line's fall per metre the way the reach's line falls, kept between 0.00001 and 0.5, so a stretch rising against
+    line's fall per metre the way the reach's line falls, kept between `MIN_SLOPE` and `MAX_SLOPE`, so a stretch rising against
     the reach takes the least slope. A rise between cells offsets a fall, where the methods that average slopes
     between pairs of cells count both as falls.
 
-    z is the DEM at the cells, NaN where it has no data (those cells are left out, and get NaN), and stations are their
+    `z` is the DEM at the cells, NaN where it has no data (those cells are left out, and get NaN), and stations are their
     distances along the stream from one end (along_stream_stations). All NaN for a reach with fewer than two cells
     with elevations, or whose cells all share one station.
     """
@@ -251,8 +272,10 @@ def local_fit_slopes(z, stations, distance: int) -> tuple[np.ndarray, float]:
     stations = np.asarray(stations, dtype=np.float64)
     if not z.ndim == 1 or z.shape != stations.shape:
         raise ValueError(f"z and stations must be 1-D and the same length, not {z.shape} and {stations.shape}.")
+    
     if int(distance) < 1:
         raise ValueError(f"distance must be at least 1 cell, not {distance!r}.")
+    
     slopes, reach_slope = _local_fit_slopes(z, stations, int(distance))
     return slopes, float(reach_slope)
 
@@ -269,6 +292,7 @@ def reach_median_slope(z, rows, cols, stations, dx: float, dy: float, distance: 
     z, rows, cols, stations = _reach_arrays(z, rows, cols, stations)
     if rows.size == 0:
         return math.nan, math.nan, math.nan
+    
     slope, lower, upper = _reach_median_slope(z, rows, cols, stations, float(dx), float(dy), int(distance),
                                               float(low_percentile), float(high_percentile))
     return float(slope), float(lower), float(upper)
@@ -286,6 +310,7 @@ def main_stem_above(network: nx.DiGraph, reach: int, among=None) -> int | None:
     upstream = [p for p in network.predecessors(reach) if among is None or p in among]
     if not upstream:
         return None
+    
     return max(upstream, key=lambda p: (len(nx.ancestors(network, p)), -p))
 
 
@@ -304,6 +329,7 @@ def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict) -> set:
         for reach in sorted(unresolved):
             if reach not in network:
                 continue
+
             main_stem = main_stem_above(network, reach, slopes.keys() - unresolved)
             downstream = [s for s in network.successors(reach) if s in slopes and s not in unresolved]
             neighbour_slopes = []
@@ -313,6 +339,7 @@ def fill_unresolved_reach_slopes(network: nx.DiGraph, slopes: dict) -> set:
                 neighbour_slopes.append(slopes[downstream[0]])
             if neighbour_slopes:
                 filled[reach] = sum(neighbour_slopes) / len(neighbour_slopes)
+
         if not filled:
             return unresolved
         slopes.update(filled)
@@ -323,7 +350,7 @@ def end_point_slope(line, length: float, dem: np.ndarray, geotransform) -> float
     """The drop between the ends of a reach's line over its length in metres, at least 0.00001 (the end_points
     method).
 
-    line is a shapely LineString or MultiLineString in the DEM's coordinates, of which only the longest part counts.
+    `line` is a shapely LineString or MultiLineString in the DEM's coordinates, of which only the longest part counts.
     geotransform is the DEM's GDAL geotransform, north-up or south-up but not rotated. Each end is the DEM at the
     cell holding it, and an end off the raster or without data (at or below -9999, or NaN) moves along the line, 2% of
     its length at a time, to the first point with data, which shortens the length between them. NaN if no point has
@@ -333,12 +360,14 @@ def end_point_slope(line, length: float, dem: np.ndarray, geotransform) -> float
 
     if line is None or line.is_empty or not length > 0.0:
         return math.nan
+    
     if isinstance(line, MultiLineString):
         whole = line.length
         line = max(line.geoms, key=lambda part: part.length)
         length *= line.length / whole
     elif not isinstance(line, LineString):
         line = LineString(line)
+
     if len(line.coords) < 2:
         return math.nan
 
@@ -346,9 +375,11 @@ def end_point_slope(line, length: float, dem: np.ndarray, geotransform) -> float
     z_end, end = _first_elevation_along(LineString(line.coords[::-1]), dem, geotransform)
     if math.isnan(z_start) or math.isnan(z_end):
         return math.nan
+    
     along = (1.0 - end - start) * length
     if not along > 0.0:
         return math.nan
+    
     return max(round(abs(z_end - z_start) / along, 8), MIN_SLOPE)
 
 
@@ -361,6 +392,7 @@ def _first_elevation_along(line, dem, geotransform, step=0.02) -> tuple[float, f
         z = _elevation_at(point.x, point.y, dem, geotransform)
         if not math.isnan(z):
             return z, fraction
+        
     return math.nan, math.nan
 
 

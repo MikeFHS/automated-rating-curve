@@ -66,6 +66,7 @@ def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
         return 0.0
     if not slope > 0.0 or not mannings_n > 0.0:
         return math.nan
+    
     target = math.log(q * mannings_n / math.sqrt(slope))
 
     # Start from shallow water across the whole top width W, where A = W_mean * y and P is about W, so that
@@ -88,6 +89,7 @@ def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
         u, converged = _newton_or_bisect(u, error / (y * slope_in_y), u_lo, u_hi)
         if converged or not math.isfinite(u):
             break
+
     return math.exp(u)
 
 
@@ -109,11 +111,13 @@ def channel_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezo
         carved = single_cell_banks(xs)
         if not carved.valid:
             return 0.0
+        
     top_width = carved.top_width
     guess = float(trapezoid_depth(q, top_width * (1.0 - 2.0 * trapezoid_height), top_width,
                                   slope * float(slope_factor) ** 2, mannings_n))
     if not 0.0 < guess < math.inf:
         return guess
+    
     from arc.bathymetry.channel import carved_depth  # which imports this module
     return carved_depth(xs, banks, q, slope, guess, trapezoid_height=trapezoid_height, roughness=roughness,
                         slope_factor=slope_factor, bank_elevation=bank_elevation)
@@ -127,6 +131,7 @@ def bathymetry_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trap
     or otherwise channel_depth for the baseflow, which applies only with baseflow."""
     if target_depth is not None and math.isfinite(target_depth) and target_depth > 0.0:
         return BathymetryDepth(float(target_depth), True, "target_depth")
+    
     depth = channel_depth(xs, banks, q, slope, trapezoid_height=trapezoid_height, mannings_n=mannings_n,
                           roughness=roughness, slope_factor=slope_factor, bank_elevation=bank_elevation)
     return BathymetryDepth(depth, bool(q > 0.0), "baseflow_manning")
@@ -142,6 +147,7 @@ def power_law_geometry(drainage_area: float, coefficient_depth: float | None, ex
     width = None
     if coefficient_width is not None and exponent_width is not None:
         width = float(coefficient_width * drainage_area ** exponent_width)
+
     return depth, width
 
 
@@ -149,4 +155,5 @@ def _check_trapezoid_height(trapezoid_height: float) -> float:
     """The share of the top width each sloping side takes: at most a half, when the trapezoid becomes a triangle."""
     if not 0.0 <= trapezoid_height <= 0.5:
         raise ValueError(f"trapezoid_height must be between 0 and 0.5, not {trapezoid_height!r}.")
+    
     return float(trapezoid_height)

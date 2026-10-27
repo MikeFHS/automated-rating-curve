@@ -25,9 +25,6 @@ _ROUGHNESS = ('Manning_N_Raster1', 'Manning_N_Raster2')
 _PARQUET_SCHEMA = pa.schema([(name, pa.list_(pa.float64()) if name in _PROFILES + _ROUGHNESS
                               else pa.float64() if name == 'Ordinate_Dist' else pa.int64())
                              for name in XS_EXPORT_COLUMNS])
-# The elevations' bytes split into streams (their high bytes barely change along a profile) and the n values, which
-# take a few values, dictionary-encoded, then zstd: a 1° tile's 43,000 cross sections take 43 MB, against 131 MB of
-# text. A list's values are addressed by their path, '<column>.list.element'; the bare name is silently ignored.
 _PARQUET_OPTIONS = dict(compression='zstd', compression_level=3,
                         use_byte_stream_split=[f'{name}.list.element' for name in _PROFILES],
                         use_dictionary=[name for name in XS_EXPORT_COLUMNS if name not in _PROFILES + _ROUGHNESS]
@@ -62,10 +59,12 @@ def format_array(values: np.ndarray) -> str:
     values = np.asarray(values)
     if values.ndim != 1 or not np.issubdtype(values.dtype, np.floating) or values.size == 0:
         return _array2string(values)
+    
     finite = np.isfinite(values)
     finite_values = values[finite]
     if finite_values.size == 0:
         return _array2string(values)
+    
     magnitudes = np.abs(finite_values[finite_values != 0])
     if magnitudes.size:
         largest, smallest = magnitudes.max(), magnitudes.min()
@@ -73,6 +72,7 @@ def format_array(values: np.ndarray) -> str:
             if largest >= 10.0 ** min(8, np.finfo(values.dtype).precision) or smallest < 0.0001 \
                     or largest / smallest > 1000.0:
                 return _array2string(values)
+            
     texts = ['%.6f' % x for x in values.tolist()]
     whole = max(len(text) - 7 for text, is_finite in zip(texts, finite) if is_finite)  # the part before '.'
     width = whole + 7
@@ -81,6 +81,7 @@ def format_array(values: np.ndarray) -> str:
         if not is_finite:
             text = 'nan' if text == 'nan' else ('-inf' if text.startswith('-') else 'inf')
         parts.append(text.rjust(width))
+
     return '[' + ' '.join(parts) + ']'
 
 
@@ -94,9 +95,11 @@ def cross_section_dataframe(records: list[CrossSectionRecord]) -> pd.DataFrame:
     df = pd.DataFrame([record._asdict() for record in records])
     if df.empty:
         return pd.DataFrame(columns=XS_EXPORT_COLUMNS)
+    
     df.columns = XS_EXPORT_COLUMNS
     for col in df.columns:
         df[col] = df[col].apply(lambda x: format_array(x) if isinstance(x, np.ndarray) else x)
+
     return df
 
 
@@ -128,5 +131,6 @@ def write_cross_sections(records: list[CrossSectionRecord], path: os.PathLike) -
     else:
         df = cross_section_dataframe(records)
         df.to_csv(path, index=False, sep='\t')
+        
     LOG.info('Finished writing ' + str(path))
     return df

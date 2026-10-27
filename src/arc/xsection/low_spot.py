@@ -33,8 +33,10 @@ def _low_spot_cell(dem, row, col, stream_direction, cross_section_length, dx, dy
                 elevation = ordinate_value(dem, row, col, cos, sin, spacing, step, dx, dy, stored)
                 if elevation < lowest:
                     lowest, best = elevation, step
+
     if best == 0:
         return row, col
+    
     distance = spacing * best
     return int(np.rint(row + sin * distance / dy)), int(np.rint(col + cos * distance / dx))
 
@@ -47,12 +49,13 @@ def low_spot_cell(dem: np.ndarray, row: int, col: int, stream_direction: float, 
 
     Of ordinates equally low, the nearest the stream cell wins, and of two as near, the one towards the higher rows,
     or for a cross section along a row the higher columns. The cross section is then cut at the new cell, square to
-    the same stream direction, before any angle search turns it. like, an array, samples the DEM as
+    the same stream direction, before any angle search turns it. `like`, an array, samples the DEM as
     arc.xsection.sampling.sample_elevations does with it.
     """
     row, col = int(row), int(col)
     if low_spot_range <= 0:
         return row, col
+    
     new_row, new_col = _low_spot_cell(dem, row, col, float(stream_direction), float(cross_section_length), float(dx),
                                       float(dy), int(low_spot_range), like)
     return int(new_row), int(new_col)

@@ -14,7 +14,7 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
    show (from the DEM, width-to-depth or flat water, or a single cell's) that is above its cross section's ceiling,
    the water surface that carries its largest flow over the DEM's own cross section (below_ceilings): no flood
    reaches it, so it is a valley wall. Where the DEM can't resolve a creek in a V-shaped valley, those are all ARC
-   finds; counted, they put a Karnali tributary's bank elevation 10 m up, and with it the bed it carved. Only where
+   finds. Only where
    that would leave the whole site without an observation (deep channels that hold even the largest flow, and no
    water mask) are they kept.
 3. Order: the cross sections are put in order from upstream to downstream (order_reach).
@@ -22,14 +22,10 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
    height: the 10th percentile of the observations' heights above their stream cells within 500 m along the reach.
    Where fewer than MIN_BANK_OBSERVATIONS (5) are, it is the 10th percentile of the 5 nearest along the reach, or of
    all the reach's if it has fewer, or the whole site's where it has none. Of one observation, the 10th percentile is
-   its own height, and of two, a tenth of the way from the lower to the higher, however high: where a creek is too
-   narrow for the DEM to show its banks, ARC finds only the odd rim of the floodplain, and one 0.92 m up set the bank
-   height, and so the bed, for a whole kilometre of an N39W109 creek, 0.96 m above the DEM; with the 5 nearest the
-   bed is at most 0.17 m above it. The sum is fitted never to rise again, and is never below the stream cell
-   (reach_bank_levels).
+   its own height, and of two, a tenth of the way from the lower to the higher, however high. The sum is fitted never 
+   to rise again, and is never below the stream cell (reach_bank_levels).
 5. Junctions: each reach's levels are its own, so where one reach flows into the next they can differ by metres,
-   their heights coming from different banks (by over 1 m at a fifth of the junctions of 68 test sites, where the
-   stream cells differ by that at under 2%). With the standard step, a bed that steps like that drops the water
+   their heights coming from different banks. With the standard step, a bed that steps like that drops the water
    surface over it in a cell or two. So for each reach and the one above it on its main stem (main_stem_above), the
    last JUNCTION_TAPER metres of the one above and the first of the one below are ramped to meet at the mean of the
    two levels, the shift falling linearly to nothing JUNCTION_TAPER metres from the junction (taper_junctions). Where
@@ -111,18 +107,22 @@ def filter_reach_widths(sections: Sequence[XSection], banks: Sequence[Banks]) ->
     """
     if len(sections) != len(banks):
         raise ValueError(f"There are {len(sections)} cross sections but {len(banks)} banks.")
+    
     banks = list(banks)
     widths = reach_widths(banks)
     if widths is None:
         return banks, None
+    
     q25, median, q75 = widths
     for k, (xs, b) in enumerate(zip(sections, banks)):
         if b.valid and b.method == WATER_BANKS:
             continue
+
         if not b.valid or b.top_width < q25 or b.top_width > q75:
             rebuilt = banks_for_width(xs, median)
             if rebuilt.valid:
                 banks[k] = rebuilt
+
     return banks, widths
 
 
@@ -132,6 +132,7 @@ def reach_widths(banks: Sequence[Banks]) -> ReachWidths | None:
     widths = np.array([b.top_width for b in banks if b.valid and math.isfinite(b.top_width) and b.top_width > 0.0])
     if widths.size == 0:
         return None
+    
     return ReachWidths(*(float(p) for p in np.percentile(widths, [25, 50, 75])))
 
 
@@ -148,6 +149,7 @@ def reach_bank_observations(sections: Sequence[XSection], banks: Sequence[Banks]
     finite = np.isfinite(observations)
     if np.count_nonzero(finite) < 4:
         return observations, -math.inf, math.inf
+    
     lower, upper = (float(p) for p in np.percentile(observations[finite], OUTLIER_PERCENTILES))
     observations[finite & ((observations < lower) | (observations > upper))] = math.nan
     return observations, lower, upper
@@ -160,6 +162,7 @@ def below_ceilings(observations, banks: Sequence[Banks], ceilings) -> np.ndarray
     observations = np.array(observations, dtype=np.float64)
     if ceilings is None:
         return observations
+    
     ceilings = np.asarray(ceilings, dtype=np.float64)
     from_the_dem = np.array([b.method != WATER_BANKS for b in banks], dtype=bool)
     observations[from_the_dem & (observations > ceilings)] = math.nan  # a NaN ceiling compares False
@@ -174,10 +177,10 @@ def order_reach(network: nx.DiGraph, reach: int, rows, cols, dx: float, dy: floa
     one.
 
     The downstream end is nearest the first reach downstream that has cross sections, or, failing that, farthest
-    along the stream from the one nearest any reach upstream (see downstream_order). cells holds each reach's cross
+    along the stream from the one nearest any reach upstream (see downstream_order). `cells` holds each reach's cross
     sections' stream cells. Where no neighbour has cross sections, the same goes for its neighbours' cells on the
-    stream raster (stream_cells, each reach's), and then the downstream end is the cell nearest the cell (row, col)
-    where the reach's line ends (outlets, each reach's). A reach with none of these is ordered from one end of its
+    stream raster (`stream_cells`, each reach's), and then the downstream end is the cell nearest the cell (row, col)
+    where the reach's line ends (`outlets`, each reach's). A reach with none of these is ordered from one end of its
     cells to the other, then turned round to put the higher end upstream: an unconnected reach's highest observation
     before its lowest, or else (a reach with neighbours that have no cells, or highest and lowest at one cross
     section) whichever end's ten nearest observations have the higher mean, wherever along the reach they are. Those
@@ -209,6 +212,7 @@ def _order_by_neighbours(network: nx.DiGraph, reach: int, rows: np.ndarray, cols
     upstream = [cells[p] for p in network.predecessors(reach) if p in cells]
     upstream_cells = (np.concatenate([c[0] for c in upstream]), np.concatenate([c[1] for c in upstream])) \
         if upstream else None
+    
     return downstream_order(rows, cols, dx, dy, downstream_cells=downstream, upstream_cells=upstream_cells)
 
 
@@ -219,6 +223,7 @@ def _higher_end_is_downstream(ordered_observations: np.ndarray, unconnected: boo
         lowest = finite[np.argmin(ordered_observations[finite])]
         if highest != lowest:
             return bool(highest > lowest)
+        
     # The ten observations nearest each end, whichever cross sections they're at
     observed = ordered_observations[finite]
     count = min(ORIENTING_CELLS, observed.size)
@@ -242,13 +247,16 @@ def reach_network(reach_ids, downstream_ids) -> nx.DiGraph:
             continue
         downstream = _reach_id(downstream)
         records[reach] = None if downstream == reach else downstream
+
     if not records:
         raise ValueError("The stream network has no reaches.")
+    
     network = nx.DiGraph()
     network.add_nodes_from(records)
     for reach, downstream in records.items():
         if downstream is not None and downstream in records:
             network.add_edge(reach, downstream)
+
     return network
 
 
@@ -259,6 +267,7 @@ def _reach_id(value) -> int | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
+    
     return int(number) if math.isfinite(number) else None
 
 
@@ -274,6 +283,7 @@ def _falling_fit(values):
     for k in range(n):
         if not math.isfinite(values[k]):
             continue
+
         sums[top], counts[top] = values[k], 1
         top += 1
         # a rise downstream: pool the two runs at their mean, and look again
@@ -281,16 +291,19 @@ def _falling_fit(values):
             sums[top - 2] += sums[top - 1]
             counts[top - 2] += counts[top - 1]
             top -= 1
+
     fitted = np.full(n, np.nan)
     block, left = 0, counts[0] if top > 0 else 0
     for k in range(n):
         if not math.isfinite(values[k]):
             continue
+
         fitted[k] = sums[block] / counts[block]
         left -= 1
         if left == 0 and block + 1 < top:
             block += 1
             left = counts[block]
+
     return fitted
 
 
@@ -307,6 +320,7 @@ def _running_quantile(values, stations, quantile, half_window, min_count):
     observed = np.flatnonzero(np.isfinite(values))
     if observed.size == 0:
         return out
+    
     part = np.empty(observed.size)
     distances = np.empty(observed.size)
     for i in range(n):
@@ -315,6 +329,7 @@ def _running_quantile(values, stations, quantile, half_window, min_count):
             if abs(stations[j] - stations[i]) <= half_window:
                 part[count] = values[j]
                 count += 1
+
         if count < min_count:
             # Too few for a low percentile to skip the high ones: the min_count nearest instead, or all there are
             for k in range(observed.size):
@@ -323,6 +338,7 @@ def _running_quantile(values, stations, quantile, half_window, min_count):
             count = nearest.size
             part[:count] = values[nearest]
         out[i] = np.quantile(part[:count], quantile)
+
     return out
 
 
@@ -341,6 +357,7 @@ def reach_bank_levels(thalwegs, observations, stations, fallback_height: float, 
     """
     if min_observations < 1:
         raise ValueError(f"The bank height needs at least 1 observation, not {min_observations!r}.")
+    
     thalwegs = np.asarray(thalwegs, dtype=np.float64)
     observations = np.asarray(observations, dtype=np.float64)
     stations = np.asarray(stations, dtype=np.float64)
@@ -350,6 +367,7 @@ def reach_bank_levels(thalwegs, observations, stations, fallback_height: float, 
     height = np.where(np.isfinite(height), height, float(fallback_height))  # NaN only where the reach has none
     if not np.isfinite(height).all():
         return np.full(thalwegs.size, math.nan)
+    
     known = np.isfinite(thalwegs)
     water = np.interp(stations, stations[known], _falling_fit(thalwegs[known])) if known.any() else thalwegs
     return np.maximum(_falling_fit(water + height), np.where(known, thalwegs, -math.inf))
@@ -359,34 +377,39 @@ def taper_junctions(network: nx.DiGraph, smoothed: Mapping[int, SmoothedReach], 
                     taper: float = JUNCTION_TAPER) -> dict[int, SmoothedReach]:
     """The reaches with their bank elevations ramped to meet at each junction on a main stem (see the notes above).
 
-    thalwegs holds each reach's stream cells' elevations, in the order its cross sections were given; the bank
+    `thalwegs` holds each reach's stream cells' elevations, in the order its cross sections were given; the bank
     elevations are kept at or above them. A reach without bank elevations, and one with no main-stem neighbour that
     has them, is left as it is. The shifts are worked out from the levels as given, so a reach shorter than twice
     the taper takes both its ramps.
     """
     if not taper > 0.0:
         raise ValueError(f"The junction taper must be above 0 m, not {taper!r}.")
+    
     with_levels = {reach for reach, s in smoothed.items() if np.isfinite(s.bank_elevations).any()}
     shifts = {reach: np.zeros(smoothed[reach].bank_elevations.size) for reach in with_levels}
     for below in with_levels:
         above = main_stem_above(network, below, with_levels) if below in network else None
         if above is None:
             continue
+
         upper, lower = smoothed[above], smoothed[below]
         end = float(upper.bank_elevations[upper.order[-1]])
         start = float(lower.bank_elevations[lower.order[0]])
         if not (math.isfinite(end) and math.isfinite(start)):
             continue
+
         meet = 0.5 * (end + start)
         to_junction = upper.stations[-1] - upper.stations
         shifts[above][upper.order] += np.clip(1.0 - to_junction / taper, 0.0, 1.0) * (meet - end)
         shifts[below][lower.order] += np.clip(1.0 - lower.stations / taper, 0.0, 1.0) * (meet - start)
+
     tapered = dict(smoothed)
     for reach, shift in shifts.items():
         if shift.any():
             floor = np.where(np.isfinite(thalwegs[reach]), thalwegs[reach], -math.inf)
             levels = np.maximum(smoothed[reach].bank_elevations + shift, floor)
             tapered[reach] = smoothed[reach]._replace(bank_elevations=levels)
+
     return tapered
 
 
@@ -400,7 +423,7 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
     """Smooth the bank elevations of every reach's cross sections (see the notes above), or with smooth=False, give
     each its own.
 
-    network runs from each reach to the one downstream of it (reach_network), and orders each reach's cross sections,
+    `network` runs from each reach to the one downstream of it (reach_network), and orders each reach's cross sections,
     with stream_cells and outlets where no neighbour has cross sections (see order_reach). Every reach with cross
     sections must be in it. dx and dy are the cells' width and height in metres.
     """
@@ -408,6 +431,7 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
     if missing:
         raise ValueError("These reaches have cross sections but aren't in the stream network: "
                          + ", ".join(map(str, missing[:10])) + ("..." if len(missing) > 10 else "") + ".")
+    
     cells = {reach: (np.asarray(r.rows, dtype=np.int64), np.asarray(r.cols, dtype=np.int64))
              for reach, r in reaches.items() if len(r.sections) > 0}
 
@@ -415,6 +439,7 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
     for reach, sections in reaches.items():
         if len(sections.sections) == 0:
             continue
+
         thalwegs = np.array([float(xs.elevations[xs.elevations.size // 2]) for xs in sections.sections])
         # The observations are the banks as found, not the width filter's (see the notes above)
         if smooth:
@@ -426,6 +451,7 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
                                      for b, z in zip(banks, thalwegs)], dtype=np.float64)
         found[reach] = (banks, widths, observations, below_ceilings(observations, sections.banks, sections.ceilings),
                         thalwegs)
+        
     # Where the largest flow stays below every bank, as in a site of deep channels without a water mask, the ceilings
     # would leave no observation anywhere, and no bank elevation; the banks from the DEM are all there is then
     keep_walls = not any(np.isfinite(below).any() for _, _, _, below, _ in found.values())
@@ -460,4 +486,5 @@ def smooth_bank_elevations(network: nx.DiGraph, reaches: Mapping[int, ReachSecti
         smoothed[reach] = SmoothedReach(banks, bank_elevations, observations, order, stations, widths)
     if smooth:
         smoothed = taper_junctions(network, smoothed, {reach: p[5] for reach, p in prepared.items()})
+        
     return smoothed

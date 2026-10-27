@@ -1,8 +1,7 @@
 """Sampling a cross section from rasters: the values at evenly spaced points (ordinates) across the stream, centred
 on a stream cell.
 
-ARC's convention for directions and sides, used throughout (the stream's direction, the cross section's XS_Angle in
-the outputs, and a manual cross section's XS_Angle):
+ARC's convention for directions and sides, used throughout the code, is:
 
 - A direction is an angle on the raster's grid, in radians from the +column axis towards the +row axis. 0 runs along a
   row towards the higher columns (east), and pi / 2 along a column towards the higher rows (south on a north-up
@@ -49,45 +48,6 @@ def sample_cross_section(
         dem, manning_n, int(row), int(col), float(stream_direction), float(cross_section_length), float(dx), float(dy))
     return XSection(elevations, mannings_n_values, ordinate_distance)
 
-def _compute_dem_coordinates(
-        row: int,
-        col: int,
-        stream_direction: float,
-        cross_section_length: float,
-        dx: float,
-        dy: float):
-    """
-    The column and row coordinates of a cross section's ordinates, from its left end to its right (see the notes
-    above), and the distance between ordinates in metres.
-    """
-    # The cross section runs perpendicular to the stream, from the left bank to the right bank
-    xs_direction = stream_direction - np.pi / 2
-
-    # Step one cell along whichever axis the cross section crosses fastest, so every ordinate lands on a
-    # row or column of cell centres. The same number of ordinates go out to each side, so the stream cell
-    # is always sampled
-    ordinate_distance = 1 / max(abs(np.cos(xs_direction)) / dx, abs(np.sin(xs_direction)) / dy)
-    num_points_per_side = int(cross_section_length / 2 / ordinate_distance)
-    x_coords = ordinate_distance * np.arange(-num_points_per_side, num_points_per_side + 1)
-    y_coords = np.zeros_like(x_coords)
-
-    # Rotate the coordinates onto the cross section
-    rotation_matrix = np.array([[np.cos(xs_direction), -np.sin(xs_direction)],
-                                [np.sin(xs_direction), np.cos(xs_direction)]])
-    rotated_coords = rotation_matrix @ np.vstack((x_coords, y_coords))
-
-    # Translate the coordinates to the DEM grid
-    dem_x_coords = col + rotated_coords[0, :] / dx
-    dem_y_coords = row + rotated_coords[1, :] / dy
-
-    return dem_x_coords, dem_y_coords, ordinate_distance
-
-
-# --- The same sampling, compiled ------------------------------------------------------------------------------------
-# These give the ordinates _compute_dem_coordinates gives, and interpolate at them as map_coordinates does, bit for
-# bit: the same two cells along each axis, the same weights, multiplied and summed in the same order.
-
-
 def _values_like(raster, like=None):
     """An empty array of the type a raster's sampled values take: float32 for a float32 raster and float64 for any
     other, or like's type, if like (an array) is given. Compiled code gets the type when it compiles, so it samples an
@@ -102,15 +62,17 @@ def _values_like(raster, like=None):
 def _compiled_values_like(raster, like=None):
     if like is not None and not isinstance(like, (types.NoneType, types.Omitted)):
         return lambda raster, like=None: like[:0]
+    
     if raster.dtype == types.float32:
         return lambda raster, like=None: np.empty(0, np.float32)
+    
     return lambda raster, like=None: np.empty(0, np.float64)
 
 
 @njit(cache=True, error_model="numpy")
 def _ordinates(stream_direction, cross_section_length, dx, dy):
     """The cross section's direction as a cosine and sine, the spacing of its ordinates and how many go out to each
-    side, as _compute_dem_coordinates works them out."""
+    side."""
     xs_direction = stream_direction - np.pi / 2
     cos, sin = np.cos(xs_direction), np.sin(xs_direction)
     spacing = 1 / max(abs(cos) / dx, abs(sin) / dy)
@@ -136,6 +98,7 @@ def _interpolate(raster, x, y):
     rows, cols = raster.shape
     if not (0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1):
         return OFF_RASTER_ELEVATION
+    
     r, c, r1, c1, wy0, wx0, wy1, wx1 = _corners(rows, cols, x, y)
     value = raster[r, c] * wy0 * wx0
     value += raster[r, c1] * wy0 * wx1
@@ -155,6 +118,7 @@ def _interpolate_classes(classes, water, lookup, water_value, x, y):
     rows, cols = classes.shape
     if not (0.0 <= x <= cols - 1 and 0.0 <= y <= rows - 1):
         return OFF_RASTER_ELEVATION
+    
     r, c, r1, c1, wy0, wx0, wy1, wx1 = _corners(rows, cols, x, y)
     value = _class_value(classes, water, lookup, water_value, r, c) * wy0 * wx0
     value += _class_value(classes, water, lookup, water_value, r, c1) * wy0 * wx1
@@ -191,7 +155,9 @@ def ordinates_above(raster, row, col, stream_direction, cross_section_length, dx
             k += 1
             if ordinate_value(raster, row, col, cos, sin, spacing, step * k, dx, dy, stored) - center > height:
                 break
+
         needed = max(needed, k)
+
     return needed
 
 
@@ -214,6 +180,7 @@ def sample_elevations(dem, row, col, stream_direction, cross_section_length, dx,
     for k in range(-half, half + 1):
         distance = spacing * k
         elevations[k + half] = _interpolate(dem, col + cos * distance / dx, row + sin * distance / dy)
+
     return elevations, spacing
 
 
@@ -227,4 +194,5 @@ def _sample(dem, manning_n, row, col, stream_direction, cross_section_length, dx
         x, y = col + cos * distance / dx, row + sin * distance / dy
         elevations[k + half] = _interpolate(dem, x, y)
         mannings_n[k + half] = _interpolate(manning_n, x, y)
+        
     return elevations, mannings_n, spacing

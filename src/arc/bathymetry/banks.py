@@ -2,9 +2,9 @@
 
 Every method gives the distance from the stream cell to each bank, which can fall between ordinates, and the
 channel's top width is the sum of the two. find_banks tries the methods in turn and keeps the first that resolves a
-channel at least two ordinate spacings wide. Where none does, a drainage-area width prior that says the channel is
-narrower than the DEM can resolve makes it the prior's width. A channel whose width is given, by a prior or a reach's
-median width, can be any width, narrower than a cell included: its banks are wherever the width puts them.
+channel at least two ordinate spacings wide. Where none does, a drainage-area width prior that says the channel is no
+wider than a cell, which no DEM can show, makes it the prior's width. A channel whose width is given, by a prior or a
+reach's median width, can be any width, narrower than a cell included: its banks are wherever the width puts them.
 """
 from __future__ import annotations
 
@@ -30,9 +30,6 @@ MAX_BANK_HEIGHT = 25.0
 # The width-to-depth search's stages are at least this far apart (m), so that it looks past the centimetres of noise
 # on a DEM's water or bed (see _width_to_depth_banks)
 MIN_STAGE_STEP = 0.1
-# Where no method finds the banks, a width prior no wider than two ordinate spacings makes a single-cell channel, or
-# one spacing from this spacing up
-COARSE_SPACING = 15.0
 
 METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width")
 _NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH = range(6)
@@ -42,11 +39,12 @@ _NO_LAND_COVER = np.empty(0)
 class Banks(NamedTuple):
     """Where a cross section's banks are, and how they were found.
 
-    left and right are the distances in metres from the stream cell to the left and right banks (NaN if the method
+    `left` and `right` are the distances in metres from the stream cell to the left and right banks (NaN if the method
     found none), and the elevations are the ground's there. A bank a width put within a spacing of the stream cell,
     where the DEM can't show one, takes the ground at the neighbouring ordinate instead. A single-cell channel is one
-    the DEM can't resolve: as wide as the width prior says, or else one spacing, the stream cell's own width. valid
-    says the banks can be used: a channel whose width was given (single cell or target width) with the cross section
+    the DEM can't resolve: as wide as the width power laws say, or else one spacing, the stream cell's own width. The
+    `single_cell` attribute indicates whether the channel is a single cell, and `valid` says the banks can be used: a
+    channel whose width was given (single cell or target width) with the cross section
     on the raster either side, or one found at least two ordinate spacings wide.
     """
     method: str
@@ -71,6 +69,7 @@ def _on_raster_ordinates(elevations, center, step):
     while j != end and elevations[j + step] < OFF_RASTER_ELEVATION:
         count += 1
         j += step
+
     return count
 
 
@@ -81,8 +80,10 @@ def _ground_at(elevations, center, step, spacing, distance):
     position = distance / spacing
     if not position >= 0.0:
         return np.nan
+    
     if position >= last:
         return float(elevations[center + step * last])
+    
     k = int(position)
     z = float(elevations[center + step * k])
     return z + (position - k) * (float(elevations[center + step * (k + 1)]) - z)
@@ -96,9 +97,11 @@ def _resolved(left, right, spacing):
 
 @njit(cache=True, error_model="numpy")
 def _is_single_cell(target_width, spacing, left_ordinates, right_ordinates):
+    """Whether a width prior makes a single-cell channel: no wider than one ordinate spacing, at any resolution."""
     if not 0.0 < target_width < np.inf or left_ordinates < 1 or right_ordinates < 1:
         return False
-    return target_width <= (2.0 if spacing < COARSE_SPACING else 1.0) * spacing
+    
+    return target_width <= spacing
 
 
 @njit(cache=True, error_model="numpy")
@@ -115,6 +118,7 @@ def _side_land_cover_bank(land_cover, center, step, water):
         if math.isnan(value):
             return np.nan
         return abs(j - center) - 0.5
+    
     return np.nan
 
 
@@ -123,6 +127,7 @@ def _land_cover_banks(land_cover, water, spacing):
     center = land_cover.size // 2
     if not land_cover[center] == water:
         return np.nan, np.nan
+    
     return (spacing * _side_land_cover_bank(land_cover, center, -1, water),
             spacing * _side_land_cover_bank(land_cover, center, 1, water))
 
@@ -141,6 +146,7 @@ def _sift_down(heap, i, size):
             break
         heap[i] = heap[child]
         i = child
+
     heap[i] = value
 
 
@@ -148,13 +154,9 @@ def _sift_down(heap, i, size):
 def _width_to_depth_banks(elevations, spacing):
     """The banks at the stage where the ratio of top width to depth stops falling, and that stage's height above the
     stream cell, or NaNs. The stages tried are the heights of the ordinates above the stream cell, lowest first, out
-    on each side to the first more than MAX_BANK_HEIGHT above it: as far as water that high could reach, which is as
-    far as any stage's width looks. A stage less than MIN_STAGE_STEP above the last one tried is skipped, unless it's
-    the highest (a short or gently rising floodplain may have no ordinate that much above the bank). Where the
-    DEM's water or bed has noise of a few centimetres, its first stages are the noise's: the water spills from one dip
-    into the next, its width jumps, the ratio rises, and the search stopped there, banks a few metres apart inside the
-    channel (with 2 cm of noise, 4 m apart in a channel 30 m wide). On the 68 FIM sites, 10% of these banks were
-    inside the water mask's water, and 1% are with the stages 0.1 m apart; on the Karnali, 22% and 5%.
+    on each side to the first more than `MAX_BANK_HEIGHT` above it: as far as water that high could reach, which is as
+    far as any stage's width looks. A stage less than `MIN_STAGE_STEP` above the last one tried is skipped, unless it's
+    the highest (a short or gently rising floodplain may have no ordinate that much above the bank). This handles DEM noise well. 
 
     The search usually stops a few stages up, so the heights come off a heap as needed rather than all being sorted.
     """
@@ -194,6 +196,7 @@ def _width_to_depth_banks(elevations, spacing):
         ratio = np.round((np.round(left, 3) + np.round(right, 3)) / height, 3)
         if ratio > last_ratio:
             return last_left, last_right, last_height
+        
         last_left, last_right, last_height, last_ratio = left, right, height, ratio
 
     return np.nan, np.nan, np.nan
@@ -217,6 +220,7 @@ def _target_width_banks(width, spacing, left_ordinates, right_ordinates):
     if remaining > 0.0 and left_room + right_room > 0.0:
         left = min(left + remaining * left_room / (left_room + right_room), left_available)
         right = min(right + remaining * right_room / (left_room + right_room), right_available)
+
     return left, right
 
 
@@ -229,6 +233,7 @@ def _on_the_raster(elevations, spacing, left, right):
         left = np.nan
     if right > spacing * _on_raster_ordinates(elevations, center, 1):
         right = np.nan
+
     return left, right
 
 
@@ -243,6 +248,7 @@ def _drains_away(elevations, spacing, step, distance):
         j += step
         if elevations[j] < lowest:
             return True
+        
     return False
 
 
@@ -255,6 +261,7 @@ def _held(elevations, spacing, left, right):
         left = np.nan
     if right >= 0.0 and _drains_away(elevations, spacing, 1, right):
         right = np.nan
+
     return left, right
 
 
@@ -266,16 +273,20 @@ def _search(elevations, spacing, land_cover, water, target_width):
         left, right = _land_cover_banks(land_cover, water, spacing)
         if _resolved(left, right, spacing):
             return _LAND_COVER, left, right
+        
     left, right, _ = _width_to_depth_banks(elevations, spacing)
     left, right = _held(elevations, spacing, left, right)
     if _resolved(left, right, spacing):
         return _WIDTH_TO_DEPTH, left, right
+    
     left, right = _held(elevations, spacing, *_flat_water_banks(elevations, spacing))
     if _resolved(left, right, spacing):
         return _FLAT_WATER, left, right
+    
     if _is_single_cell(target_width, spacing, _on_raster_ordinates(elevations, center, -1),
                        _on_raster_ordinates(elevations, center, 1)):
         return _SINGLE_CELL, 0.5 * target_width, 0.5 * target_width
+    
     return _NONE, np.nan, np.nan
 
 
@@ -292,6 +303,7 @@ def _with_elevations(elevations, spacing, method, left, right):
     left_at, right_at = left, right
     if method == _SINGLE_CELL or method == _TARGET_WIDTH:
         left_at, right_at = _at_least(left, spacing), _at_least(right, spacing)
+
     return (method, left, right, _ground_at(elevations, center, -1, spacing, left_at),
             _ground_at(elevations, center, 1, spacing, right_at))
 
@@ -312,15 +324,13 @@ def find_banks(xs: XSection, *, target_width: float | None = None, land_cover: n
     3. The water's edges 0.1 m above the stream cell (see banks_by_flat_water).
 
     It keeps the first to resolve a channel at least two ordinate spacings wide. If none does, a drainage-area width
-    prior (target_width) no wider than two ordinate spacings, or one for spacings of 15 m or more, makes a single-cell
-    channel that wide: a channel too narrow for the DEM to show. Otherwise the banks are not valid, and the bathymetry
-    gives the channel its reach's median width, or its prior's, or one cell (single_cell_banks). None of 1 to 3 gives
-    a bank on a side whose water runs off the raster: its edge is the raster's, not a bank. Nor do 2 and 3 on a side
-    whose water drains away from the stream, over ground more than MAX_BANK_DIP below it.
+    prior (target_width) no wider than one ordinate spacing makes a single-cell channel that wide: a channel too narrow
+    for any DEM to show. Otherwise the banks are not valid, and the bathymetry gives the channel its reach's median
+    width, or its prior's, or one cell (single_cell_banks). None of 1 to 3 gives a bank on a side whose water runs off
+    the raster: its edge is the raster's, not a bank. Nor do 2 and 3 on a side whose water drains away from the stream,
+    over ground more than MAX_BANK_DIP below it.
 
-    The prior comes last so that it doesn't override the banks the water mask, the land cover or the DEM show. First,
-    with nencarta's prior on every reach, it made 79% of the stream cells of the 68 FIM test sites single cells
-    whatever their water showed, and their flood maps' mean MCC went from 0.5589 to 0.5593; last, to 0.5659.
+    The prior comes last so that it doesn't override the banks the water mask, the land cover or the DEM find.
     """
     if land_cover is None:
         values, water = _NO_LAND_COVER, np.nan

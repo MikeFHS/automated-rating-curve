@@ -54,10 +54,12 @@ def monotonic_cumulative_max(values: np.ndarray) -> np.ndarray:
     for i in range(result.size):
         if np.isnan(result[i]):
             continue
+
         if result[i] < running_max:
             result[i] = running_max
         else:
             running_max = result[i]
+
     return result
 
 
@@ -74,6 +76,7 @@ def depths_from_width_and_area(widths: np.ndarray, areas: np.ndarray) -> tuple[n
         increments[i] = delta
         depths[i] = previous_depth + delta
         previous_width, previous_area, previous_depth = width, area, depths[i]
+
     return increments, depths
 
 
@@ -85,6 +88,7 @@ def _block_sum(values, start, count):
         for i in range(start, start + count):
             total += values[i]
         return total
+    
     s0, s1, s2, s3 = values[start], values[start + 1], values[start + 2], values[start + 3]
     s4, s5, s6, s7 = values[start + 4], values[start + 5], values[start + 6], values[start + 7]
     i = start + 8
@@ -99,20 +103,23 @@ def _block_sum(values, start, count):
         s6 += values[i + 6]
         s7 += values[i + 7]
         i += 8
+
     total = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7))
     while i < start + count:
         total += values[i]
         i += 1
+
     return total
 
 
 @njit(cache=True, error_model="numpy")
 def _sum(values, start, count):
     """values[start:start + count] summed as numpy sums float64: halved, the halves' lengths kept to multiples of 8,
-    down to blocks of at most 128 (_block_sum), and the halves' sums added up. The means and deviations below are so
+    down to blocks of at most 128 (_block_sum), and the halves' sums added up. The means and deviations below are
     numpy's to the bit. The halves are worked through with a stack, as numba can't load recursion from its cache."""
     if count <= 128:
         return _block_sum(values, start, count)
+    
     # Each half is stacked to be summed, and the whole it came from to add up their sums once they are
     node_starts = np.empty(256, np.int64)
     node_counts = np.empty(256, np.int64)
@@ -136,6 +143,7 @@ def _sum(values, start, count):
             node_starts[nodes + 1], node_counts[nodes + 1], halves_summed[nodes + 1] = first + half, length - half, False
             node_starts[nodes + 2], node_counts[nodes + 2], halves_summed[nodes + 2] = first, half, False
             nodes += 3
+
     return sums[0]
 
 
@@ -147,6 +155,7 @@ def _keep_within_two_deviations(values, count, keep, squares):
     for i in range(count):
         difference = values[i] - mean
         squares[i] = difference * difference
+
     deviation = np.sqrt(_sum(squares, 0, count) / count)
     for i in range(count):
         if deviation == 0.0:
@@ -176,6 +185,7 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
             slope = slopes[j]
             if not slope > 0.0:
                 continue
+
             start, end = starts[j], starts[j + 1]
             wse = thalwegs[j] + depth
             area, perimeter, top_width, k, channel_area, channel_k = section_hydraulics(
@@ -191,28 +201,36 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
                     velocity = channel_k * scale / channel_area if channel_area > 0.0 else 0.0
                 else:
                     velocity = discharge / area
+
             if not (np.isfinite(area) and np.isfinite(perimeter) and np.isfinite(velocity)
                     and np.isfinite(discharge) and np.isfinite(top_width)):
                 return averaged[:stage - 1], means[:stage - 1]
+            
             if area <= 0.0 or top_width <= 0.0 or discharge < 0.0:
                 continue
+
             values[0, n] = discharge
             values[1, n] = velocity
             values[2, n] = top_width
             values[3, n] = area
             values[4, n] = wse
             n += 1
+
         if n == 0:
             continue
+
         keep[:n] = True
         for column in (3, 1, 2):  # the area, velocity and top width
             _keep_within_two_deviations(values[column], n, keep, scratch)
+
         kept = 0
         for i in range(n):
             if keep[i]:
                 kept += 1
+
         if kept == 0:
             continue
+
         averaged[stage - 1] = kept
         for column in range(5):
             m = 0
@@ -221,6 +239,7 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
                     scratch[m] = values[column, i]
                     m += 1
             means[stage - 1, column] = _sum(scratch, 0, kept) / kept
+
     return averaged, means
 
 
@@ -241,6 +260,7 @@ def _reach_columns(comid: int, group: Sequence[RepresentativeSample], parameters
     stages = np.flatnonzero(averaged) + 1
     if stages.size == 0:
         return None
+    
     rows = stages.size
     depths = stages * DEPTH_INCREMENT
     thalweg = float(np.nanmean([s.thalweg for s in group]))
@@ -287,11 +307,13 @@ def representative_cross_section_dataframe(samples: Sequence[RepresentativeSampl
     grouped: dict[int, list[RepresentativeSample]] = {}
     for sample in samples:
         grouped.setdefault(int(sample.comid), []).append(sample)
+
     stage_count = _stage_count()
     reaches = [_reach_columns(comid, grouped[comid], parameters, slope_factor, stage_count) for comid in sorted(grouped)]
     reaches = [columns for columns in reaches if columns is not None]
     if not reaches:
         return pd.DataFrame(columns=REPRESENTATIVE_CROSS_SECTION_COLUMNS)
+    
     return pd.DataFrame({column: np.concatenate([reach[column] for reach in reaches])
                          for column in REPRESENTATIVE_CROSS_SECTION_COLUMNS})
 
@@ -316,6 +338,7 @@ def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLi
         df = df.copy()
         numeric = [c for c in df.columns if c not in _INTEGER_COLUMNS]
         df[numeric] = df[numeric].round(6)
+        
     write_table(df, path)
     LOG.info('Finished writing ' + str(path))
     return df
