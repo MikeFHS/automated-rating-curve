@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """GeoJSON export utilities for ARC outputs.
 
 This module contains helper functions that convert ARC outputs (VDT databases
@@ -10,20 +9,20 @@ but are useful for downstream workflows and diagnostics.
 
 # built-in imports
 import argparse
-import os, sys
+import os
+import sys
 
+import geopandas as gpd
+import networkx as nx
 
 # third-party imports
 import numpy as np
-from osgeo import gdal
-import geopandas as gpd
-from shapely.geometry import Point
-from scipy.interpolate import interp1d
-from geojson import Point
 import pandas as pd
-import networkx as nx
-from shapely.geometry import Point, LineString, MultiLineString
+from geojson import Point
+from osgeo import gdal
 from pyproj import CRS
+from scipy.interpolate import interp1d
+from shapely.geometry import LineString, MultiLineString, Point
 
 # local imports
 # from streamflow_processing import Get_Raster_Details, Read_Raster_GDAL
@@ -904,7 +903,6 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
 
-    return
 
 def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raster_File, OutGeoJSON_File, OutProjection, StrmShp, Stream_ID_Field, Downstream_ID_Field, SEED_Output_File, Thin_Output=True, COMID_Q_File=None, comid_q_df=None):
     """
@@ -1094,7 +1092,6 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, vdt_gdf)
 
-    return
 
 def wse_diff_percentage(wse1, wse2):
     """
@@ -1259,10 +1256,8 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
         for x in range(num_comid):
             r=RR[x]
             c=CC[x]
-            if COMID_Elev_Min[i]>DEM[RR[x],CC[x]]:
-                COMID_Elev_Min[i]=DEM[RR[x],CC[x]]
-            if COMID_Elev_Max[i]<DEM[RR[x],CC[x]]:
-                COMID_Elev_Max[i]=DEM[RR[x],CC[x]]
+            COMID_Elev_Min[i] = min(COMID_Elev_Min[i], DEM[RR[x],CC[x]])
+            COMID_Elev_Max[i] = max(COMID_Elev_Max[i], DEM[RR[x],CC[x]])
         for x in range(num_comid):
             r=RR[x] + 1  #Need the plus one to get to the larger boundaries of the B raster
             c=CC[x] + 1  #Need the plus one to get to the larger boundaries of the B raster
@@ -1365,7 +1360,6 @@ def Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf):
     # Save the converted GeoDataFrame to a new file
     curve_data_gdf.to_file(OutGeoJSON_File, driver='GeoJSON')
 
-    return
 
 def FindClosestSEEDPoints_Based_On_LatLong(SEED_COMID, SEED_Lat, SEED_Lon, SEED_r, SEED_c, curve_data_gdf, stream_raster_crs, distance_crs, elev_column_name='BaseElev'):
     """
@@ -1570,7 +1564,6 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf)
 
-    return
 
 def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_File, STRM_Raster_File, OutGeoJSON_File, OutProjection, SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, Thin_GeoJSON):
     """
@@ -1742,7 +1735,6 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     # output the GeoJSON file
     Write_GeoJSON_File(OutGeoJSON_File, OutProjection, vdt_gdf)
 
-    return
 
 
 def _parse_bool(value):

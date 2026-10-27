@@ -15,15 +15,48 @@ The steps:
 Banks are distances from the stream cell, so a bank can fall between ordinates and a channel can
 be any width, including narrower than a cell. Every channel is a trapezoid, and the hydraulics see its exact shape.
 """
-from arc.bathymetry.banks import (Banks, bank_control_elevation, banks_by_flat_water,
-                                  banks_by_land_cover, banks_by_width_to_depth_ratio, banks_for_width, find_banks,
-                                  in_bank, set_bank_distances, set_in_bank_roughness, single_cell_banks)
-from arc.bathymetry.bed_smoothing import ChannelDepths, fill_reach_depths, smooth_channel_depths, smooth_reach_bed
+from arc.bathymetry.banks import (
+                                  Banks,
+                                  bank_control_elevation,
+                                  banks_by_flat_water,
+                                  banks_by_land_cover,
+                                  banks_by_width_to_depth_ratio,
+                                  banks_for_width,
+                                  find_banks,
+                                  in_bank,
+                                  set_bank_distances,
+                                  set_in_bank_roughness,
+                                  single_cell_banks,
+)
+from arc.bathymetry.bed_smoothing import (
+                                  ChannelDepths,
+                                  fill_reach_depths,
+                                  smooth_channel_depths,
+                                  smooth_reach_bed,
+)
 from arc.bathymetry.channel import carve_channel
-from arc.bathymetry.depth import BathymetryDepth, bathymetry_depth, channel_depth, power_law_geometry, trapezoid_depth
-from arc.bathymetry.raster import (Burns, SparseRaster, burn_into_raster, fill_sparse_gaps,
-                                   ordinate_cells, sample_land_cover)
-from arc.bathymetry.smoothing import ReachSections, ReachWidths, SmoothedReach, reach_network, smooth_bank_elevations
+from arc.bathymetry.depth import (
+                                  BathymetryDepth,
+                                  bathymetry_depth,
+                                  channel_depth,
+                                  power_law_geometry,
+                                  trapezoid_depth,
+)
+from arc.bathymetry.raster import (
+                                  Burns,
+                                  SparseRaster,
+                                  burn_into_raster,
+                                  fill_sparse_gaps,
+                                  ordinate_cells,
+                                  sample_land_cover,
+)
+from arc.bathymetry.smoothing import (
+                                  ReachSections,
+                                  ReachWidths,
+                                  SmoothedReach,
+                                  reach_network,
+                                  smooth_bank_elevations,
+)
 
 __all__ = [
     "Banks", "BathymetryDepth", "Burns", "ChannelDepths", "ReachSections", "ReachWidths", "SmoothedReach",

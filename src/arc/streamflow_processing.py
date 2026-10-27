@@ -17,13 +17,13 @@ names.
 # built-in imports
 import os
 
-# third-party imports
-from osgeo import gdal
 import pandas as pd
-from shapely.geometry import box
 import s3fs
 import xarray as xr
 
+# third-party imports
+from osgeo import gdal
+from shapely.geometry import box
 
 
 def GetMeanFlowValues(NetCDF_Directory):
@@ -265,7 +265,7 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
     # Open the flow duration curve (FDC) data on S3, for the median (p_exceed 50) and maximum (p_exceed 0) flows
     fdc_s3_uri = 's3://geoglows-v2-retrospective/fdc.zarr'
     fdc_s3store = s3fs.S3Map(root=fdc_s3_uri, s3=s3, check=False)
-    p_exceedance = [float(50.0), float(0.0)]
+    p_exceedance = [50.0, 0.0]
     fdc_ds = xr.open_zarr(fdc_s3store).sel(p_exceed=p_exceedance, river_id=rivids_str)
     # Convert Xarray to a pandas DataFrame
     fdc_df = fdc_ds.to_dataframe().reset_index()

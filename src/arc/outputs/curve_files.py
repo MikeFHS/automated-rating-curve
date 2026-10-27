@@ -14,7 +14,7 @@ from numba import njit
 from numba.core.errors import TypingError
 
 from arc import LOG
-from arc.outputs.rating_curves import METADATA_COLUMNS, Q, T, V, WSE, RatingCurves
+from arc.outputs.rating_curves import METADATA_COLUMNS, WSE, Q, RatingCurves, T, V
 from arc.outputs.tables import write_table
 
 FAILED_FIT = -9999.9  # the coefficient, power and R² when a fit fails
@@ -50,7 +50,9 @@ def _least_squares(x: np.ndarray, y: np.ndarray, init_guess) -> np.ndarray:
     It raises ValueError for values that aren't finite, TypeError for fewer than two of them, and RuntimeError where lmdif
     fails. With a SciPy that doesn't have lmdif where this looks for it, curve_fit itself."""
     try:
-        from scipy.optimize._minpack import _lmdif  # here, as importing it takes a quarter of a second
+        from scipy.optimize._minpack import (
+            _lmdif,  # here, as importing it takes a quarter of a second
+        )
     except ImportError:
         from scipy.optimize import curve_fit
         return curve_fit(_power, x, y, p0=list(init_guess))[0]

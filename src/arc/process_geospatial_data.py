@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Geospatial preprocessing utilities for ARC.
 
 The functions in this module help convert common ARC geospatial inputs
@@ -15,13 +14,15 @@ https://github.com/MikeFHS/automated-rating-curve/wiki/Processing-ARC-Geospatial
 """
 
 # built-in imports
-import sys
 import os
 import shutil
+import sys
+
+import numpy as np
 
 # third-party imports
 from osgeo import gdal
-import numpy as np
+
 
 def Create_Folder(F):
     """
@@ -41,7 +42,6 @@ def Create_Folder(F):
         shutil.rmtree(F)
     if not os.path.exists(F): 
         os.makedirs(F)
-    return
 
 def Create_ARC_Model_Input_File(
     ARC_Input_File,
@@ -206,7 +206,6 @@ def Create_ARC_Model_Input_File(
 
     out_file.close()
 
-    return
 
 def Create_BaseLine_Manning_n_File(ManningN):
     """
@@ -243,7 +242,6 @@ def Create_BaseLine_Manning_n_File(ManningN):
     out_file.write('\n' + '95	Emergent_Herb_Wet	0.100')
     out_file.close()
 
-    return
 
 def Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows):
     """
@@ -271,7 +269,6 @@ def Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrow
     ds = gdal.Open(LandCoverFile)
     ds = gdal.Translate(LAND_File, ds, projWin = projWin_extents, width=ncols, height = nrows)
     ds = None
-    return
 
 def Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, Param):
     """
@@ -300,7 +297,6 @@ def Create_ARC_StrmRaster(StrmSHP, STRM_File, outputBounds, ncols, nrows, Param)
     source_ds = gdal.OpenEx(StrmSHP)
     gdal.Rasterize(STRM_File, source_ds, format='GTiff', outputType=gdal.GDT_Int64, outputBounds = outputBounds, width = ncols, height = nrows, noData = -9999, attribute = Param)
     source_ds = None
-    return
 
 def Write_Output_Raster(s_output_filename, raster_data, ncols, nrows, dem_geotransform, dem_projection, s_file_format, s_output_type):   
     """
@@ -347,7 +343,6 @@ def Write_Output_Raster(s_output_filename, raster_data, ncols, nrows, dem_geotra
     # Once we're done, close properly the dataset
     o_output_file = None
 
-    return
 
 def Get_Raster_Details(DEM_File):
     """
@@ -530,20 +525,13 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
                 #Left and Right cells are zeros
                 if B[r,c+1]==0 and B[r,c-1]==0:
                     #The bottom cells are all zeros as well, but there is a cell directly above that is legit
-                    if (B[r+1,c-1]+B[r+1,c]+B[r+1,c+1])==0 and B[r-1,c]>0:
-                        B[r,c] = 0
-                        n=n+1
-                    #The top cells are all zeros as well, but there is a cell directly below that is legit
-                    elif (B[r-1,c-1]+B[r-1,c]+B[r-1,c+1])==0 and B[r+1,c]>0:
+                    if (B[r+1,c-1]+B[r+1,c]+B[r+1,c+1])==0 and B[r-1,c]>0 or (B[r-1,c-1]+B[r-1,c]+B[r-1,c+1])==0 and B[r+1,c]>0:
                         B[r,c] = 0
                         n=n+1
                 #top and bottom cells are zeros
                 if B[r,c]>0 and B[r+1,c]==0 and B[r-1,c]==0:
                     #All cells on the right are zero, but there is a cell to the left that is legit
-                    if (B[r+1,c+1]+B[r,c+1]+B[r-1,c+1])==0 and B[r,c-1]>0:
-                        B[r,c] = 0
-                        n=n+1
-                    elif (B[r+1,c-1]+B[r,c-1]+B[r-1,c-1])==0 and B[r,c+1]>0:
+                    if (B[r+1,c+1]+B[r,c+1]+B[r-1,c+1])==0 and B[r,c-1]>0 or (B[r+1,c-1]+B[r,c-1]+B[r-1,c-1])==0 and B[r,c+1]>0:
                         B[r,c] = 0
                         n=n+1
         print('\nFirst pass removed ' + str(n) + ' cells')
@@ -582,7 +570,6 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
     print('Writing Output File ' + STRM_File_Clean)
     Write_Output_Raster(STRM_File_Clean, B[1:nrows+1,1:ncols+1], ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
     #return B[1:nrows+1,1:ncols+1], ncols, nrows, cellsize, yll, yur, xll, xur
-    return
 
 def Process_ARC_Geospatial_Data(
     Main_Directory,
@@ -762,4 +749,3 @@ def Process_ARC_Geospatial_Data(
     
     print('\n\n')
     print('Inputs created. You are now ready to run ARC!')    
-    return

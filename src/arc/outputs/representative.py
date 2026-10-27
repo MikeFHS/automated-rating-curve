@@ -13,14 +13,20 @@ The means are summed as numpy sums them, so they are numpy's nanmean and nanstd 
 from __future__ import annotations
 
 import os
-from typing import NamedTuple, Sequence
+from collections.abc import Sequence
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 from numba import njit
 
 from arc import LOG
-from arc.hydraulics import DepthRoughness, _check_roughness, _check_slope_factor, hydraulic_profile
+from arc.hydraulics import (
+    DepthRoughness,
+    _check_roughness,
+    _check_slope_factor,
+    hydraulic_profile,
+)
 from arc.outputs.tables import write_table
 from arc.rating_curve import section_hydraulics
 from arc.xsection.xsection import XSection

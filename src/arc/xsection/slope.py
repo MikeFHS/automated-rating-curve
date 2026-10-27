@@ -81,10 +81,8 @@ def _local_average_slopes(z, rows, cols, stations, dx, dy, distance):
             continue
 
         slope = total / count
-        if slope <= MIN_SLOPE:
-            slope = MIN_SLOPE
-        if slope >= MAX_SLOPE:
-            slope = MAX_SLOPE
+        slope = max(MIN_SLOPE, slope)
+        slope = min(MAX_SLOPE, slope)
         slopes[i] = slope
 
     return slopes

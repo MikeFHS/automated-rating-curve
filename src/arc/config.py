@@ -1,13 +1,13 @@
 """ARC's inputs: the model input file (MIF), as YAML, as text, or as a dictionary."""
-import os
 import difflib
+import os
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from types import UnionType
 from typing import Literal, Union, get_args, get_origin, get_type_hints
-from dataclasses import dataclass, field, fields
 
-import yaml
 import numpy as np
+import yaml
 
 from arc._log import LOG
 

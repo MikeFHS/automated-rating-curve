@@ -22,7 +22,12 @@ import math
 import numpy as np
 from numba import njit
 
-from arc.xsection.sampling import OFF_RASTER_ELEVATION, _ordinates, _values_like, ordinate_value
+from arc.xsection.sampling import (
+    OFF_RASTER_ELEVATION,
+    _ordinates,
+    _values_like,
+    ordinate_value,
+)
 
 TEST_DEPTH = 5.0  # how far above the stream cell the search measures the water's width
 _SAME_DIRECTION = 1e-12  # radians

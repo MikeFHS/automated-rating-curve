@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import logging
 from typing import Literal
@@ -9,7 +10,7 @@ from arc.pipeline import Results, run
 
 __all__ = ['Arc']
 
-class Arc():
+class Arc:
     """
     Run ARC from Python, as the ``arc`` command does.
 
@@ -63,7 +64,7 @@ class Arc():
 
         return run(configs, quiet=self._quiet)
 
-    def set_log_level(self, log_level: str) -> 'Arc':
+    def set_log_level(self, log_level: str) -> Arc:
         """
         Set ARC's logging verbosity.
 

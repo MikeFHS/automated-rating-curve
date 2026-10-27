@@ -292,7 +292,7 @@ def _search(elevations, spacing, land_cover, water, target_width):
 
 @njit(cache=True, error_model="numpy")
 def _at_least(distance, spacing):
-    return spacing if distance < spacing else distance  # NaN stays NaN
+    return max(distance, spacing)  # NaN stays NaN
 
 
 @njit(cache=True, error_model="numpy")

@@ -28,8 +28,16 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
-from arc.hydraulics import (DepthRoughness, _check_slope_factor, _conveyance, _parameters, _profile_sides,
-                            hydraulic_profile, profile_compound_geometry, wse_for_discharge)
+from arc.hydraulics import (
+    DepthRoughness,
+    _check_slope_factor,
+    _conveyance,
+    _parameters,
+    _profile_sides,
+    hydraulic_profile,
+    profile_compound_geometry,
+    wse_for_discharge,
+)
 from arc.xsection.xsection import XSection
 
 FIX_UP_STEP = 0.01  # metres: how far at a time to look above an increment whose discharge fell
@@ -79,6 +87,7 @@ def section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, r
     first = 0
     while first < m and not levels[first] > elevations[center]:
         first += 1  # dry, all zero, as profile_compound_geometry has it
+
     lo = np.zeros((m, 8))
     hi = np.zeros((m, 8))
     _profile_sides(stations, elevations, mannings_n, center, -1, levels, first, left_bank, k_decay, shallow_factor,
@@ -96,6 +105,7 @@ def section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, r
         result[i, 3] = _conveyance(lo[i, 4], lo[i, 7]) + channel_k + _conveyance(hi[i, 4], hi[i, 7])
         result[i, 4] = channel_area
         result[i, 5] = channel_k
+
     return result
 
 
@@ -131,17 +141,21 @@ def _increments(stations, elevations, mannings_n, center, left_bank, right_bank,
                         q = q_candidate
                         v = q_candidate / area
                         break
+
                     candidate += FIX_UP_STEP
+
             if q <= prev_q or q > q_top * DISCHARGE_CAP:
                 # Repeat the last increment
                 row[Q], row[V], row[T], row[WSE], row[P] = prev_q, prev_v, prev_t, prev_wse, prev_p
                 continue
+
             row[Q], row[V], row[T], row[WSE], row[P] = q, v, top_width, wse, perimeter
             prev_t, prev_a, prev_p, prev_q, prev_v, prev_wse = top_width, area, perimeter, q, v, wse
             last = i
         else:
             start = i
             row[Q] = row[V] = row[T] = row[WSE] = row[P] = 0.0
+
     return start, last
 
 
@@ -155,6 +169,7 @@ def max_flow_wse(xs: XSection, q_max: float, slope: float, *, roughness: DepthRo
     or NaN if it never does or the slope isn't above 0."""
     if not slope > 0.0:
         return math.nan
+    
     return wse_for_discharge(xs, q_max, slope, roughness=roughness, slope_factor=slope_factor)
 
 
@@ -170,9 +185,11 @@ def rating_curve(xs: XSection, q_max: float, slope: float, increments: int, *, b
     out = np.full((count, 5), np.nan)
     if not q_max > 0.0:
         return RatingCurve(out, math.nan, -1, 0)
+    
     wse = max_flow_wse(xs, q_max, slope, roughness=roughness, slope_factor=slope_factor)
     if not math.isfinite(wse):
         return None
+    
     profile = hydraulic_profile(xs)
     left, right = _banks(xs)
     parameters = _parameters(roughness)
@@ -180,15 +197,17 @@ def rating_curve(xs: XSection, q_max: float, slope: float, increments: int, *, b
     q_top = section_hydraulics(*profile, left, right, wse, *parameters)[3] * discharge_scale
     if not ACCEPTABLE[0] * q_max <= q_top <= ACCEPTABLE[1] * q_max:
         return None
+    
     if count == 0:
         return RatingCurve(out, wse, -1, 0)
+    
     thalweg = float(profile.elevations[profile.center])
-    start, last = _increments(*profile, left, right, *parameters, thalweg, wse, count, discharge_scale,
-                              float(q_top), out)
+    start, last = _increments(*profile, left, right, *parameters, thalweg, wse, count, discharge_scale, float(q_top), out)
     if last > start and baseflow > BASEFLOW_MARGIN and out[start, Q] >= baseflow:
         # Its velocity stays its discharge over its area, the area at its water surface (its discharge over its
         # velocity before)
         q = baseflow - BASEFLOW_MARGIN
         out[start, V] *= q / out[start, Q]
         out[start, Q] = q
+        
     return RatingCurve(out, wse, int(start), int(last))

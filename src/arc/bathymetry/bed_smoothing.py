@@ -22,7 +22,8 @@ left out of the median and the cap, and its cross section keeps its depth.
 from __future__ import annotations
 
 import math
-from typing import Mapping, NamedTuple, Sequence
+from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 import networkx as nx
 import numpy as np
