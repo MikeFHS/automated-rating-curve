@@ -106,11 +106,8 @@ class Configs:
     # (arc.bathymetry.smooth_channel_depths). False leaves each cross section's own. Unless given, the bed is smoothed
     # only without the standard step and without bank elevations (Bathy_Use_Banks): a smoothed bed is a neighbour's,
     # too shallow for a narrow channel to carry the baseflow in bank and too deep for a wide one. The standard step's
-    # water rides above the dips that leaves in the normal depths (on the Karnali's main stem, 0.9 m higher at the
-    # baseflow). Without it, each rating curve is its own cross section's, so with bank elevations, where the baseflow
-    # should fill each channel to its banks, the water lands metres above or below them: on the Karnali, where
-    # water-mask banks 54 m apart sit next to the reach median's 210 m, 14 m above them, and 465 cells' water below
-    # the DEM.
+    # water rides above the dips that leaves in the normal depths. Without it, each rating curve is its own cross 
+    # section's, so with bank elevations, where the baseflow should fill each channel to its banks, the water lands metres above or below them.
     bathy_smooth_banks: bool = True
     bathy_smooth_bed: bool | None = None
     # With Bathy_Use_Banks, a cross section whose banks weren't found (none, or a single cell from the width prior)

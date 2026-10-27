@@ -4,9 +4,7 @@ Manning's equation takes the water to flow square to the cross section. In the c
 cross section square to the channel is right. Over the floodplain of a meandering river it runs straight down the
 valley, crossing the channel's loops, while each stream cell's cross section is square to the channel wherever the
 channel happens to point: where the channel crosses the valley, it cuts the floodplain at a slant, so the water looks
-wider than it is, and the slope it takes is the channel's, gentler than the valley's by the channel's sinuosity. On a
-synthetic meandering river (docs/valley_sections.md), against a 2D model, ARC's water over the floodplain swung from
-0.3 m too low to 0.1 m too high from one meander to the next, and was out by 0.15 m on average.
+wider than it is, and the slope it takes is the channel's, gentler than the valley's by the channel's sinuosity.
 
 With Valley_Sections, each stream cell's cross section keeps its channel, between its banks, and takes each overbank
 from a line out from that bank square to the valley: one line across the valley, kinked at the banks. The valley's
@@ -35,7 +33,7 @@ from dataclasses import dataclass
 import numpy as np
 from numba import njit
 
-from arc.xsection.sampling import OFF_RASTER_ELEVATION, _interpolate, _interpolate_classes
+from arc.xsection.sampling import _interpolate, _interpolate_classes
 from arc.xsection.stream_path import along_stream_stations
 from arc.xsection.xsection import Profile
 
@@ -46,11 +44,11 @@ MIN_SINUOSITY = 1.005
 
 @dataclass(eq=False, repr=False)
 class Valley:
-    """A cross section's overbanks square to the valley: the valley's direction (the stream's direction, as
-    arc.xsection.sampling takes it, so the lines run square to it), the stream's sinuosity there, the overbanks'
-    slope over the channel's (slope_ratio), and the ground and Manning's n at the ordinates of the two lines out from
+    """A cross section's overbanks square to the valley: the valley's `direction` (the stream's direction, as
+    arc.xsection.sampling takes it, so the lines run square to it), the stream's `sinuosity` there, the overbanks'
+    slope over the channel's `slope_ratio`, and the ground and Manning's n at the ordinates of the two lines out from
     the cross section's banks, as one array: the left line's from its far end in, the stream cell's, and the right
-    line's from the bank out, ordinate_distance apart (and as far from the banks). full_half is how many ordinates
+    line's from the bank out, `ordinate_distance` apart (and as far from the banks). `full_half` is how many ordinates
     the longer line would have out to the raster's edge; rows and cols are the ordinates' cells."""
     direction: float
     sinuosity: float
@@ -75,9 +73,7 @@ def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
 
     A meander's steps that cross the valley one way are cancelled by those crossing it back, but only all of them: a
     straight line between the cells either side, a window with sharp ends, swings with the meanders until it spans a
-    whole number of them, while the Gaussian's error only falls as it lengthens. On the synthetic meanders of
-    docs/valley_sections.md, once cells_each_way spans about a meander along the stream, the direction is within a few
-    degrees of the valley's."""
+    whole number of them, while the Gaussian's error only falls as it lengthens."""
     rows, cols, reaches = np.asarray(rows), np.asarray(cols), np.asarray(reaches)
     direction = np.full(rows.size, np.nan)
     sinuosity = np.full(rows.size, np.nan)
@@ -90,6 +86,7 @@ def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
         ks = order[begin:end]
         if ks.size < 3:
             continue
+
         sigma = 0.5 * float(np.median(windows[ks])) * cell
         stations = along_stream_stations(rows[ks], cols[ks], dx, dy)
         by_station = np.argsort(stations, kind="stable")
@@ -103,6 +100,7 @@ def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
         sinuosity[ks[ok]] = np.clip(length[ok] / chord[ok], 1.0, MAX_SINUOSITY)
         if slopes is not None:
             mean_slope[ks] = _smoothed_values(stations, np.asarray(slopes, np.float64)[ks], sigma)
+
     return direction, sinuosity, mean_slope
 
 
@@ -111,12 +109,10 @@ def slope_ratio(channel_slope: float, mean_slope: float, sinuosity: float) -> fl
     down the valley as along the channel, over a length shorter by the sinuosity, so the valley's slope is the
     channel's times the sinuosity; but a cell's channel slope is its own, over Gen_Slope_Dist cells, steeper where the
     channel runs down the valley and gentler where it crosses it. So the valley's slope is the channel's slope averaged
-    as the sinuosity is (valley_axes's mean_slope) times the sinuosity, which the cell's own then divides. On the
-    synthetic meanders, the cells' own slopes times the sinuosity swung 12% to 29% either side of the valley's slope;
-    averaged, they were within 1% of it, or 9% on the tightest meanders. The sinuosity where either slope isn't a
-    positive number."""
+    as the sinuosity is (valley_axes's mean_slope) times the sinuosity, which the cell's own then divides."""
     if not (channel_slope > 0.0 and mean_slope > 0.0):
         return float(sinuosity)
+    
     return float(min(max(mean_slope * sinuosity / channel_slope, 1.0 / MAX_SINUOSITY), MAX_SINUOSITY))
 
 
@@ -130,6 +126,7 @@ def _smoothed(stations, across, down, lengths, middles, sigma):
     for i in range(n):
         while first < m and middles[first] < stations[i] - 3.0 * sigma:
             first += 1
+
         j = first
         while j < m and middles[j] <= stations[i] + 3.0 * sigma:
             w = math.exp(-0.5 * ((middles[j] - stations[i]) / sigma) ** 2)
@@ -137,6 +134,7 @@ def _smoothed(stations, across, down, lengths, middles, sigma):
             sum_down[i] += w * down[j]
             total[i] += w * lengths[j]
             j += 1
+
     return sum_across, sum_down, total
 
 
@@ -150,6 +148,7 @@ def _smoothed_values(stations, values, sigma):
     for i in range(n):
         while first < n and stations[first] < stations[i] - 3.0 * sigma:
             first += 1
+
         total = weight = 0.0
         j = first
         while j < n and stations[j] <= stations[i] + 3.0 * sigma:
@@ -158,8 +157,10 @@ def _smoothed_values(stations, values, sigma):
                 total += w * values[j]
                 weight += w
             j += 1
+
         if weight > 0.0:
             out[i] = total / weight
+
     return out
 
 
@@ -174,6 +175,7 @@ def worth_splitting(section_direction: float, valley_direction: float, sinuosity
     square to, or the stream winds enough, to change anything (see the notes above)."""
     if not (np.isfinite(valley_direction) and np.isfinite(sinuosity)):
         return False
+    
     return turn(section_direction, valley_direction) >= MIN_TURN or sinuosity >= MIN_SINUOSITY
 
 
@@ -199,9 +201,11 @@ def _fill_side(z, wet, step):
         if not wet[h + step * k]:
             k += 1
             continue
+
         start = k
         while k <= h and wet[h + step * k]:
             k += 1
+
         lip = np.inf  # the ground either side, but not the stream cell's
         if start > 1:
             lip = z[h + step * (start - 1)]
@@ -220,6 +224,7 @@ def ray_values(raster, x0, y0, cos, sin, spacing, count, dx, dy):
     for k in range(1, count + 1):
         distance = spacing * k
         values[k - 1] = _interpolate(raster, x0 + cos * distance / dx, y0 + sin * distance / dy)
+
     return values
 
 
@@ -244,12 +249,15 @@ def ray_reach(raster, x0, y0, cos, sin, spacing, dx, dy, level):
     # The first ordinate off the raster, as _interpolate tells it, which rounding can put a step either side
     while edge > 1 and not _on_raster(x0, y0, cos, sin, spacing, edge - 1, dx, dy, rows, cols):
         edge -= 1
+
     while _on_raster(x0, y0, cos, sin, spacing, edge, dx, dy, rows, cols):
         edge += 1
+
     for k in range(1, edge):
         distance = spacing * k
         if _interpolate(raster, x0 + cos * distance / dx, y0 + sin * distance / dy) > level:
             return k, edge
+        
     return edge, edge
 
 
@@ -293,6 +301,7 @@ def _splice(stations, elevations, mannings_n, center, left_bank, right_bank, val
         new_elevations[i] = valley_z[h - k]
         new_n[i] = valley_n[h - k] * scale
         i += 1
+
     new_stations[i] = -left_bank
     new_elevations[i] = np.interp(-left_bank, stations, elevations)
     new_n[i] = valley_n[h - 1] * scale if h > 0 else mannings_n[center]
@@ -300,6 +309,7 @@ def _splice(stations, elevations, mannings_n, center, left_bank, right_bank, val
     for j in range(first, end):
         new_stations[i], new_elevations[i], new_n[i] = stations[j], elevations[j], mannings_n[j]
         i += 1
+
     new_stations[i] = right_bank
     new_elevations[i] = np.interp(right_bank, stations, elevations)
     new_n[i] = valley_n[h + 1] * scale if h > 0 else mannings_n[center]
@@ -309,4 +319,5 @@ def _splice(stations, elevations, mannings_n, center, left_bank, right_bank, val
         new_elevations[i] = valley_z[h + k]
         new_n[i] = valley_n[h + k] * scale
         i += 1
+        
     return new_stations, new_elevations, new_n, h + 1 + (center - first)

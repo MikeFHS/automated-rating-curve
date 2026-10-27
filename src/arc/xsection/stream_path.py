@@ -40,6 +40,7 @@ def _row_index(rows, cols):
         row_start[r - first_row + 1] += 1
     for k in range(1, row_start.size):
         row_start[k] += row_start[k - 1]
+
     return order, cols[order], row_start, first_row
 
 
@@ -54,6 +55,7 @@ def _columns_between(sorted_cols, first, last, low, high):
         while hi < last and sorted_cols[hi] <= high:
             hi += 1
         return lo, hi
+    
     row = sorted_cols[first:last]
     return first + np.searchsorted(row, low), first + np.searchsorted(row, high, side="right")
 
@@ -73,6 +75,7 @@ def _adjacency(rows, cols, dx, dy):
                                       cols[i] - 1, cols[i] + 1)
             count += hi - lo
         start[i + 1] = start[i] + count
+
     neighbours = np.empty(start[n], np.int64)
     lengths = np.empty(start[n])
     for i in range(n):
@@ -86,6 +89,7 @@ def _adjacency(rows, cols, dx, dy):
                     neighbours[k] = j
                     lengths[k] = math.hypot((cols[j] - cols[i]) * dx, (rows[j] - rows[i]) * dy)
                     k += 1
+
     return start, neighbours, lengths
 
 
@@ -100,6 +104,7 @@ def _push(heap_distance, heap_cell, size, distance, cell):
         heap_distance[i] = heap_distance[parent]
         heap_cell[i] = heap_cell[parent]
         i = parent
+
     heap_distance[i] = distance
     heap_cell[i] = cell
     return size + 1
@@ -123,6 +128,7 @@ def _pop(heap_distance, heap_cell, size):
         heap_distance[i] = heap_distance[child]
         heap_cell[i] = heap_cell[child]
         i = child
+
     heap_distance[i] = last_distance
     heap_cell[i] = last_cell
     return distance, cell, size
@@ -152,9 +158,11 @@ def _distances_from(rows, cols, dx, dy, source, start, neighbours, lengths):
                                 gap, near, far = length, u, v
             distance[far] = distance[near] + gap
             size = _push(heap_distance, heap_cell, size, distance[far], far)
+
         d, u, size = _pop(heap_distance, heap_cell, size)
         if settled[u]:
             continue
+
         settled[u] = True
         remaining -= 1
         for k in range(start[u], start[u + 1]):
@@ -162,6 +170,7 @@ def _distances_from(rows, cols, dx, dy, source, start, neighbours, lengths):
             if d + lengths[k] < distance[v]:
                 distance[v] = d + lengths[k]
                 size = _push(heap_distance, heap_cell, size, distance[v], v)
+
     return distance
 
 
@@ -257,6 +266,7 @@ def _nearest_cell(rows, cols, dx, dy, other_rows, other_cols):
             length = math.hypot((cols[i] - other_cols[j]) * dx, (rows[i] - other_rows[j]) * dy)
             if length < best:
                 best, nearest = length, i
+
     return nearest
 
 
@@ -265,6 +275,7 @@ def _cell_arrays(rows, cols) -> tuple[np.ndarray, np.ndarray]:
     cols = np.asarray(cols, dtype=np.int64)
     if rows.shape != cols.shape or rows.ndim != 1:
         raise ValueError(f"rows and cols must be 1-D and the same length, not {rows.shape} and {cols.shape}.")
+    
     return rows, cols
 
 
@@ -313,9 +324,11 @@ def downstream_order(rows, cols, dx: float, dy: float, *, downstream_cells=None,
 def _neighbour_cell(rows, cols, dx, dy, cells) -> int:
     if cells is None:
         return -1
+    
     other_rows, other_cols = _cell_arrays(*cells)
     if other_rows.size == 0:
         return -1
+    
     return int(_nearest_cell(rows, cols, dx, dy, other_rows, other_cols))
 
 
