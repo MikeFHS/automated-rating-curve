@@ -1,30 +1,41 @@
-Once we have a streamflow dataset handy, we need to get to producing ARC's geospatial inputs and it's input file. 
+# Produce Geospatial Inputs
 
-Please ensure that the geospatial data you're using is in the same coordinate system and that the coordinate system is a geographic coordinate system such as the North American Datum of 1983 (NAD83) or World Geodetic System 1984 (WGS84). 
+ARC needs three rasters on the same grid: a DEM, a land cover raster, and a stream raster whose cells hold their
+reach's ID. A fourth, a water mask whose non-zero cells are water (`BathyWaterMask`), is optional: if you give one,
+ARC takes the water's level from it, and its edge where it finds no banks (see
+[Find the banks](bathymetry.md#1-find-the-banks)). You will usually start from:
 
-It's important to remember that while we are inputting vector data, such our flowline shapefile, ARC requires all inputs to be raster and to share a common grid structure. 
+1. A DEM, such as the [USGS 3DEP 1/3 arc-second DEM](https://apps.nationalmap.gov/downloader/).
+2. A land cover raster, such as the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data).
+3. Stream lines, the same ones as your flows, such as the
+   [GEOGLOWS streams](http://geoglows-v2.s3-website-us-west-2.amazonaws.com/#streams/).
 
-The geospatial inputs that ARC requires are:
-
-  1. Digital Elevation Model (DEM) such as the [1/3 Arc Second Data from the U. S. Geological Survey (USGS) 3DEP Program](https://apps.nationalmap.gov/downloader/)
-  2. Land Cover/Land Use (LU/LC) such as the [2011 National Landcover Database](https://www.mrlc.gov/data/nlcd-2011-land-cover-conus)
-  3. Streamlines such as the [TDX-Hydro flowlines used by the GEOGLOWS ECMWF Streamflow Service](http://geoglows-v2.s3-website-us-west-2.amazonaws.com/#streams/). 
-
-To achieve the needed consistence of a common grid, the `arc.process_geospatial_data.Process_ARC_Geospatial_Data()` functions to convert all input geospatial data into a raster that is the same grid as the DEM your utilizing.  
+`arc.process_geospatial_data.Process_ARC_Geospatial_Data` turns these into ARC's inputs. It cuts the land cover to
+the DEM's grid, burns the stream lines into a stream raster on the same grid, writes a Manning's n table for the NLCD
+classes, and writes a starter input file, `ARC_InputFiles/ARC_Input_File.txt`. Put the DEM, land cover and stream
+lines in the same coordinate system first.
 
 ::: arc.process_geospatial_data.Process_ARC_Geospatial_Data
     options:
-      show_root_heading: true 
+      show_root_heading: true
 
-The streamline data you use in your ARC simulation will need to be same that you used to create your flow inputs in [Produce Streamflow Inputs](produce_streamflow_inputs.md). 
+The stream raster's values, the stream lines' `reach_id` field and the flow file's ID column must hold the same IDs,
+though the field and the column can have different names. `id_field` names the stream lines' field: it is burned into
+the stream raster, and the input file gives it as `reach_id`. `flow_id_field` names the flow file's column, which the
+input file gives as `Flow_File_ID`. The GEOGLOWS streams hold their IDs in `LINKNO`, and
+[Produce Streamflow Inputs](produce_streamflow_inputs.md) writes the same IDs in a column named `COMID`, which is
+`flow_id_field`'s default.
 
-Once the script is ran, you should be ready to run your ARC simulation.
+The starter input file asks for bathymetry when you give a baseflow field or the drainage-area depth law. The
+bathymetry follows the stream network, so also give `downstream_id_field`, the stream lines' field holding the ID of
+the reach downstream of each reach (`DSLINKNO` in the GEOGLOWS streams). Check the input file before running ARC, and
+see [Model Input File](model_input_file.md) for its keys. Besides your files and fields, it sets `Low_Spot_Range` to 10,
+and `Degree_Manip` to 6.1 with `Degree_Interval` 1.5, which turns on the angle search; the
+[recommended settings](model_input_file.md#recommended-settings) are 0 to 2 and no search.
 
-A test case for the Shields River watershed in Montana, with the "DEM", "LandCover", and "StrmShp" inputs can be accessed [here](https://drive.google.com/drive/folders/1xJkZoY3xoUAcLjODHUINJcS4pk7ljyCr?usp=sharing). 
+## Try it
 
-Try running this test case on your own using [example_step2.py](https://github.com/MikeFHS/automated-rating-curve/blob/main/examples/example_step2.py) on your local machine using the test case data provided above. 
-
-Once you've successfully ran the test case on your own. Let's proceed to [Running ARC](running_arc.md)
-
-
-
+The Shields River test case's `DEM`, `LandCover` and `StrmShp` inputs are in this
+[shared folder](https://drive.google.com/drive/folders/1xJkZoY3xoUAcLjODHUINJcS4pk7ljyCr?usp=sharing). Run
+[example_step2.py](https://github.com/MikeFHS/automated-rating-curve/blob/main/examples/example_step2.py) with your
+paths, then go on to [Running ARC](running_arc.md).
