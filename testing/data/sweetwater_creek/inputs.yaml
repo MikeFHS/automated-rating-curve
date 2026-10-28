@@ -1,0 +1,27 @@
+# Sweetwater Creek near Austell, Georgia: ARC's inputs clipped to the reaches in flows.csv (see README.md).
+# The paths are relative to this folder: the tests join them to it.
+DEM_File: dem.tif
+Stream_File: streams.tif
+LU_Raster_SameRes: land_cover.tif
+LU_Manning_n: mannings_n.txt
+Flow_File: flows.csv
+Flow_File_ID: COMID
+Flow_File_BF: baseflow
+Flow_File_QMax: max
+StrmShp_File: streams.gpkg
+reach_id: LINKNO
+downstream_reach_id: DSLINKNO
+drainage_area_field: DrainageArea_km2
+coefficient_width: 2.44
+exponent_width: 0.34
+BathyWaterMask: water_mask.tif
+Bathy_Use_Banks: true
+Spatial_Units: deg
+VDT_Database_NumIterations: 30
+Gen_Dir_Dist: 10
+Gen_Slope_Dist: 10
+Low_Spot_Range: 0
+Stream_Slope_Method: local_average_corrected
+Slope_Low_Percentile: 5
+Slope_High_Percentile: 95
+Standard_Step: true

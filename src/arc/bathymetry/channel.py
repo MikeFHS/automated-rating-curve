@@ -285,15 +285,17 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
 
 def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: float, *, trapezoid_height: float,
                  roughness: DepthRoughness | None = None, slope_factor: float = 1.0,
-                 bank_elevation: float | None = None) -> float:
+                 bank_elevation: float | None = None, divide: Banks | None = None) -> float:
     """How deep to carve the channel (as carve_channel would, with these banks and bank_elevation) for the cross
     section to carry q at its reference level in its channel, by the hydraulics the rating curves use: the carved
     profile, Manning's n varying with depth as roughness says, and slope_factor. The channel is the part between
-    the banks if they're valid, as arc.bathymetry.set_bank_distances gives the hydraulics, and the whole cross section
-    if not, though the carve is then one cell wide (single_cell_banks).
+    the banks the hydraulics divide it at, as arc.bathymetry.set_bank_distances gives them: `divide` if given (with
+    bathymetry and without Bathy_Use_Banks, the bank tops beyond the water's edge it's carved to), and otherwise the
+    banks if they're valid, and the whole cross section if not, though the carve is then one cell wide
+    (single_cell_banks).
 
-    guess, a depth near it, starts the search. MIN_DEPTH where the ground already below the level carries q (without
-    bank elevations, the carve keeps ground below the channel), and guess itself where the carve would carve nothing.
+    `guess`, a depth near it, starts the search. `MIN_DEPTH` where the ground already below the level carries q (without
+    bank elevations, the carve keeps ground below the channel), and `guess` itself where the carve would carve nothing.
     """
     trapezoid_height = _check_trapezoid_height(trapezoid_height)
     carved = banks if banks.valid else single_cell_banks(xs)
@@ -304,7 +306,8 @@ def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: floa
             and carved.right > 1e-9 * spacing and xs.mannings_n.size == elevations.size):
         return guess
     
-    left_bank, right_bank = (float(banks.left), float(banks.right)) if banks.valid else (-1.0, -1.0)
+    hydraulic = banks if divide is None else divide
+    left_bank, right_bank = (float(hydraulic.left), float(hydraulic.right)) if hydraulic.valid else (-1.0, -1.0)
     target = math.log(q / (math.sqrt(slope) * _check_slope_factor(slope_factor)))
     return float(_carved_depth(elevations, np.asarray(xs.mannings_n, dtype=np.float64), spacing, float(carved.left),
                                float(carved.right), reference, trapezoid_height, bank_elevation is None, left_bank,
@@ -312,9 +315,11 @@ def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: floa
 
 
 def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height: float,
-                  bank_elevation: float | None = None) -> np.ndarray:
+                  bank_elevation: float | None = None, keep_ground: bool = False) -> np.ndarray:
     """Carve a channel depth below its reference level into the cross section (see the notes above): set the
-    ordinates between its banks, and give the cross section the channel's exact profile.
+    ordinates between its banks, and give the cross section the channel's exact profile. With keep_ground, the
+    cross section keeps the ordinates as they were before its first carve, and the banks of its last
+    (XSection.ground and carved_banks, for arc.xsection.subcell).
 
     Returns which ordinates it set, for burn_into_raster. Sets none, and no profile, for a depth or reference level
     that isn't finite, or a channel without valid banks where the cross section isn't on the raster either side of
@@ -341,6 +346,11 @@ def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height:
         return changed  # no width either side of the stream cell to carve
     
     left, right, lower_only = float(banks.left), float(banks.right), bank_elevation is None
+    if keep_ground:
+        if xs.ground is None:
+            xs.ground = elevations.copy()
+        xs.carved_banks = (left, right)
+        
     stations, profile, n, stream_cell = _channel_profile(elevations, xs.mannings_n, spacing, left, right, reference,
                                                          float(depth), trapezoid_height, lower_only)
     _carve(elevations, spacing, left, right, reference, float(depth), trapezoid_height, lower_only, changed)

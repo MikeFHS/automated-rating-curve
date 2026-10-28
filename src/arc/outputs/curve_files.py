@@ -14,7 +14,15 @@ from numba import njit
 from numba.core.errors import TypingError
 
 from arc import LOG
-from arc.outputs.rating_curves import METADATA_COLUMNS, WSE, Q, RatingCurves, T, V
+from arc.outputs.rating_curves import (
+    METADATA_COLUMNS,
+    QA_FLAG_COLUMN,
+    WSE,
+    Q,
+    RatingCurves,
+    T,
+    V,
+)
 from arc.outputs.tables import write_table
 
 FAILED_FIT = -9999.9  # the coefficient, power and R² when a fit fails
@@ -84,7 +92,8 @@ def _round_metadata(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def curve_file_dataframe(curves: RatingCurves, qmax: pd.Series) -> pd.DataFrame:
-    """Each cell's power laws, for the cells whose metadata is complete and whose coefficients are all positive."""
+    """Each cell's power laws, for the cells whose metadata is complete and whose coefficients are all positive, with
+    its QA_Flag last if the rating curves have them."""
     df = pd.DataFrame(curves.metadata, columns=METADATA_COLUMNS).rename(columns={'Elev': 'BaseElev'})[_METADATA]
     df = df.dropna()
     for col in ['COMID', 'Row', 'Col']:
@@ -109,7 +118,10 @@ def curve_file_dataframe(curves: RatingCurves, qmax: pd.Series) -> pd.DataFrame:
                             ('vel_a', vel_a), ('vel_b', vel_b)):
             fits[name].append(value)
 
+    flags = curves.qa_flags[df.index] if curves.qa_flags is not None else None
     df = pd.concat([df.reset_index(drop=True), pd.DataFrame(fits).round(3)], axis=1)
+    if flags is not None:
+        df[QA_FLAG_COLUMN] = flags
     return df.loc[(df['depth_a'] > 0) & (df['tw_a'] > 0) & (df['vel_a'] > 0)]
 
 
@@ -162,18 +174,19 @@ def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFram
     return df.loc[(df['depth_a'] > 0) & (df['tw_a'] > 0) & (df['vel_a'] > 0)]
 
 
-def write_curve_file(curves: RatingCurves, qmax: pd.Series, path: os.PathLike) -> pd.DataFrame:
-    """Write each cell's power laws, as CSV or, for a .parquet path, Parquet, and return them."""
+def write_curve_file(curves: RatingCurves, qmax: pd.Series, path: os.PathLike,
+                     metadata: dict[str, str] | None = None) -> pd.DataFrame:
+    """Write each cell's power laws, as CSV or, for a .parquet path, Parquet (with metadata), and return them."""
     df = curve_file_dataframe(curves, qmax)
-    write_table(df, path)
+    write_table(df, path, metadata)
     LOG.info('Finished writing ' + str(path))
     return df
 
 
 def write_reach_average_curve_file(curves: RatingCurves, vdt_df: pd.DataFrame, qmax: pd.Series,
-                                   path: os.PathLike) -> pd.DataFrame:
-    """Write each reach's power laws with its cells' metadata, as CSV or Parquet, and return them."""
+                                   path: os.PathLike, metadata: dict[str, str] | None = None) -> pd.DataFrame:
+    """Write each reach's power laws with its cells' metadata, as CSV or Parquet (with metadata), and return them."""
     df = reach_average_curve_file_dataframe(curves, vdt_df, qmax)
-    write_table(df, path)
+    write_table(df, path, metadata)
     LOG.info('Finished writing ' + str(path))
     return df

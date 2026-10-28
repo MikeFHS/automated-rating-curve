@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import math
-import time
 
 import numpy as np
 import pytest
-from numba import njit
 
 from arc import hydraulics
-from arc.Automated_Rating_Curve_Generator import find_wse
-from arc.cross_section import (_adjust_n_by_depth, _calculate_all, _calculate_stream_geometry_and_topwidth,
-                               _compound_section_conveyance, calculate_discharge_from_wse)
-from arc.hydraulics import (CompoundGeometry, ConveyanceTable, DepthRoughness, HydraulicGeometry, compound_geometry,
-                            discharge, hydraulic_geometry, wse_for_discharge)
+from arc.hydraulics import (
+    CompoundGeometry,
+    DepthRoughness,
+    HydraulicGeometry,
+    compound_geometry,
+    discharge,
+    hydraulic_geometry,
+    wse_for_discharge,
+)
 from arc.xsection.sampling import sample_cross_section
 from arc.xsection.xsection import XSection
 
@@ -63,12 +65,6 @@ def rough_valley() -> XSection:
     right = BED + np.concatenate([[0.0], np.cumsum(rng.uniform(0.01, 0.8, 80))])
     left = BED + np.concatenate([[0.0], np.cumsum(rng.uniform(0.01, 0.8, 80))])
     return make_section(np.concatenate([left[:0:-1], right]), rng.uniform(0.02, 0.12, 161), spacing=2.0)
-
-
-def typical_section() -> XSection:
-    """5 km at 10 m spacing (501 ordinates): a 20 m wide, 2 m deep channel in a valley with 2% side slopes."""
-    distance = np.abs(10.0 * np.arange(-250, 251))
-    return make_section(BED + np.minimum(distance, 10.0) * 0.2 + np.maximum(distance - 10.0, 0.0) * 0.02, spacing=10.0)
 
 
 SHAPES = {
@@ -218,20 +214,21 @@ def test_off_raster_walls_hold_the_water_in() -> None:
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_top_widths_are_each_side_s_share_of_the_top_width(shape: str) -> None:
-    """The distances from the stream cell to the water's edges, which add up to the top width."""
+    """The distances from the stream cell to the water's edges, which add up to the top width. A bank at the stream
+    cell puts its whole side in that side's overbank."""
     xs = SHAPES[shape]()
     ground = xs.elevations[xs.elevations < 9000]
     center = xs.elevations.size // 2
+    left_side = with_banks(SHAPES[shape](), 0.0, 1e6)
+    right_side = with_banks(SHAPES[shape](), 1e6, 0.0)
 
     for wse in np.concatenate([np.linspace(ground.min() - 1, ground.max() + 3, 200), ground]):
         left, right = hydraulics.top_widths(xs.elevations, xs.ordinate_distance, wse)
         if not wse > xs.elevations[center]:
             assert (left, right) == (0.0, 0.0)
             continue
-        assert left == pytest.approx(hydraulics._side_geometry(
-            xs.elevations, xs.mannings_n, center, -1, xs.ordinate_distance, wse)[2], rel=1e-12)
-        assert right == pytest.approx(hydraulics._side_geometry(
-            xs.elevations, xs.mannings_n, center, 1, xs.ordinate_distance, wse)[2], rel=1e-12)
+        assert left == pytest.approx(compound_geometry(left_side, wse=wse).left_overbank.top_width, rel=1e-12)
+        assert right == pytest.approx(compound_geometry(right_side, wse=wse).right_overbank.top_width, rel=1e-12)
         assert left + right == pytest.approx(hydraulic_geometry(xs, wse=wse).top_width, rel=1e-12)
 
 
@@ -322,54 +319,30 @@ def test_discharge_rises_with_the_water_level_between_straight_banks() -> None:
     assert np.all(np.diff(flows) > 0)
 
 
-def test_matches_the_legacy_calculation_for_a_uniform_bed() -> None:
-    """ARC's current calculation, with its depth-varying roughness switched off, on a bumpy valley that the
-    water never fills to either end (where the legacy code drops the first segment)."""
-    rng = np.random.default_rng(7)
-    x = 2.0 * np.arange(-60, 61)
-    elevations = BED + 0.004 * x**2 + rng.normal(0.0, 0.15, x.size)
-    elevations[60] = BED
-    xs = make_section(elevations, spacing=2.0)
-    right, left = xs.elevations[60:].copy(), xs.elevations[60::-1].copy()
-    n_right, n_left = xs.mannings_n[60:].copy(), xs.mannings_n[60::-1].copy()
-
-    for wse in [100.3, 101.0, 102.5, 104.0]:
-        a1, p1, _, t1 = _calculate_stream_geometry_and_topwidth(right, wse, 2.0, n_right, 6.0, 1.0, 1.0)
-        a2, p2, _, t2 = _calculate_stream_geometry_and_topwidth(left, wse, 2.0, n_left, 6.0, 1.0, 1.0)
-        legacy_q = calculate_discharge_from_wse(wse, math.sqrt(SLOPE), right, right.size, n_right,
-                                                left, left.size, n_left, 2.0, 6.0, 1.0, 1.0)
-
-        geometry = hydraulic_geometry(xs, wse=wse)
-        assert geometry.area == pytest.approx(a1 + a2, rel=1e-12)
-        assert geometry.wetted_perimeter == pytest.approx(p1 + p2, rel=1e-12)
-        assert geometry.top_width == pytest.approx(t1 + t2, rel=1e-12)
-        assert discharge(xs, SLOPE, wse=wse) == pytest.approx(legacy_q, rel=1e-12)
+# --- The water surface elevation for a discharge ----------------------------------------------------------------
 
 
-# --- Conveyance table and water surface elevation for a discharge ------------------------------------------
-
-
-@pytest.mark.parametrize("shape", SHAPES)
-def test_table_matches_the_direct_calculation(shape: str) -> None:
-    xs = SHAPES[shape]()
-    table = ConveyanceTable(xs)
-    ground = xs.elevations[xs.elevations < 9000]
-
-    # Include every ordinate's elevation, where the wet ordinates change
-    for wse in np.concatenate([np.linspace(ground.min() - 1, ground.max() + 3, 400), ground]):
-        assert table.geometry(wse=wse) == pytest.approx(hydraulic_geometry(xs, wse=wse), rel=1e-9, abs=1e-9)
-        assert table.discharge(SLOPE, wse=wse) == pytest.approx(discharge(xs, SLOPE, wse=wse), rel=1e-9, abs=1e-12)
+def bisected_wse(xs: XSection, q: float, steps: int = 60) -> float:
+    """The water surface elevation carrying q, by bisection within 25 m of the stream cell, for a section whose
+    discharge always rises with the water level."""
+    lo = float(xs.elevations[xs.elevations.size // 2])
+    hi = lo + 25.0
+    for _ in range(steps):
+        mid = 0.5 * (lo + hi)
+        if discharge(xs, SLOPE, wse=mid) < q:
+            lo = mid
+        else:
+            hi = mid
+    return hi
 
 
 @pytest.mark.parametrize("shape", ["v-channel", "trapezoid", "flat-floodplain", "walled-bed", "rough-valley"])
 def test_wse_for_discharge_carries_that_discharge(shape: str) -> None:
     xs = SHAPES[shape]()
-    table = ConveyanceTable(xs)
 
     for q in np.geomspace(0.01, 5000.0, 60):
         wse = wse_for_discharge(xs, q, SLOPE)
-        assert table.wse_for_discharge(q, SLOPE) == wse
-        assert discharge(xs, SLOPE, wse=wse) == pytest.approx(q, rel=1e-8)
+        assert discharge(xs, SLOPE, wse=wse) == pytest.approx(q, rel=1e-6)  # the solve stops within 1e-10 m
 
 
 def test_wse_for_discharge_agrees_with_bisection() -> None:
@@ -377,8 +350,7 @@ def test_wse_for_discharge_agrees_with_bisection() -> None:
     xs = trapezoid(10.0, 2.0)
 
     for q in [0.5, 5.0, 50.0, 500.0]:
-        bisected = _bisect_wse(xs.elevations, xs.mannings_n, xs.ordinate_distance, q / math.sqrt(SLOPE), 60)
-        assert wse_for_discharge(xs, q, SLOPE) == pytest.approx(bisected, abs=1e-9)
+        assert wse_for_discharge(xs, q, SLOPE) == pytest.approx(bisected_wse(xs, q), abs=1e-9)
 
 
 def test_lowest_wse_is_returned_when_discharge_falls_as_water_spreads() -> None:
@@ -419,27 +391,6 @@ def test_no_discharge_is_no_depth() -> None:
     xs = trapezoid(10.0, 2.0)
 
     assert wse_for_discharge(xs, 0.0, SLOPE) == BED
-    assert ConveyanceTable(xs).wse_for_discharge(0.0, SLOPE) == BED
-
-
-def test_one_table_serves_any_slope() -> None:
-    table = ConveyanceTable(trapezoid(10.0, 2.0))
-    wse = table.wse_for_discharge(50.0, SLOPE)
-
-    # Quadrupling the slope doubles the discharge at the same water level
-    assert table.wse_for_discharge(100.0, 4 * SLOPE) == pytest.approx(wse, abs=1e-9)
-    assert table.discharge(4 * SLOPE, wse=wse) == pytest.approx(100.0, rel=1e-9)
-
-
-def test_a_table_limited_in_depth_covers_that_depth() -> None:
-    xs = rough_valley()
-    table = ConveyanceTable(xs, max_depth=5.0)
-    top = float(table.table[-1, 1])  # the end of its last interval
-    assert top >= BED + 5.0
-
-    assert table.discharge(SLOPE, depth=4.0) == pytest.approx(discharge(xs, SLOPE, depth=4.0), rel=1e-9)
-    assert math.isnan(table.discharge(SLOPE, wse=top + 0.1))
-    assert math.isnan(table.wse_for_discharge(discharge(xs, SLOPE, wse=top + 0.1), SLOPE))
 
 
 # --- Cross sections divided at the banks -------------------------------------------------------------------
@@ -485,10 +436,12 @@ def test_the_subsections_add_up_to_the_whole_section(shape: str, banks: tuple[fl
     ground = xs.elevations[xs.elevations < 9000]
 
     for wse in np.concatenate([np.linspace(ground.min(), ground.max() + 2, 80), ground]):
-        parts = hydraulics.compound_wetted_geometry(xs.elevations, xs.mannings_n, xs.ordinate_distance, *banks, wse)
-        whole = hydraulics.wetted_geometry(xs.elevations, xs.mannings_n, xs.ordinate_distance, wse)
-        assert np.sum(parts, axis=0) == pytest.approx(whole, rel=1e-12, abs=1e-12)
-        assert np.min(parts) >= 0.0
+        parts = compound_geometry(xs, wse=wse)
+        whole = hydraulic_geometry(xs, wse=wse)
+        for field in ("area", "wetted_perimeter", "top_width"):
+            assert sum(getattr(part, field) for part in parts) == pytest.approx(getattr(whole, field), rel=1e-12,
+                                                                               abs=1e-12)
+        assert min(min(part) for part in parts) >= 0.0
 
 
 def test_without_banks_the_section_is_all_channel() -> None:
@@ -505,11 +458,10 @@ def test_without_banks_the_section_is_all_channel() -> None:
 def test_banks_that_divide_nothing_leave_one_section(banks: tuple[float, float]) -> None:
     """Undefined banks (negative or NaN), and banks at or beyond the ends of the section (160 m here)."""
     xs = rough_valley()
+    divided = with_banks(rough_valley(), *banks)
 
     for wse in np.linspace(100.0, 160.0, 61):
-        k = hydraulics.compound_conveyance(xs.elevations, xs.mannings_n, xs.ordinate_distance, *banks, wse)
-        assert k == pytest.approx(hydraulics.conveyance(xs.elevations, xs.mannings_n, xs.ordinate_distance, wse),
-                                  rel=1e-12)
+        assert discharge(divided, SLOPE, wse=wse) == pytest.approx(discharge(xs, SLOPE, wse=wse), rel=1e-12)
 
 
 def test_water_inside_the_banks_is_all_channel() -> None:
@@ -520,8 +472,8 @@ def test_water_inside_the_banks_is_all_channel() -> None:
 
     assert parts.left_overbank == parts.right_overbank == DRY
     assert parts.channel == pytest.approx(hydraulic_geometry(xs, wse=101.5), rel=1e-12)
-    assert discharge(xs, SLOPE, wse=101.5) == pytest.approx(
-        hydraulics.conveyance(xs.elevations, xs.mannings_n, 1.0, 101.5) * math.sqrt(SLOPE), rel=1e-12)
+    assert discharge(xs, SLOPE, wse=101.5) == pytest.approx(discharge(with_banks(xs, -1.0, -1.0), SLOPE, wse=101.5),
+                                                            rel=1e-12)
 
 
 @pytest.mark.parametrize("banks", [(7.0, 13.0), (7.3, 12.9), (0.4, 0.0)])
@@ -591,26 +543,25 @@ def test_mirroring_swaps_the_overbanks() -> None:
         assert discharge(mirrored, SLOPE, wse=wse) == pytest.approx(discharge(xs, SLOPE, wse=wse), rel=1e-12)
 
 
-def test_matches_the_legacy_compound_calculation_for_a_uniform_bed() -> None:
-    """ARC's current divided-channel calculation, with banks on ordinates and its depth-varying roughness switched
-    off, on a bumpy valley that the water never fills to either end."""
-    rng = np.random.default_rng(7)
-    x = 2.0 * np.arange(-60, 61)
-    elevations = BED + 0.004 * x**2 + rng.normal(0.0, 0.15, x.size)
-    elevations[60] = BED
-    right, left = elevations[60:].copy(), elevations[60::-1].copy()
-    n_right, n_left = np.full(61, N), np.full(61, N)
+def test_a_divided_section_matches_the_hand_calculation() -> None:
+    """A V channel 1 m deep between banks 1 m either side, level ground for 1 m beyond each bank, then ground rising
+    2 m over 1 m. Water 2 m deep fills the channel (3 m² over 2√2 m of bed) and spreads 1.5 m into each overbank
+    (1.25 m² over 1 + √1.25 m)."""
+    xs = with_banks(make_section(BED + np.array([3.0, 1.0, 1.0, 0.0, 1.0, 1.0, 3.0])), 1.0, 1.0)
+    channel_perimeter, overbank_perimeter = 2.0 * math.sqrt(2.0), 1.0 + math.sqrt(1.25)
 
-    for left_bank, right_bank in [(1, 1), (4, 9), (12, 3)]:
-        xs = with_banks(make_section(elevations, spacing=2.0), 2.0 * left_bank, 2.0 * right_bank)
-        for wse in [100.3, 101.0, 102.5, 104.0, 108.0]:
-            area, perimeter, width, legacy_k = _compound_section_conveyance(
-                left, n_left, left_bank, right, n_right, right_bank, wse, 2.0, 6.0, 1.0, 1.0)
-            whole = hydraulic_geometry(xs, wse=wse)
-            assert whole.area == pytest.approx(area, rel=1e-12)
-            assert whole.wetted_perimeter == pytest.approx(perimeter, rel=1e-12)
-            assert whole.top_width == pytest.approx(width, rel=1e-12)
-            assert discharge(xs, SLOPE, wse=wse) == pytest.approx(legacy_k * math.sqrt(SLOPE), rel=1e-12)
+    parts = compound_geometry(xs, wse=BED + 2.0)
+    whole = hydraulic_geometry(xs, wse=BED + 2.0)
+
+    assert (parts.channel.area, parts.channel.wetted_perimeter, parts.channel.top_width) == \
+        pytest.approx((3.0, channel_perimeter, 2.0), rel=1e-12)
+    for overbank in (parts.left_overbank, parts.right_overbank):
+        assert (overbank.area, overbank.wetted_perimeter, overbank.top_width) == \
+            pytest.approx((1.25, overbank_perimeter, 1.5), rel=1e-12)
+    assert (whole.area, whole.wetted_perimeter, whole.top_width) == \
+        pytest.approx((5.5, channel_perimeter + 2.0 * overbank_perimeter, 5.0), rel=1e-12)
+    expected = manning_conveyance(3.0, channel_perimeter) + 2.0 * manning_conveyance(1.25, overbank_perimeter)
+    assert discharge(xs, SLOPE, wse=BED + 2.0) == pytest.approx(expected * math.sqrt(SLOPE), rel=1e-12)
 
 
 def test_banks_at_the_channel_edge_remove_the_dip_onto_a_flat_floodplain() -> None:
@@ -650,41 +601,14 @@ def test_conveyance_without_powers_matches_the_formula() -> None:
     assert hydraulics._conveyance(1e120, 1.0) == pytest.approx(1e200, rel=1e-14)  # beyond the fast method's range
 
 
-@pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("banks", BANKS)
-def test_compound_table_matches_the_direct_calculation(shape: str, banks: tuple[float, float]) -> None:
-    xs = with_banks(SHAPES[shape](), *banks)
-    table = ConveyanceTable(xs)
-    assert table.compound
-    ground = xs.elevations[xs.elevations < 9000]
-    center = xs.elevations.size // 2
-    # The ground under each bank, where the water's edge passes from the channel into an overbank
-    bank_ground = [np.interp(banks[0] / xs.ordinate_distance, np.arange(center + 1), xs.elevations[center::-1]),
-                   np.interp(banks[1] / xs.ordinate_distance, np.arange(center + 1), xs.elevations[center:])]
-
-    # Compare area, wetted perimeter, top width and sum(P_i * n_i**1.5) rather than hydraulic radius and roughness,
-    # which are ratios of two tiny numbers for a subsection that the water only just reaches
-    for wse in np.concatenate([np.linspace(ground.min() - 1, ground.max() + 3, 300), ground, bank_ground]):
-        assert np.array(hydraulics.compound_table_geometry(table.table, wse)) == pytest.approx(
-            np.array(hydraulics.compound_wetted_geometry(xs.elevations, xs.mannings_n, xs.ordinate_distance, *banks,
-                                                         wse)), rel=1e-9, abs=1e-9)
-        assert table.discharge(SLOPE, wse=wse) == pytest.approx(discharge(xs, SLOPE, wse=wse), rel=1e-9, abs=1e-12)
-    for depth in [0.7, 2.3, 6.1]:
-        assert np.array(table.compound_geometry(depth=depth)) == pytest.approx(
-            np.array(compound_geometry(xs, depth=depth)), rel=1e-9, abs=1e-9)
-        assert table.geometry(depth=depth) == pytest.approx(hydraulic_geometry(xs, depth=depth), rel=1e-9, abs=1e-9)
-
-
 @pytest.mark.parametrize("shape", ["v-channel", "trapezoid", "flat-floodplain", "walled-bed", "rough-valley"])
 @pytest.mark.parametrize("banks", BANKS)
 def test_compound_wse_for_discharge_carries_that_discharge(shape: str, banks: tuple[float, float]) -> None:
     xs = with_banks(SHAPES[shape](), *banks)
-    table = ConveyanceTable(xs)
 
     for q in np.geomspace(0.01, 5000.0, 40):
         wse = wse_for_discharge(xs, q, SLOPE)
-        assert table.wse_for_discharge(q, SLOPE) == wse
-        assert discharge(xs, SLOPE, wse=wse) == pytest.approx(q, rel=1e-8)
+        assert discharge(xs, SLOPE, wse=wse) == pytest.approx(q, rel=1e-6)  # the solve stops within 1e-10 m
 
 
 def test_compound_wse_agrees_with_bisection() -> None:
@@ -692,8 +616,7 @@ def test_compound_wse_agrees_with_bisection() -> None:
     xs = with_banks(flat_floodplain(), 2.0, 2.0)
 
     for q in [0.5, 5.0, 50.0, 500.0]:
-        bisected = _bisect_compound_wse(xs.elevations, xs.mannings_n, 1.0, 2.0, q / math.sqrt(SLOPE), 60)
-        assert wse_for_discharge(xs, q, SLOPE) == pytest.approx(bisected, abs=1e-9)
+        assert wse_for_discharge(xs, q, SLOPE) == pytest.approx(bisected_wse(xs, q), abs=1e-9)
 
 
 def test_compound_wse_is_the_lowest_when_an_overbank_s_discharge_falls() -> None:
@@ -718,23 +641,6 @@ def test_compound_wse_sits_on_the_ridge_when_the_overbank_behind_it_floods() -> 
     assert above > 1.5 * below
 
     assert wse_for_discharge(xs, (below + above) / 2, SLOPE) == 103.0
-    assert ConveyanceTable(xs).wse_for_discharge((below + above) / 2, SLOPE) == 103.0
-
-
-def test_compound_conveyance_is_convex_between_ordinate_elevations() -> None:
-    """The exact solve relies on this (see the notes above the compound table columns): sampled across each
-    interval of a table, conveyance never bends downward."""
-    for shape, banks in [("rough-valley", (7.3, 12.9)), ("flat-floodplain", (1.0, 3.5)), ("trapezoid", (0.0, 6.0))]:
-        xs = with_banks(SHAPES[shape](), *banks)
-        table = hydraulics.build_compound_conveyance_table(xs.elevations, xs.mannings_n, xs.ordinate_distance,
-                                                           *banks, 125.0)
-        for row in table:
-            end = min(row[1], row[0] + 10.0)  # the last interval goes on forever
-            if not end - row[0] > 1e-6:
-                continue
-            levels = np.linspace(row[0], end, 23)[1:]
-            k = np.array([hydraulics.compound_table_conveyance(table, level) for level in levels])
-            assert np.all(k[:-2] - 2 * k[1:-1] + k[2:] >= -1e-9 * k[2:])
 
 
 def test_compound_discharge_above_the_highest_ground_is_held_between_the_walls() -> None:
@@ -754,7 +660,6 @@ def test_compound_edge_cases() -> None:
 
     xs = with_banks(trapezoid(10.0, 2.0), 3.0, 4.5)
     assert wse_for_discharge(xs, 0.0, SLOPE) == BED
-    assert ConveyanceTable(xs).wse_for_discharge(0.0, SLOPE) == BED
     assert compound_geometry(xs, depth=0.0) == CompoundGeometry(DRY, DRY, DRY)
 
     xs32 = with_banks(XSection(xs.elevations.astype(np.float32), xs.mannings_n.astype(np.float32), 1.0), 3.0, 4.5)
@@ -762,233 +667,24 @@ def test_compound_edge_cases() -> None:
     assert wse_for_discharge(xs32, 20.0, SLOPE) == pytest.approx(wse_for_discharge(xs, 20.0, SLOPE), abs=1e-5)
 
 
-def test_a_compound_table_limited_in_depth_covers_that_depth() -> None:
-    xs = with_banks(rough_valley(), 7.3, 12.9)
-    table = ConveyanceTable(xs, max_depth=5.0)
-    top = float(table.table[-1, 1])
-    assert top >= BED + 5.0
-
-    assert table.discharge(SLOPE, depth=4.0) == pytest.approx(discharge(xs, SLOPE, depth=4.0), rel=1e-9)
-    assert math.isnan(table.discharge(SLOPE, wse=top + 0.1))
-    assert all(math.isnan(part.area) for part in table.compound_geometry(wse=top + 0.1))
-    assert math.isnan(table.wse_for_discharge(discharge(xs, SLOPE, wse=top + 0.1), SLOPE))
-
-
-def test_an_undivided_table_has_all_its_water_in_the_channel() -> None:
-    xs = rough_valley()
-    table = ConveyanceTable(xs)
-    assert not table.compound
-
-    parts = table.compound_geometry(wse=110.0)
-    assert parts.channel == pytest.approx(hydraulic_geometry(xs, wse=110.0), rel=1e-9)
-    assert parts.left_overbank == parts.right_overbank == DRY
-
-
-# --- Speed (each compiled loop runs once first, so compilation isn't counted) ------------------------------
-
-# These helpers are compiled but not cached: a cached function isn't recompiled when a function it calls
-# in another module changes, so a cache would keep testing old versions of the hydraulics functions.
-
-
-@njit
-def _bisect_wse(elevations, mannings_n, spacing, target, evaluations):
-    lo = elevations[elevations.size // 2]
-    hi = lo + 25.0
-    for _ in range(evaluations):
-        mid = 0.5 * (lo + hi)
-        if hydraulics.conveyance(elevations, mannings_n, spacing, mid) < target:
-            lo = mid
-        else:
-            hi = mid
-    return hi
-
-
-@njit
-def _repeat_conveyance(elevations, mannings_n, spacing, wse, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.conveyance(elevations, mannings_n, spacing, wse + 1e-9 * (i % 7))
-    return total
-
-
-@njit
-def _repeat_legacy_discharge(right, n_right, left, n_left, spacing, wse, calls):
-    total = 0.0
-    for i in range(calls):
-        total += calculate_discharge_from_wse(wse + 1e-9 * (i % 7), 1.0, right, right.size, n_right,
-                                              left, left.size, n_left, spacing, 6.0, 1.0, 1.0)
-    return total
-
-
-@njit
-def _repeat_bisection(elevations, mannings_n, spacing, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += _bisect_wse(elevations, mannings_n, spacing, target * (1.0 + 1e-9 * (i % 7)), 25)
-    return total
-
-
-@njit
-def _repeat_wse_for_conveyance(elevations, mannings_n, spacing, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.wse_for_conveyance(elevations, mannings_n, spacing, target * (1.0 + 1e-9 * (i % 7)))
-    return total
-
-
-@njit
-def _repeat_table_wse_for_conveyance(table, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.table_wse_for_conveyance(table, target * (1.0 + 1e-9 * (i % 7)))
-    return total
-
-
-@njit
-def _bisect_compound_wse(elevations, mannings_n, spacing, bank, target, evaluations):
-    lo = elevations[elevations.size // 2]
-    hi = lo + 25.0
-    for _ in range(evaluations):
-        mid = 0.5 * (lo + hi)
-        if hydraulics.compound_conveyance(elevations, mannings_n, spacing, bank, bank, mid) < target:
-            lo = mid
-        else:
-            hi = mid
-    return hi
-
-
-@njit
-def _repeat_compound_conveyance(elevations, mannings_n, spacing, bank, wse, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.compound_conveyance(elevations, mannings_n, spacing, bank, bank, wse + 1e-9 * (i % 7))
-    return total
-
-
-@njit
-def _repeat_legacy_compound_discharge(right, n_right, left, n_left, spacing, bank_index, wse, calls):
-    total = 0.0
-    for i in range(calls):
-        total += calculate_discharge_from_wse(wse + 1e-9 * (i % 7), 1.0, right, right.size, n_right, left, left.size,
-                                              n_left, spacing, 6.0, 1.0, 1.0, 1.0, bank_index, bank_index)
-    return total
-
-
-@njit
-def _repeat_compound_bisection(elevations, mannings_n, spacing, bank, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += _bisect_compound_wse(elevations, mannings_n, spacing, bank, target * (1.0 + 1e-9 * (i % 7)), 25)
-    return total
-
-
-@njit
-def _repeat_wse_for_compound_conveyance(elevations, mannings_n, spacing, bank, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.wse_for_compound_conveyance(elevations, mannings_n, spacing, bank, bank,
-                                                        target * (1.0 + 1e-9 * (i % 7)))
-    return total
-
-
-@njit
-def _repeat_compound_table_wse_for_conveyance(table, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.compound_table_wse_for_conveyance(table, target * (1.0 + 1e-9 * (i % 7)))
-    return total
-
-
-def _seconds_per_call(repeat, *args, calls: int) -> float:
-    """Best of five timed runs of a compiled loop, after one untimed call to compile it."""
-    repeat(*args, 1)
-    best = math.inf
-    for _ in range(5):
-        start = time.perf_counter()
-        repeat(*args, calls)
-        best = min(best, (time.perf_counter() - start) / calls)
-    return best
-
-
-def test_conveyance_is_much_faster_than_the_legacy_calculation() -> None:
-    xs = typical_section()
-    right, left = xs.elevations[250:].copy(), xs.elevations[250::-1].copy()
-    n_right, n_left = xs.mannings_n[250:].copy(), xs.mannings_n[250::-1].copy()
-
-    new = _seconds_per_call(_repeat_conveyance, xs.elevations, xs.mannings_n, 10.0, 104.0, calls=20000)
-    legacy = _seconds_per_call(_repeat_legacy_discharge, right, n_right, left, n_left, 10.0, 104.0, calls=2000)
-
-    assert new < 5e-6
-    assert new < legacy / 3
-
-
-def test_exact_wse_for_discharge_is_faster_than_bisection() -> None:
-    xs = typical_section()
-    target = 200.0 / math.sqrt(SLOPE)
-    table = ConveyanceTable(xs, max_depth=25.0).table
-
-    bisection = _seconds_per_call(_repeat_bisection, xs.elevations, xs.mannings_n, 10.0, target, calls=2000)
-    one_off = _seconds_per_call(_repeat_wse_for_conveyance, xs.elevations, xs.mannings_n, 10.0, target, calls=20000)
-    from_table = _seconds_per_call(_repeat_table_wse_for_conveyance, table, target, calls=20000)
-
-    assert one_off < bisection / 2
-    assert from_table < bisection / 5
-
-
-def test_compound_conveyance_is_much_faster_than_the_legacy_calculation() -> None:
-    """With banks at the channel's edges, one ordinate either side of the stream cell."""
-    xs = typical_section()
-    right, left = xs.elevations[250:].copy(), xs.elevations[250::-1].copy()
-    n_right, n_left = xs.mannings_n[250:].copy(), xs.mannings_n[250::-1].copy()
-
-    new = _seconds_per_call(_repeat_compound_conveyance, xs.elevations, xs.mannings_n, 10.0, 10.0, 104.0, calls=20000)
-    legacy = _seconds_per_call(_repeat_legacy_compound_discharge, right, n_right, left, n_left, 10.0, 1, 104.0,
-                               calls=2000)
-
-    assert new < 5e-6
-    assert new < legacy / 3
-
-
-def test_exact_compound_wse_for_discharge_is_faster_than_bisection() -> None:
-    xs = with_banks(typical_section(), 10.0, 10.0)
-    target = 200.0 / math.sqrt(SLOPE)
-    table = ConveyanceTable(xs, max_depth=25.0).table
-
-    bisection = _seconds_per_call(_repeat_compound_bisection, xs.elevations, xs.mannings_n, 10.0, 10.0, target,
-                                  calls=2000)
-    one_off = _seconds_per_call(_repeat_wse_for_compound_conveyance, xs.elevations, xs.mannings_n, 10.0, 10.0, target,
-                                calls=20000)
-    from_table = _seconds_per_call(_repeat_compound_table_wse_for_conveyance, table, target, calls=20000)
-
-    assert one_off < bisection / 2
-    assert from_table < bisection / 5
-
-
 # --- Depth-varying roughness and the slope factor ------------------------------------------------------------------
-
-
-def flat_bed_channel(rng, size: int) -> tuple[XSection, int, int]:
-    """A flat bed out to a random ordinate on each side, then ground rising at random: while the water is below the
-    first rise either side, every fully wet segment is level, so its depth is the same at either end."""
-    center = size // 2
-    left, right = int(rng.integers(1, center)), int(rng.integers(1, center))
-    elevations = np.full(size, BED)
-    elevations[center + right:] = BED + np.cumsum(rng.uniform(0.2, 3.0, size - center - right))
-    elevations[:center - left + 1] = (BED + np.cumsum(rng.uniform(0.2, 3.0, center - left + 1)))[::-1]
-    return make_section(elevations, rng.uniform(0.02, 0.08)), left, right
 
 
 def random_roughness(rng) -> DepthRoughness:
     return DepthRoughness(float(rng.uniform(0.5, 10.0)), float(rng.uniform(1.0, 3.0)), float(rng.uniform(0.2, 1.0)))
 
 
-def test_the_depth_scaling_is_legacy_s() -> None:
-    rng = np.random.default_rng(40)
-    for _ in range(200):
-        n0, depth = rng.uniform(0.01, 0.2, 50), rng.normal(0.0, 2.0, 50)
-        roughness = random_roughness(rng)
-        legacy = _adjust_n_by_depth(n0, depth, roughness.shallow_factor, roughness.deep_factor, roughness.k_decay)
-        assert np.array_equal(roughness.scale(n0, depth), legacy)
+def test_the_depth_scaling_follows_its_formula() -> None:
+    """n = n0 * (deep_factor + (shallow_factor - deep_factor) / (1 + k_decay * depth)), a dry depth counting as 0,
+    for arrays as for single values."""
+    n0 = np.full(4, 0.03)
+    depth = np.array([-1.0, 0.0, 0.5, 100.0])
+
+    scaled = DepthRoughness(2.0, 2.5, 0.6).scale(n0, depth)
+
+    assert scaled == pytest.approx(0.03 * (0.6 + 1.9 / (1.0 + 2.0 * np.array([0.0, 0.0, 0.5, 100.0]))), rel=1e-15)
+    assert DepthRoughness(2.0, 1.0, 1.0).scale(n0, depth) == pytest.approx(n0, rel=1e-15)
+    assert np.array_equal(n0, np.full(4, 0.03)) and np.array_equal(depth, [-1.0, 0.0, 0.5, 100.0])  # unchanged
 
 
 def test_shallow_water_is_shallow_factor_times_rougher() -> None:
@@ -1021,56 +717,23 @@ def test_each_segment_takes_the_depth_over_its_inner_end() -> None:
     n_15 = lambda depth: float(roughness.scale(N, depth)) ** 1.5
     length = math.sqrt(2.0)
 
-    area, perimeter, top_width, weighted = hydraulics.depth_varying_geometry(xs.elevations, xs.mannings_n, 1.0,
-                                                                             BED + 2.0, *roughness)
+    geometry = hydraulic_geometry(xs, wse=BED + 2.0, roughness=roughness)
 
-    assert (area, perimeter, top_width) == pytest.approx((4.0, 4 * length, 4.0), rel=1e-12)
-    assert weighted == pytest.approx(2 * (length * n_15(2.0) + length * n_15(1.0)), rel=1e-12)
+    assert (geometry.area, geometry.wetted_perimeter, geometry.top_width) == pytest.approx((4.0, 4 * length, 4.0),
+                                                                                         rel=1e-12)
+    weighted = 2 * (length * n_15(2.0) + length * n_15(1.0))
+    assert geometry.mannings_n == pytest.approx((weighted / (4 * length)) ** (2 / 3), rel=1e-12)
 
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_factors_of_one_leave_the_roughness_as_it_is(shape: str) -> None:
     rng = np.random.default_rng(41)
-    xs = SHAPES[shape]()
     for left, right in BANKS + [(-1.0, -1.0)]:
+        xs = with_banks(SHAPES[shape](), left, right)
         for wse in BED + rng.uniform(-0.5, 8.0, 20):
-            plain = hydraulics.compound_wetted_geometry(xs.elevations, xs.mannings_n, 1.0, left, right, wse)
-            scaled = hydraulics.depth_varying_compound_geometry(xs.elevations, xs.mannings_n, 1.0, left, right, wse,
-                                                                float(rng.uniform(0.5, 9.0)), 1.0, 1.0)
-            assert scaled == plain
-
-
-def test_depth_varying_discharge_matches_legacy_on_flat_beds() -> None:
-    """Where the conventions agree: uniform n, a flat bed, and the water below the first rise either side. With and
-    without banks on ordinates, and with the slope factor."""
-    rng = np.random.default_rng(42)
-    for _ in range(2000):
-        xs, left, right = flat_bed_channel(rng, 2 * int(rng.integers(3, 30)) + 1)
-        center = xs.elevations.size // 2
-        top = min(xs.elevations[center - left], xs.elevations[center + right])
-        wse = float(np.round(BED + rng.uniform(0.001, top - BED - 1e-6), 3))  # legacy rounds it to the millimetre
-        if not wse < top:
-            continue
-        roughness, factor = random_roughness(rng), float(rng.uniform(0.5, 2.0))
-        side1, side2 = xs.elevations[center:].copy(), xs.elevations[center::-1].copy()
-        n1, n2 = xs.mannings_n[center:].copy(), xs.mannings_n[center::-1].copy()
-        bank1, bank2 = int(rng.integers(1, right + 1)), int(rng.integers(1, left + 1))
-
-        legacy = calculate_discharge_from_wse(wse, 1.0, side1, side1.size, n1, side2, side2.size, n2, 1.0,
-                                              *roughness, factor, -1, -1)
-        assert discharge(xs, 1.0, wse=wse, roughness=roughness, slope_factor=factor) == \
-            pytest.approx(legacy, rel=1e-12)
-        legacy = calculate_discharge_from_wse(wse, 1.0, side1, side1.size, n1, side2, side2.size, n2, 1.0,
-                                              *roughness, factor, bank1, bank2)
-        banked = with_banks(make_section(xs.elevations, xs.mannings_n), float(bank2), float(bank1))
-        assert discharge(banked, 1.0, wse=wse, roughness=roughness, slope_factor=factor) == \
-            pytest.approx(legacy, rel=1e-12)
-        area, perimeter, _, q, top_width, _ = _calculate_all(side1, side1.size, n1, side2, side2.size, n2, 1.0, wse,
-                                                             1.0, *roughness, factor, bank1, bank2)
-        geometry = hydraulic_geometry(banked, wse=np.round(wse, 3), roughness=roughness)
-        assert (round(geometry.area, 3), round(geometry.wetted_perimeter, 3), round(geometry.top_width, 3)) == \
-            (area, perimeter, top_width)
-        assert round(discharge(banked, 1.0, wse=np.round(wse, 3), roughness=roughness, slope_factor=factor), 3) == q
+            roughness = DepthRoughness(float(rng.uniform(0.5, 9.0)), 1.0, 1.0)
+            assert compound_geometry(xs, wse=wse, roughness=roughness) == compound_geometry(xs, wse=wse)
+            assert discharge(xs, SLOPE, wse=wse, roughness=roughness) == discharge(xs, SLOPE, wse=wse)
 
 
 def test_the_depth_varying_wse_is_the_lowest_that_carries_the_flow() -> None:
@@ -1098,7 +761,7 @@ def test_the_depth_varying_wse_is_the_lowest_that_carries_the_flow() -> None:
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-def test_with_factors_of_one_the_wse_is_the_table_s(shape: str) -> None:
+def test_with_factors_of_one_the_wse_is_the_constant_roughness_one(shape: str) -> None:
     xs = SHAPES[shape]()
     for left, right in BANKS + [(-1.0, -1.0)]:
         with_banks(xs, left, right)
@@ -1110,15 +773,15 @@ def test_with_factors_of_one_the_wse_is_the_table_s(shape: str) -> None:
 
 def test_the_depth_varying_wse_s_special_cases() -> None:
     xs = trapezoid(10.0, 2.0)
-    args = (xs.elevations, xs.mannings_n, 1.0, -1.0, -1.0)
+    args = (*hydraulics.hydraulic_profile(xs), -1.0, -1.0)
     roughness = (6.0, 2.0, 1.0)
 
-    assert hydraulics.wse_for_depth_varying_conveyance(*args, 0.0, *roughness) == BED
-    assert hydraulics.wse_for_depth_varying_conveyance(*args, -5.0, *roughness) == BED
-    assert math.isnan(hydraulics.wse_for_depth_varying_conveyance(*args, math.nan, *roughness))
-    reach = hydraulics.wse_for_depth_varying_conveyance(*args, 5000.0, *roughness)
-    assert math.isnan(hydraulics.wse_for_depth_varying_conveyance(*args, 5000.0, *roughness, reach - 0.01))
-    assert hydraulics.wse_for_depth_varying_conveyance(*args, 5000.0, *roughness, reach + 0.01) == reach
+    assert hydraulics.wse_for_profile_conveyance(*args, 0.0, *roughness) == BED
+    assert hydraulics.wse_for_profile_conveyance(*args, -5.0, *roughness) == BED
+    assert math.isnan(hydraulics.wse_for_profile_conveyance(*args, math.nan, *roughness))
+    reach = hydraulics.wse_for_profile_conveyance(*args, 5000.0, *roughness)
+    assert math.isnan(hydraulics.wse_for_profile_conveyance(*args, 5000.0, *roughness, reach - 0.01))
+    assert hydraulics.wse_for_profile_conveyance(*args, 5000.0, *roughness, reach + 0.01) == reach
     # Water held in by walls rises until it carries the flow, however deep
     walled = walled_bed()
     deep = wse_for_discharge(walled, 500.0, SLOPE, roughness=DepthRoughness())
@@ -1128,7 +791,6 @@ def test_the_depth_varying_wse_s_special_cases() -> None:
 
 def test_the_slope_factor_multiplies_the_discharge() -> None:
     xs = channel_and_floodplains()
-    table = ConveyanceTable(xs)
 
     for factor in (0.5, 1.0, 1.7):
         for roughness in (None, DepthRoughness()):
@@ -1137,17 +799,13 @@ def test_the_slope_factor_multiplies_the_discharge() -> None:
                 pytest.approx(q * factor, rel=1e-12)
             assert wse_for_discharge(xs, q * factor, SLOPE, roughness=roughness, slope_factor=factor) == \
                 pytest.approx(wse_for_discharge(xs, q, SLOPE, roughness=roughness), abs=1e-9)
-        assert table.discharge(SLOPE, depth=2.5, slope_factor=factor) == \
-            pytest.approx(factor * table.discharge(SLOPE, depth=2.5), rel=1e-12)
-        assert table.wse_for_discharge(10.0 * factor, SLOPE, slope_factor=factor) == \
-            pytest.approx(table.wse_for_discharge(10.0, SLOPE), abs=1e-9)
 
 
 @pytest.mark.parametrize("roughness, message", [
     (DepthRoughness(6.0, 0.9, 1.0), "shallow_factor"), (DepthRoughness(6.0, 2.0, 0.0), "deep_factor"),
     (DepthRoughness(6.0, 2.0, 1.2), "deep_factor"), (DepthRoughness(0.0, 2.0, 1.0), "k_decay"),
     (DepthRoughness(math.nan, 2.0, 1.0), "k_decay")])
-def test_roughness_parameters_are_checked_as_legacy_checked_them(roughness, message: str) -> None:
+def test_roughness_parameters_are_checked(roughness, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         discharge(trapezoid(10.0, 2.0), SLOPE, depth=1.0, roughness=roughness)
     with pytest.raises(ValueError, match=message):
@@ -1160,79 +818,11 @@ def test_the_slope_factor_must_be_finite_and_positive(factor: float) -> None:
         discharge(trapezoid(10.0, 2.0), SLOPE, depth=1.0, slope_factor=factor)
 
 
-@njit
-def _repeat_depth_varying_conveyance(elevations, mannings_n, spacing, bank, wse, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.depth_varying_conveyance(elevations, mannings_n, spacing, bank, bank, wse + 1e-9 * (i % 7),
-                                                     6.0, 2.0, 1.0)
-    return total
-
-
-@njit
-def _repeat_legacy_depth_varying_discharge(right, n_right, left, n_left, spacing, bank_index, wse, calls):
-    total = 0.0
-    for i in range(calls):
-        total += calculate_discharge_from_wse(wse + 1e-9 * (i % 7), 1.0, right, right.size, n_right, left, left.size,
-                                              n_left, spacing, 6.0, 2.0, 1.0, 1.0, bank_index, bank_index)
-    return total
-
-
-@njit
-def _repeat_wse_for_depth_varying_conveyance(elevations, mannings_n, spacing, bank, target, calls):
-    total = 0.0
-    for i in range(calls):
-        total += hydraulics.wse_for_depth_varying_conveyance(elevations, mannings_n, spacing, bank, bank,
-                                                             target * (1.0 + 1e-9 * (i % 7)), 6.0, 2.0, 1.0)
-    return total
-
-
-@njit
-def _repeat_legacy_wse_search(right, n_right, left, n_left, spacing, bank_index, q, slope, calls):
-    """Legacy's search for the maximum flow's water surface: steps of 0.5 m, then 0.05 m, then 0.01 m."""
-    args = (right, right.size, n_right, left, left.size, n_left, spacing, 6.0, 2.0, 1.0, 1.0, bank_index, bank_index)
-    total = 0.0
-    for i in range(calls):
-        target = q * (1.0 + 1e-9 * (i % 7))
-        wse, _, _ = find_wse(101, right[0], 0.5, target, args, slope)
-        wse, _, _ = find_wse(101, max(wse - 0.5, right[0]), 0.05, target, args, slope)
-        wse, _, _ = find_wse(2501, max(wse - 0.05, right[0]), 0.01, target, args, slope)
-        total += wse
-    return total
-
-
-def test_depth_varying_conveyance_is_faster_than_the_legacy_calculation() -> None:
-    """With legacy's default parameters, and banks at the channel's edges one ordinate either side."""
-    xs = typical_section()
-    right, left = xs.elevations[250:].copy(), xs.elevations[250::-1].copy()
-    n_right, n_left = xs.mannings_n[250:].copy(), xs.mannings_n[250::-1].copy()
-
-    new = _seconds_per_call(_repeat_depth_varying_conveyance, xs.elevations, xs.mannings_n, 10.0, 10.0, 104.0,
-                            calls=20000)
-    legacy = _seconds_per_call(_repeat_legacy_depth_varying_discharge, right, n_right, left, n_left, 10.0, 1, 104.0,
-                               calls=2000)
-
-    assert new < legacy / 3
-
-
-def test_the_exact_depth_varying_wse_is_faster_than_legacy_s_search() -> None:
-    xs = typical_section()
-    right, left = xs.elevations[250:].copy(), xs.elevations[250::-1].copy()
-    n_right, n_left = xs.mannings_n[250:].copy(), xs.mannings_n[250::-1].copy()
-
-    new = _seconds_per_call(_repeat_wse_for_depth_varying_conveyance, xs.elevations, xs.mannings_n, 10.0, 10.0,
-                            200.0 / math.sqrt(SLOPE), calls=20000)
-    legacy = _seconds_per_call(_repeat_legacy_wse_search, right, n_right, left, n_left, 10.0, 1, 200.0, SLOPE,
-                               calls=500)
-
-    assert new < legacy / 10
-
-
 # --- Profiles ---------------------------------------------------------------------------------------------------
 
 
 def random_valley(rng) -> XSection:
-    """A random valley with walls, spills and banks sometimes, as in the depth-varying tests."""
+    """A random valley with walls, spills and banks sometimes."""
     size = 2 * int(rng.integers(3, 40)) + 1
     elevations = BED + np.cumsum(rng.normal(0.0, 0.7, size))
     elevations -= elevations[size // 2] - BED
@@ -1257,25 +847,6 @@ def split_profile(rng, profile, extra: int, keep=()):
     all_n = np.concatenate([n, n[inner]])[order]
     return hydraulics.Profile(all_stations, np.interp(all_stations, stations, elevations), all_n,
                               int(np.flatnonzero(all_stations == 0.0)[0]))
-
-
-def test_a_profile_of_the_ordinates_has_the_ordinates_hydraulics() -> None:
-    rng = np.random.default_rng(60)
-    for _ in range(300):
-        xs = random_valley(rng)
-        profile = hydraulics.hydraulic_profile(xs)
-        banks = (xs.left_bank_distance, xs.right_bank_distance)
-        roughness = random_roughness(rng) if rng.random() < 0.7 else DepthRoughness(6.0, 1.0, 1.0)
-        for wse in BED + rng.uniform(-0.5, 8.0, 10):
-            expected = hydraulics.depth_varying_compound_geometry(xs.elevations, xs.mannings_n, xs.ordinate_distance,
-                                                                  *banks, wse, *roughness)
-            got = hydraulics.profile_compound_geometry(*profile, *banks, wse, *roughness)
-            np.testing.assert_allclose(np.array(got), np.array(expected), rtol=1e-12, atol=1e-9)
-        target = float(10 ** rng.uniform(1, 5))
-        expected = hydraulics.wse_for_depth_varying_conveyance(xs.elevations, xs.mannings_n, xs.ordinate_distance,
-                                                               *banks, target, *roughness)
-        got = hydraulics.wse_for_profile_conveyance(*profile, *banks, target, *roughness)
-        assert got == pytest.approx(expected, abs=1e-9) or (math.isnan(got) and math.isnan(expected))
 
 
 def test_splitting_the_ground_s_segments_changes_nothing() -> None:
@@ -1356,8 +927,7 @@ def test_the_profile_wse_is_the_lowest_that_carries_the_flow() -> None:
 
 
 def test_the_cross_section_functions_use_its_profile() -> None:
-    """With a profile set, the hydraulics are the profile's, and a conveyance table, built from the ordinates,
-    refuses the cross section."""
+    """With a profile set, the hydraulics are the profile's, not the ordinates'."""
     xs = channel_and_floodplains()
     xs.profile = hydraulics.Profile(np.array([-30.0, -12.0, -6.0, 0.0, 6.0, 12.0, 30.0]),
                                     BED + np.array([2.0, 2.0, 0.0, 0.0, 0.0, 2.0, 2.0]), np.full(7, N), 3)
@@ -1368,5 +938,38 @@ def test_the_cross_section_functions_use_its_profile() -> None:
     q = discharge(xs, SLOPE, wse=BED + 1.5)
     assert wse_for_discharge(xs, q, SLOPE) == pytest.approx(BED + 1.5)
     assert wse_for_discharge(xs, q, SLOPE, roughness=DepthRoughness()) > BED + 1.5  # rougher when shallow
-    with pytest.raises(ValueError, match="profile"):
-        ConveyanceTable(xs)
+
+
+def test_the_hydraulics_at_many_water_surfaces_are_those_at_each() -> None:
+    """section_hydraulics_at, which works out ascending water surfaces together, gives what section_hydraulics gives
+    at each, bit for bit, as do the standard step's tables, whose levels may not ascend: on random profiles with
+    vertices between the ordinates, vertical faces, banks and walls, at water surfaces on the ground's vertices and
+    between them, dry and over the walls, with n varying with the depth or not."""
+    from arc import rating_curve, standard_step
+    rng = np.random.default_rng(63)
+    for _ in range(400):
+        xs = random_valley(rng)
+        stations, elevations, n, center = split_profile(rng, hydraulics.hydraulic_profile(xs),
+                                                        int(rng.integers(0, 10)))
+        for k in rng.integers(0, stations.size, 2):  # vertical faces
+            if k != center:
+                stations = np.insert(stations, k, stations[k])
+                elevations = np.insert(elevations, k, elevations[k] + rng.normal(0.0, 1.0))
+                n = np.insert(n, k, n[k])
+                center += int(k < center)
+        banks = (float(xs.left_bank_distance), float(xs.right_bank_distance))
+        roughness = [(1.0, 1.0, 1.0), tuple(random_roughness(rng)), (float(rng.uniform(0.5, 10.0)),) +
+                     (float(rng.uniform(0.2, 2.0)),) * 2][int(rng.integers(3))]
+        levels = np.concatenate([elevations[center] + rng.uniform(-1.0, 12.0, int(rng.integers(1, 50))),
+                                 rng.choice(elevations, 5), [10_000.0]])
+        levels = np.unique(levels)  # ascending
+        args = (stations, elevations, n, center, *banks)
+        got = rating_curve.section_hydraulics_at(*args, levels, *roughness)
+        expected = np.array([rating_curve.section_hydraulics(*args, wse, *roughness) for wse in levels])
+        assert np.array_equal(got.view(np.uint64), expected.view(np.uint64))
+        table = standard_step._table(*args, levels, *roughness)
+        shuffled = rng.permutation(levels)
+        table_shuffled = standard_step._table(*args, shuffled, *roughness)
+        order = np.argsort(shuffled)
+        for column, column_shuffled in zip(table, table_shuffled):
+            assert np.array_equal(column.view(np.uint64), column_shuffled[order].view(np.uint64))

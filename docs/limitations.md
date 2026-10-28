@@ -22,8 +22,7 @@ channel narrowing from a 60 m bed to 30 m, ARC's backwater peak was 0.07 m too h
 As a rule, where the water level matters the narrowest channel's bed should be about six cells across or more. On a
 30 m DEM that is most rivers under about 180 m wide. `Subcell_Channels: True` reconstructs the ground of channels
 under 10 cells across below the cell scale (see [Model Input File](model_input_file.md#cross-sections-and-slopes)): it brings the
-synthetic errors down to +0.004 m on 10 m cells and +0.07 m on 20 m, but on real 30 m DEMs it changed the flood maps
-by nothing beyond the noise between sites, and it costs about half a millisecond a narrow cross section. Cells whose
+synthetic errors down, but it costs about half a millisecond a narrow cross section. Cells whose
 channel is narrow and not reconstructed carry the `NARROW_CHANNEL` flag.
 
 ## Steep reaches
@@ -83,11 +82,3 @@ to the water above or below.
 - **Representative cross sections.** They average the cross sections whose area, velocity and top width are within
   two standard deviations of their reach's means. On cross sections that are all alike, rounding decides which those
   are, so their counts can change from run to run.
-
-## How far the results have been tested
-
-ARC's settings were chosen on 68 sites where the USGS mapped real floods, scored by the flood maps' Matthews
-correlation coefficient, and most of the differences between settings were within the noise between sites. Those are
-the same sites the settings were chosen on, so they say less about a new site than an independent test would. The
-hydraulics alone are checked against exact answers (Chow's channel and HEC-RAS's verification tests, see
-[Running the Tests](testing_unit_tests.md)).

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import pytest
-from scipy.ndimage import map_coordinates
 
-from arc.cross_section import CrossSection
-from arc.xsection.sampling import _compute_dem_coordinates, sample_cross_section
+from arc.xsection.sampling import sample_cross_section
 
 # Most tests use 10 m cells and a 100 m cross section centred on cell (50, 50) of a 101 x 101 raster.
 # Ordinates step one cell along whichever axis the section crosses fastest: 10 m along a row or column,
@@ -17,64 +13,6 @@ CELL = 10.0
 LENGTH = 100.0
 ROW = COL = 50
 STEPS = np.arange(-5, 6)  # ordinate positions from the left end to the right end
-
-
-@pytest.mark.parametrize(
-    ("stream_direction", "right_bank_step"),
-    [
-        pytest.param(0.0, (0, -1), id="flowing-east-right-bank-north"),
-        pytest.param(np.pi / 2, (1, 0), id="flowing-south-right-bank-east"),
-        pytest.param(np.pi, (0, 1), id="flowing-west-right-bank-south"),
-        pytest.param(3 * np.pi / 2, (-1, 0), id="flowing-north-right-bank-west"),
-    ],
-)
-def test_cross_section_runs_perpendicular_to_the_stream(stream_direction: float, right_bank_step: tuple[int, int]) -> None:
-    """Looking upstream, the ordinates run from the left bank to the right bank, one cell apart."""
-    cols, rows, spacing = _compute_dem_coordinates(ROW, COL, stream_direction, LENGTH, CELL, CELL)
-
-    col_step, row_step = right_bank_step
-    assert spacing == pytest.approx(CELL)
-    np.testing.assert_allclose(cols, COL + STEPS * col_step)
-    np.testing.assert_allclose(rows, ROW + STEPS * row_step)
-
-
-def test_diagonal_cross_section_steps_through_cell_centres() -> None:
-    """A stream flowing south-east gets a south-west to north-east section, one cell diagonal per ordinate."""
-    cols, rows, spacing = _compute_dem_coordinates(ROW, COL, np.pi / 4, LENGTH, CELL, CELL)
-
-    assert spacing == pytest.approx(CELL * np.sqrt(2))
-    np.testing.assert_allclose(cols, [47, 48, 49, 50, 51, 52, 53])
-    np.testing.assert_allclose(rows, [53, 52, 51, 50, 49, 48, 47])
-
-
-def test_cross_section_is_perpendicular_in_metres_when_cells_are_not_square() -> None:
-    """With 10 m wide, 20 m tall cells, a 30 degree stream still gets a section at right angles on the ground.
-
-    The section crosses a 10 m column every 20 m and a 20 m row every 23 m, so it steps one column per ordinate.
-    """
-    stream_direction = np.radians(30.0)
-    cols, rows, spacing = _compute_dem_coordinates(ROW, COL, stream_direction, LENGTH, 10.0, 20.0)
-
-    east_m = (cols - COL) * 10.0
-    south_m = (rows - ROW) * 20.0
-    along_stream_m = east_m * np.cos(stream_direction) + south_m * np.sin(stream_direction)
-
-    assert spacing == pytest.approx(20.0)
-    np.testing.assert_allclose(cols, COL + np.arange(-2, 3))
-    np.testing.assert_allclose(along_stream_m, 0.0, atol=1e-9)
-    np.testing.assert_allclose(np.hypot(east_m, south_m), spacing * np.array([2, 1, 0, 1, 2]))
-
-
-@pytest.mark.parametrize("length", [30.0, 50.0, 100.0, 150.0])
-def test_stream_cell_is_the_middle_ordinate_for_any_length(length: float) -> None:
-    cols, rows, spacing = _compute_dem_coordinates(ROW, COL, np.radians(20.0), length, CELL, CELL)
-    middle = cols.size // 2
-
-    assert cols.size % 2 == 1
-    assert (cols[middle], rows[middle]) == (COL, ROW)
-    np.testing.assert_allclose(np.hypot(np.diff(cols) * CELL, np.diff(rows) * CELL), spacing)
-    assert (cols.size - 1) * spacing <= length
-
 
 def test_samples_a_v_shaped_valley() -> None:
     """A south-flowing channel on column 50, with valley sides rising 1 m per 10 m cell."""
@@ -120,44 +58,6 @@ def test_ordinates_beyond_the_raster_are_walls() -> None:
     np.testing.assert_allclose(xs.elevations, np.where(off_raster, 9999.0, 100.0))
     np.testing.assert_allclose(xs.mannings_n[~off_raster], 0.035)
 
-
-def scipy_cross_section(dem, manning_n, row, col, stream_direction, length, dx, dy):
-    """What sample_cross_section gave when it interpolated with scipy."""
-    cols, rows, spacing = _compute_dem_coordinates(row, col, stream_direction, length, dx, dy)
-    return (map_coordinates(dem, [rows, cols], order=1, mode="constant", cval=9999),
-            map_coordinates(manning_n, [rows, cols], order=1, mode="constant", cval=9999), spacing)
-
-
-def test_values_are_map_coordinates_s_bit_for_bit() -> None:
-    """Random rasters, directions and cells, with NaNs, float32, views and centres off the raster."""
-    rng = np.random.default_rng(11)
-    cells = [(10.0, 10.0), (7.0, 13.0), (23.0, 31.0), (0.0002777, 0.0001944)]
-    for trial in range(2000):
-        shape = tuple(int(s) for s in rng.integers(1, 50, 2))
-        dem = rng.normal(100.0, 5.0, shape)
-        manning_n = rng.uniform(0.01, 0.2, shape)
-        if trial % 3 == 0:
-            dem[rng.random(shape) < 0.05] = np.nan
-        if trial % 2 == 0:
-            dem = dem.astype(np.float32)
-        if trial % 4 == 1:
-            manning_n = manning_n.astype(np.float32)
-        if trial % 7 == 0:
-            dem = dem[::-1]
-        dx, dy = cells[trial % len(cells)]
-        row, col = int(rng.integers(-3, shape[0] + 3)), int(rng.integers(-3, shape[1] + 3))
-        stream_direction = float(rng.uniform(-7.0, 7.0)) if trial % 5 else int(rng.integers(-8, 9)) * np.pi / 4
-        length = float(rng.uniform(0.0, 800.0)) * max(dx, dy) / CELL
-
-        elevations, mannings_n, spacing = scipy_cross_section(dem, manning_n, row, col, stream_direction, length, dx, dy)
-        xs = sample_cross_section(dem, manning_n, row, col, stream_direction, length, dx, dy)
-
-        assert xs.ordinate_distance == spacing
-        assert xs.elevations.dtype == elevations.dtype and xs.mannings_n.dtype == mannings_n.dtype
-        np.testing.assert_array_equal(xs.elevations, elevations)
-        np.testing.assert_array_equal(xs.mannings_n, mannings_n)
-
-
 def test_a_nan_reaches_the_ordinates_that_interpolate_with_it() -> None:
     """Like map_coordinates, an ordinate is interpolated from its cell and the next one along each axis, even with no
     weight on the next, and on the last row or column from it and the one before. So a NaN in column 9 of 11 reaches
@@ -169,46 +69,36 @@ def test_a_nan_reaches_the_ordinates_that_interpolate_with_it() -> None:
 
     np.testing.assert_array_equal(xs.elevations, [100.0] * 8 + [np.nan] * 3)
 
-
-def test_rasters_that_aren_t_float_are_sampled_as_float64() -> None:
-    """Where map_coordinates would have rounded an integer raster's values."""
-    cells = np.arange(121).reshape(11, 11)
-
-    xs = sample_cross_section(cells, cells, 5, 5, np.radians(80.0), 100.0, CELL, CELL)
-
-    expected, _, _ = scipy_cross_section(cells.astype(np.float64), cells.astype(np.float64), 5, 5, np.radians(80.0),
-                                         100.0, CELL, CELL)
-    assert xs.elevations.dtype == xs.mannings_n.dtype == np.float64
-    np.testing.assert_array_equal(xs.elevations, expected)
-
-
-def _best_microseconds(function, calls: int = 500, repeats: int = 5) -> float:
-    function()
-    best = np.inf
-    for _ in range(repeats):
-        start = time.perf_counter()
-        for _ in range(calls):
-            function()
-        best = min(best, (time.perf_counter() - start) / calls)
-    return best * 1e6
-
-
-def test_sampling_is_faster_than_scipy_and_legacy() -> None:
-    """A 5 km cross section of 10 m cells, at the angle legacy snaps 42 degrees to."""
-    rng = np.random.default_rng(0)
-    dem = (100.0 + rng.normal(0.0, 0.3, (1200, 1200))).astype(np.float32)
-    manning_n = np.full(dem.shape, 0.035)
-    params = {"d_x_section_distance": 5000.0, "dx": CELL, "dy": CELL, "d_degree_manipulation": 0.0,
-              "d_degree_interval": 0.0, "i_boundary_number": 0, "nrows": 1200, "ncols": 1200,
-              "b_FindBanksBasedOnLandCover": False, "i_lc_water_value": 80, "d_bathymetry_trapzoid_height": 0.2,
-              "b_bathy_use_banks": False, "s_output_bathymetry_path": ""}
-    old = CrossSection(CELL, CELL, dem, np.ones(dem.shape, dtype=np.uint8), None, params)
-    old.associate_with_precomputed_index_arrays(*CrossSection.create_cross_section_ordinates(params))
-    direction = 7 * np.pi / 30 + np.pi / 2
-
-    new = _best_microseconds(lambda: sample_cross_section(dem, manning_n, 600, 600, direction, 5000.0, CELL, CELL))
-    scipy = _best_microseconds(lambda: scipy_cross_section(dem, manning_n, 600, 600, direction, 5000.0, CELL, CELL))
-    legacy = _best_microseconds(lambda: old.set_cross_section(600, 600, 7, 7 * np.pi / 30))
-
-    assert new < scipy / 2
-    assert new < legacy
+def test_a_float32_dem_sampled_like_float64_is_its_float64_copy() -> None:
+    """Sampled with like a float64 array, a float32 DEM gives what its float64 copy gives, bit for bit, as arc.pipeline
+    samples it: the elevations, how far out the ground rises above a height, the angle search and the low spot, near
+    the raster's edges, with walls, and at any angle."""
+    from arc.xsection.low_spot import low_spot_cell
+    from arc.xsection.orientation import angle_offsets, narrowest_direction
+    from arc.xsection.sampling import (
+        OFF_RASTER_ELEVATION,
+        ordinates_above,
+        sample_elevations,
+    )
+    rng = np.random.default_rng(67)
+    like = np.empty(0)
+    offsets = angle_offsets(40.0, 5.0)
+    for _ in range(500):
+        shape = (int(rng.integers(2, 60)), int(rng.integers(2, 60)))
+        dem32 = (100.0 + np.cumsum(rng.normal(0.0, 0.4, shape), axis=1)).astype(np.float32)
+        dem32[rng.random(shape) < 0.05] = OFF_RASTER_ELEVATION
+        dem64 = dem32.astype(np.float64)
+        row, col = int(rng.integers(shape[0])), int(rng.integers(shape[1]))
+        direction, length = float(rng.uniform(0.0, np.pi)), float(rng.choice([5.0, 60.0, 400.0]))
+        dx, dy = float(rng.choice([1.0, 0.8])), float(rng.choice([1.0, 1.3]))
+        got, spacing = sample_elevations(dem32, row, col, direction, length, dx, dy, like)
+        expected, expected_spacing = sample_elevations(dem64, row, col, direction, length, dx, dy)
+        assert got.dtype == np.float64 and spacing == expected_spacing
+        assert np.array_equal(got.view(np.uint64), expected.view(np.uint64))
+        height = float(rng.uniform(0.0, 5.0))
+        assert ordinates_above(dem32, row, col, direction, length, dx, dy, height, like) == \
+            ordinates_above(dem64, row, col, direction, length, dx, dy, height)
+        assert narrowest_direction(dem32, row, col, direction, length, dx, dy, offsets, like=like) == \
+            narrowest_direction(dem64, row, col, direction, length, dx, dy, offsets)
+        assert low_spot_cell(dem32, row, col, direction, length, dx, dy, 3, like=like) == \
+            low_spot_cell(dem64, row, col, direction, length, dx, dy, 3)

@@ -103,7 +103,8 @@ def Create_ARC_Model_Input_File(
     ManningN: str
         The path and file name of the file that contains the Manning's n values for each land-cover in the LAND_File
     FloodMapFile: str
-        The path and file name of the output raster that provides a flood inundation map that will be output by FloodSpreader
+        Not used: the input file is ARC's alone, so Curve2Flood's ``OutFLD`` goes in an input file of Curve2Flood's
+        own. Kept so that existing calls still work.
     DepthMapFile: str
         Not used: the input file names no depth map (add Curve2Flood's ``OutDEP`` to it for one). Kept so that existing
         calls still work.
@@ -112,7 +113,8 @@ def Create_ARC_Model_Input_File(
     XS_Out_File: str
         The path and file name of the output comma-delimited text file that contains data on the cross-section output by ARC.
     DEM_Cleaner_File:
-        The path and file name of the text file containing streamflows that will be passed to the DEM cleaner program to clean the DEM 
+        Not used: it was Curve2Flood's ``COMID_Flow_File``, which goes in an input file of Curve2Flood's own. Kept so
+        that existing calls still work.
     bathy_use_banks: bool
         True/False argument on whether to run ARC bathymetry estimation using the bank elevations (True) or water surface elevation (False)
     use_land_cover_to_find_banks: bool
@@ -142,69 +144,62 @@ def Create_ARC_Model_Input_File(
     None
 
     """
-    out_file = open(ARC_Input_File,'w')
-    out_file.write('#ARC Inputs')
-    out_file.write('\n' + 'DEM_File	' + DEM_File)
-    out_file.write('\n' + 'Stream_File	' + STRM_File_Clean)
-    if STRM_SHP_File:
-        out_file.write('\n' + 'StrmShp_File\t' + STRM_SHP_File)
-        if reach_id_field:
-            out_file.write('\n' + 'reach_id\t' + reach_id_field)
-        if downstream_reach_id_field:
-            out_file.write('\n' + 'downstream_reach_id\t' + downstream_reach_id_field)
-    out_file.write('\n' + 'LU_Raster_SameRes	' + LAND_File)
-    out_file.write('\n' + 'LU_Manning_n	' + ManningN)
-    if lc_water_value is not None:
-        out_file.write('\n' + 'LC_Water_Value\t' + str(lc_water_value))
-    out_file.write('\n' + 'Flow_File	' + FLOW_File)
-    out_file.write('\n' + 'Flow_File_ID	' + COMID_Param)
-    if Q_BF_Param:
-        out_file.write('\n' + 'Flow_File_BF	' + Q_BF_Param)
-    out_file.write('\n' + 'Flow_File_QMax	' + Q_Param)
-    out_file.write('\n' + 'Spatial_Units	deg')
-    out_file.write('\n' + 'Degree_Manip	6.1')
-    out_file.write('\n' + 'Degree_Interval	1.5')
-    out_file.write('\n' + 'Low_Spot_Range	10')
-    out_file.write('\n' + 'Str_Limit_Val	1')
-    out_file.write('\n' + 'Gen_Dir_Dist	10')
-    out_file.write('\n' + 'Gen_Slope_Dist	10')
-    
-    out_file.write('\n\n#Output CurveFile')
-    out_file.write('\n' + 'Print_Curve_File	' + Curve_File)
-    
-    out_file.write('\n\n#Print_VDT is an old key ARC ignores: ARC writes the VDT database to Print_VDT_Database, below')
-    out_file.write('\n' + 'Print_VDT	' + VDT_File)
-    
-    
-    out_file.write('\n\n#Bathymetry Information')
-    out_file.write('\n' + 'Bathy_Trap_H	0.20')
-    out_file.write('\n' + 'Bathy_Use_Banks' + '\t' + str(bathy_use_banks))
-    out_file.write('\n' + 'FindBanksBasedOnLandCover' + '\t' + str(use_land_cover_to_find_banks))
-    if drainage_area_field and (
-        (coefficient_depth is not None and exponent_depth is not None)
-        or (coefficient_width is not None and exponent_width is not None)
-    ):
-        out_file.write('\n' + 'drainage_area_field\t' + str(drainage_area_field))
-        if coefficient_depth is not None and exponent_depth is not None:
-            out_file.write('\n' + 'coefficient_depth\t' + str(coefficient_depth))
-            out_file.write('\n' + 'exponent_depth\t' + str(exponent_depth))
-        if coefficient_width is not None and exponent_width is not None:
-            out_file.write('\n' + 'coefficient_width\t' + str(coefficient_width))
-            out_file.write('\n' + 'exponent_width\t' + str(exponent_width))
-    out_file.write('\n' + 'AROutBATHY	' + ARC_BathyFile)
+    with open(ARC_Input_File,'w') as out_file:
+        out_file.write('#ARC Inputs')
+        out_file.write('\n' + 'DEM_File	' + DEM_File)
+        out_file.write('\n' + 'Stream_File	' + STRM_File_Clean)
+        if STRM_SHP_File:
+            out_file.write('\n' + 'StrmShp_File\t' + STRM_SHP_File)
+            if reach_id_field:
+                out_file.write('\n' + 'reach_id\t' + reach_id_field)
+            if downstream_reach_id_field:
+                out_file.write('\n' + 'downstream_reach_id\t' + downstream_reach_id_field)
+        out_file.write('\n' + 'LU_Raster_SameRes	' + LAND_File)
+        out_file.write('\n' + 'LU_Manning_n	' + ManningN)
+        if lc_water_value is not None:
+            out_file.write('\n' + 'LC_Water_Value\t' + str(lc_water_value))
+        out_file.write('\n' + 'Flow_File	' + FLOW_File)
+        out_file.write('\n' + 'Flow_File_ID	' + COMID_Param)
+        if Q_BF_Param:
+            out_file.write('\n' + 'Flow_File_BF	' + Q_BF_Param)
+        out_file.write('\n' + 'Flow_File_QMax	' + Q_Param)
+        out_file.write('\n' + 'Spatial_Units	deg')
+        out_file.write('\n' + 'Degree_Manip	6.1')
+        out_file.write('\n' + 'Degree_Interval	1.5')
+        out_file.write('\n' + 'Low_Spot_Range	10')
+        out_file.write('\n' + 'Str_Limit_Val	1')
+        out_file.write('\n' + 'Gen_Dir_Dist	10')
+        out_file.write('\n' + 'Gen_Slope_Dist	10')
+        
+        out_file.write('\n\n#Output CurveFile')
+        out_file.write('\n' + 'Print_Curve_File	' + Curve_File)
+        
+        out_file.write('\n\n#Print_VDT is an old key ARC ignores: ARC writes the VDT database to Print_VDT_Database, below')
+        out_file.write('\n' + 'Print_VDT	' + VDT_File)
+        
+        
+        out_file.write('\n\n#Bathymetry Information')
+        out_file.write('\n' + 'Bathy_Trap_H	0.20')
+        out_file.write('\n' + 'Bathy_Use_Banks' + '\t' + str(bathy_use_banks))
+        out_file.write('\n' + 'FindBanksBasedOnLandCover' + '\t' + str(use_land_cover_to_find_banks))
+        if drainage_area_field and (
+            (coefficient_depth is not None and exponent_depth is not None)
+            or (coefficient_width is not None and exponent_width is not None)
+        ):
+            out_file.write('\n' + 'drainage_area_field\t' + str(drainage_area_field))
+            if coefficient_depth is not None and exponent_depth is not None:
+                out_file.write('\n' + 'coefficient_depth\t' + str(coefficient_depth))
+                out_file.write('\n' + 'exponent_depth\t' + str(exponent_depth))
+            if coefficient_width is not None and exponent_width is not None:
+                out_file.write('\n' + 'coefficient_width\t' + str(coefficient_width))
+                out_file.write('\n' + 'exponent_width\t' + str(exponent_width))
+        out_file.write('\n' + 'AROutBATHY	' + ARC_BathyFile)
 
-    out_file.write('\n\n#Cross Section Information')
-    out_file.write('\n' + 'XS_Out_File	' + XS_Out_File)
+        out_file.write('\n\n#Cross Section Information')
+        out_file.write('\n' + 'XS_Out_File	' + XS_Out_File)
 
-    out_file.write('\n\n#The VDT database ARC writes, which Curve2Flood reads, and Curve2Flood inputs ARC ignores')
-    out_file.write('\n' + 'Print_VDT_Database	' + VDT_File)
-    if DEM_Cleaner_File is not False:
-        out_file.write('\n' + 'COMID_Flow_File	' + DEM_Cleaner_File)
-    else:
-        out_file.write('\n' + 'COMID_Flow_File	' + FLOW_File)
-    out_file.write('\n' + 'OutFLD	' + FloodMapFile)
-
-    out_file.close()
+        out_file.write('\n\n#The VDT database ARC writes, which Curve2Flood reads')
+        out_file.write('\n' + 'Print_VDT_Database	' + VDT_File)
 
 
 def Create_BaseLine_Manning_n_File(ManningN):
@@ -223,24 +218,23 @@ def Create_BaseLine_Manning_n_File(ManningN):
     None
 
     """
-    out_file = open(ManningN,'w')
-    out_file.write('LC_ID	Description	Manning_n')
-    out_file.write('\n' + '11	Water	0.030')
-    out_file.write('\n' + '21	Dev_Open_Space	0.013')
-    out_file.write('\n' + '22	Dev_Low_Intesity	0.050')
-    out_file.write('\n' + '23	Dev_Med_Intensity	0.075')
-    out_file.write('\n' + '24	Dev_High_Intensity	0.100')
-    out_file.write('\n' + '31	Barren_Land	0.030')
-    out_file.write('\n' + '41	Decid_Forest	0.120')
-    out_file.write('\n' + '42	Evergreen_Forest	0.120')
-    out_file.write('\n' + '43	Mixed_Forest	0.120')
-    out_file.write('\n' + '52	Shrub	0.050')
-    out_file.write('\n' + '71	Grass_Herb	0.030')
-    out_file.write('\n' + '81	Pasture_Hay	0.040')
-    out_file.write('\n' + '82	Cultivated_Crops	0.035')
-    out_file.write('\n' + '90	Woody_Wetlands	0.100')
-    out_file.write('\n' + '95	Emergent_Herb_Wet	0.100')
-    out_file.close()
+    with open(ManningN,'w') as out_file:
+        out_file.write('LC_ID	Description	Manning_n')
+        out_file.write('\n' + '11	Water	0.030')
+        out_file.write('\n' + '21	Dev_Open_Space	0.013')
+        out_file.write('\n' + '22	Dev_Low_Intesity	0.050')
+        out_file.write('\n' + '23	Dev_Med_Intensity	0.075')
+        out_file.write('\n' + '24	Dev_High_Intensity	0.100')
+        out_file.write('\n' + '31	Barren_Land	0.030')
+        out_file.write('\n' + '41	Decid_Forest	0.120')
+        out_file.write('\n' + '42	Evergreen_Forest	0.120')
+        out_file.write('\n' + '43	Mixed_Forest	0.120')
+        out_file.write('\n' + '52	Shrub	0.050')
+        out_file.write('\n' + '71	Grass_Herb	0.030')
+        out_file.write('\n' + '81	Pasture_Hay	0.040')
+        out_file.write('\n' + '82	Cultivated_Crops	0.035')
+        out_file.write('\n' + '90	Woody_Wetlands	0.100')
+        out_file.write('\n' + '95	Emergent_Herb_Wet	0.100')
 
 
 def Create_ARC_LandRaster(LandCoverFile, LAND_File, projWin_extents, ncols, nrows):
@@ -499,7 +493,7 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
 
     """
     print('\nCleaning up the Stream File.')
-    (SN, ncols, nrows, cellsize, yll, yur, xll, xur, lat, dem_geotransform, dem_projection) = Read_Raster_GDAL(STRM_File)
+    (SN, ncols, nrows, _, _, _, _, _, _, dem_geotransform, dem_projection) = Read_Raster_GDAL(STRM_File)
     
     #Create an array that is slightly larger than the STRM Raster Array
     B = np.zeros((nrows+2,ncols+2))
@@ -523,15 +517,13 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
             V = B[r,c]
             if V>0:
                 #Left and Right cells are zeros
-                if B[r,c+1]==0 and B[r,c-1]==0:
-                    #The bottom cells are all zeros as well, but there is a cell directly above that is legit
-                    if (B[r+1,c-1]+B[r+1,c]+B[r+1,c+1])==0 and B[r-1,c]>0 or (B[r-1,c-1]+B[r-1,c]+B[r-1,c+1])==0 and B[r+1,c]>0:
-                        B[r,c] = 0
-                        n=n+1
+                #The bottom cells are all zeros as well, but there is a cell directly above that is legit
+                if B[r,c+1]==0 and B[r,c-1]==0 and ((B[r+1,c-1]+B[r+1,c]+B[r+1,c+1])==0 and B[r-1,c]>0 or (B[r-1,c-1]+B[r-1,c]+B[r-1,c+1])==0 and B[r+1,c]>0):
+                    B[r,c] = 0
+                    n=n+1
                 #top and bottom cells are zeros
-                if B[r,c]>0 and B[r+1,c]==0 and B[r-1,c]==0:
-                    #All cells on the right are zero, but there is a cell to the left that is legit
-                    if (B[r+1,c+1]+B[r,c+1]+B[r-1,c+1])==0 and B[r,c-1]>0 or (B[r+1,c-1]+B[r,c-1]+B[r-1,c-1])==0 and B[r,c+1]>0:
+                #All cells on the right are zero, but there is a cell to the left that is legit
+                if B[r,c]>0 and B[r+1,c]==0 and B[r-1,c]==0 and ((B[r+1,c+1]+B[r,c+1]+B[r-1,c+1])==0 and B[r,c-1]>0 or (B[r+1,c-1]+B[r,c-1]+B[r-1,c-1])==0 and B[r,c+1]>0):
                         B[r,c] = 0
                         n=n+1
         print('\nFirst pass removed ' + str(n) + ' cells')
@@ -561,10 +553,9 @@ def Clean_STRM_Raster(STRM_File, STRM_File_Clean):
                     if sum(B[r-1:r+1,c+2])==0:
                         B[r,c+1] = 0
                         n=n+1
-                elif B[r,c-1]==V and (B[r+1,c-1]==V or B[r-1,c-1]==V):
-                    if sum(B[r-1:r+1,c-2])==0:
-                            B[r,c-1] = 0
-                            n=n+1
+                elif B[r,c-1]==V and (B[r+1,c-1]==V or B[r-1,c-1]==V) and sum(B[r-1:r+1,c-2])==0:
+                    B[r,c-1] = 0
+                    n=n+1
         print('\nSecond pass removed ' + str(n) + ' redundant cells')
     
     print('Writing Output File ' + STRM_File_Clean)
@@ -585,6 +576,7 @@ def Process_ARC_Geospatial_Data(
     coefficient_width=None,
     exponent_width=None,
     downstream_id_field='',
+    flow_id_field='COMID',
 ):
     """
     Create DEM-aligned ARC geospatial inputs and a starter MIF. Assumes that you've stored your inputs in a specific way. In the same directory where you're planning to store your inputs should be:
@@ -600,8 +592,7 @@ def Process_ARC_Geospatial_Data(
     id_field : str
         Name of the unique identifier field in the stream shapefile (e.g., LINKNO
         for the GEOGLOWS streams). It is burned into the stream raster and
-        written to the input file as both ``reach_id`` and ``Flow_File_ID``, so
-        the flow file needs a column of the same name holding the same IDs.
+        written to the input file as ``reach_id``.
     max_flow_field : str
         Name of the maximum-flow field/column (must exist in the flow file).
     baseflow_field : str
@@ -631,6 +622,11 @@ def Process_ARC_Geospatial_Data(
         for bathymetry, which ARC makes whenever there is a ``baseflow_field``
         or a depth power law, and the bathymetry needs this field: without it ARC
         stops with an error.
+    flow_id_field : str, optional
+        Name of the flow file's column of stream IDs, written to the input file
+        as ``Flow_File_ID``. Its IDs are the values of ``id_field``, whatever the
+        column is called. The default, ``COMID``, is the column
+        ``Create_ARC_Streamflow_Input`` writes.
     """
     # we won't worry about using DEM cleaner files in this version
     DEM_Cleaner_File = False
@@ -642,8 +638,6 @@ def Process_ARC_Geospatial_Data(
     LandCoverFile = os.path.join(Main_Directory,'LandCover', 'LandCover.tif')
     ManningN = os.path.join(Main_Directory, 'LAND', 'AR_Manning_n_for_NLCD_MED.txt')
     StrmSHP = os.path.join(Main_Directory,'StrmShp', 'StreamShapefile.shp')
-    FlowNC = os.path.join(Main_Directory,'FlowData', 'returnperiods_714.nc')
-    VDT_Test_File = os.path.join(Main_Directory, 'VDT', 'VDT_FS.csv')
     
     #Datasets to be Created
     STRM_File = os.path.join(Main_Directory, 'STRM', 'STRM_Raster.tif')
@@ -676,7 +670,7 @@ def Process_ARC_Geospatial_Data(
     
     
     #Get the Spatial Information from the DEM Raster
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, dem_geoTransform, dem_projection) = Get_Raster_Details(DEM_File)
+    (minx, miny, maxx, maxy, _, _, ncols, nrows, dem_geoTransform, _) = Get_Raster_Details(DEM_File)
     projWin_extents = [minx, maxy, maxx, miny]
     outputBounds = [minx, miny, maxx, maxy]  #https://gdal.org/api/python/osgeo.gdal.html
     
@@ -714,7 +708,7 @@ def Process_ARC_Geospatial_Data(
     Create_ARC_Model_Input_File(
         ARC_FileName,
         DEM_File,
-        id_field,
+        flow_id_field,
         max_flow_field,
         baseflow_field,
         STRM_File_Clean,

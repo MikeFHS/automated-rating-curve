@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 import math
-import time
 
 import networkx as nx
 import numpy as np
 import pytest
 
-from arc import Automated_Rating_Curve_Generator as legacy
 from arc.bathymetry import Banks, banks_for_width, single_cell_banks
-from arc.bathymetry.smoothing import (BANK_HEIGHT_QUANTILE, BANK_HEIGHT_WINDOW, METHODS, MIN_GRADE, ReachSections,
-                                      ReachWidths, falling_fit, filter_reach_widths, network_outlet_elevations,
-                                      order_reach, reach_bank_levels, reach_bank_observations, reach_bank_surface,
-                                      reach_baseline, reach_network, smooth_bank_elevations)
+from arc.bathymetry.smoothing import (
+    BANK_HEIGHT_QUANTILE,
+    BANK_HEIGHT_WINDOW,
+    JUNCTION_TAPER,
+    MIN_BANK_OBSERVATIONS,
+    ReachSections,
+    ReachWidths,
+    SmoothedReach,
+    below_ceilings,
+    falling_fit,
+    filter_reach_widths,
+    order_reach,
+    reach_bank_levels,
+    reach_bank_observations,
+    reach_network,
+    smooth_bank_elevations,
+    taper_junctions,
+)
+from arc.xsection.stream_path import along_stream_stations
 from arc.xsection.xsection import XSection
 
 BED = 100.0
@@ -33,10 +46,9 @@ def banks_at(left_elevation, right_elevation, valid=True) -> Banks:
     return Banks("target_width", 5.0, 5.0, left_elevation, right_elevation, False, valid)
 
 
-def line_graph(*reaches, lengths=None) -> nx.DiGraph:
+def line_graph(*reaches) -> nx.DiGraph:
     network = nx.DiGraph()
-    for k, reach in enumerate(reaches):
-        network.add_node(reach, length=100.0 if lengths is None else lengths[k])
+    network.add_nodes_from(reaches)
     network.add_edges_from(zip(reaches[:-1], reaches[1:]))
     return network
 
@@ -46,8 +58,7 @@ def line_graph(*reaches, lengths=None) -> nx.DiGraph:
 
 def test_outlying_widths_are_rebuilt_at_the_reach_median() -> None:
     """Widths of 10, 20, 20, 20 and 40 m have their 25th, 50th and 75th percentiles all at 20 m, so the 10 and 40 m
-    channels are rebuilt 20 m wide, half each side. The others keep their own banks, even at a percentile. Legacy
-    rounded banks to whole spacings."""
+    channels are rebuilt 20 m wide, half each side. The others keep their own banks, even at a percentile."""
     sections, banks = map(list, zip(*(section_with_banks(w) for w in [10.0, 20.0, 20.0, 20.0, 40.0])))
     banks[2] = Banks("width_to_depth_ratio", 5.0, 15.0, BED, BED, False, True)
 
@@ -60,9 +71,31 @@ def test_outlying_widths_are_rebuilt_at_the_reach_median() -> None:
     assert (filtered[0].left, filtered[0].right) == pytest.approx((10.0, 10.0))
 
 
+def test_banks_where_the_water_ends_are_kept_whatever_their_width() -> None:
+    """Banks from the water mask or the land cover show the channel's width, so they aren't rebuilt, though they count
+    towards the percentiles. With widths of 10, 10 and 10 m from the water, a 40 m channel from the DEM is rebuilt
+    10 m wide. Among channels 20 m wide from the DEM, a 10 m one is rebuilt 20 m wide, unless it's from the water."""
+    sections, banks = map(list, zip(*(section_with_banks(w) for w in [10.0, 10.0, 10.0, 40.0])))
+    water = [b._replace(method="land_cover") for b in banks[:3]]
+
+    filtered, widths = filter_reach_widths(sections, [*water, banks[3]])
+
+    assert widths == ReachWidths(10.0, 10.0, 17.5)
+    assert filtered[:3] == water
+    assert filtered[3].method == "target_width" and filtered[3].top_width == pytest.approx(10.0)
+
+    sections, banks = map(list, zip(*(section_with_banks(w) for w in [10.0, 20.0, 20.0, 20.0, 20.0, 10.0])))
+    banks[0] = banks[0]._replace(method="land_cover")
+
+    filtered, widths = filter_reach_widths(sections, banks)
+
+    assert widths == ReachWidths(12.5, 20.0, 20.0)
+    assert filtered[0] == banks[0]
+    assert filtered[5].method == "target_width" and filtered[5].top_width == pytest.approx(20.0)
+
+
 def test_a_median_between_one_and_two_spacings_is_rebuilt_as_it_is() -> None:
-    """The median is 10 m, on a cross section with 8 m spacing. Legacy's bank indices couldn't make a channel that
-    wide, and widened it a cell at a time."""
+    """The median is 10 m, on a cross section with 8 m spacing: banks needn't be whole spacings apart."""
     sections, banks = map(list, zip(*(section_with_banks(w) for w in [10.0, 10.0, 10.0, 20.0])))
     wide = flat_section(spacing=8.0)
     sections.append(wide)
@@ -122,7 +155,7 @@ def test_a_reach_without_valid_banks_is_left_alone() -> None:
 
 
 def test_a_single_cell_channel_is_one_spacing_wide() -> None:
-    """The stream cell's own width, as legacy counted it, so a reach of them has a median of one spacing."""
+    """The stream cell's own width, so a reach of them has a median of one spacing."""
     sections = [flat_section(spacing=10.0) for _ in range(4)]
     banks = [single_cell_banks(xs) for xs in sections]
 
@@ -134,8 +167,7 @@ def test_a_single_cell_channel_is_one_spacing_wide() -> None:
 
 
 def test_an_observation_is_the_lower_bank_above_the_stream_cell() -> None:
-    """A bank at or below the stream cell is ignored, and banks that aren't valid give no observation. Legacy lost
-    the cross section's observation when a bank was below the stream cell."""
+    """A bank at or below the stream cell is ignored, and banks that aren't valid give no observation."""
     sections = [flat_section() for _ in range(5)]
     banks = [banks_at(103.0, 102.0), banks_at(99.0, 102.5), banks_at(BED, 101.5), banks_at(BED, BED),
              banks_at(104.0, 104.0, valid=False)]
@@ -165,6 +197,19 @@ def test_fewer_than_four_observations_are_all_kept() -> None:
     assert (lower, upper) == (-math.inf, math.inf)
 
 
+def test_a_bank_from_the_dem_above_its_ceiling_is_left_out() -> None:
+    """Above the water that carries the largest flow, a bank from the DEM is a valley wall. The water mask's banks
+    stay, and so does an observation without a ceiling."""
+    observations = [102.0, 103.0, 104.0, 105.0, 101.0]
+    banks = [banks_at(0.0, 0.0), banks_at(0.0, 0.0)._replace(method="land_cover"), banks_at(0.0, 0.0),
+             banks_at(0.0, 0.0)._replace(method="width_to_depth_ratio"), banks_at(0.0, 0.0)]
+    ceilings = [101.0, 101.0, math.nan, 106.0, 101.0]
+
+    np.testing.assert_array_equal(below_ceilings(observations, banks, ceilings),
+                                  [np.nan, 103.0, 104.0, 105.0, 101.0])
+    np.testing.assert_array_equal(below_ceilings(observations, banks, None), observations)
+
+
 # --- Ordering a reach's cross sections ----------------------------------------------------------------------------
 
 
@@ -182,7 +227,9 @@ def test_a_reach_is_ordered_towards_the_reach_downstream_of_it() -> None:
                                   {1: (rows, cols), 2: (np.array([13]), np.array([4]))}, np.zeros(rows.size))
 
     assert order.tolist() == list(range(rows.size - 1, -1, -1))
-    assert stations[-1] == pytest.approx(200.0 + 2 * math.hypot(10, 10) + 10.0)
+    # The reach's stations (arc.xsection.stream_path), which round the bend a little inside its cells' path
+    assert stations[-1] == pytest.approx(along_stream_stations(rows, cols, 10.0, 10.0).max(), rel=1e-12)
+    assert 200.0 < stations[-1] < 200.0 + 2 * math.hypot(10, 10) + 10.0
 
 
 def test_an_outlet_is_ordered_away_from_the_reach_upstream_of_it() -> None:
@@ -209,22 +256,19 @@ def test_the_first_reach_downstream_with_cross_sections_sets_the_downstream_end(
 
 
 def test_a_reach_by_itself_is_ordered_along_its_cells_from_its_highest_observation() -> None:
-    """Legacy ordered a reach with no neighbour along a straight line through its cells, which mixes up the
-    hairpin's two arms, and numbered its stations 0, 1, 2 and so on."""
+    """Along its cells, not a straight line through them, which would mix up the hairpin's two arms, and with
+    stations in metres: 10 m a cell along its straight arm, up to the cells the bend's smoothing reaches
+    (arc.xsection.stream_path.SMOOTHING_CELLS)."""
     rows, cols = hairpin()
     observations = np.linspace(90.0, 110.0, rows.size)  # rising along the cells, so the far end is upstream
     network = nx.DiGraph()
-    network.add_node(1, length=300.0)
+    network.add_node(1)
 
     order, stations = order_reach(network, 1, rows, cols, 10.0, 10.0, {1: (rows, cols)}, observations)
 
     assert order.tolist() == list(range(rows.size - 1, -1, -1))
-    np.testing.assert_allclose(np.diff(stations)[:10], 10.0)
-    projection = np.argsort(cols, kind="stable")
-    legacy_order, legacy_stations = legacy._order_reach_stream_cells_from_network(
-        network, 1, [{"row": int(r), "col": int(c)} for r, c in zip(rows, cols)], {}, projection, observations, 10.0,
-        10.0)
-    assert set(np.diff(rows[legacy_order])) != {0} and legacy_stations[1] == 1.0
+    np.testing.assert_allclose(np.diff(stations)[:7], 10.0)
+    assert np.all(np.diff(stations) > 0.0)
 
 
 def test_a_reach_whose_neighbours_have_no_cross_sections_is_turned_by_its_end_observations() -> None:
@@ -239,10 +283,38 @@ def test_a_reach_whose_neighbours_have_no_cross_sections_is_turned_by_its_end_ob
     np.testing.assert_allclose(stations, 10.0 * np.arange(30))
 
 
+@pytest.mark.parametrize("neighbour", ["downstream", "upstream"])
+def test_a_reach_whose_neighbours_have_no_cross_sections_is_ordered_by_where_they_lie(neighbour: str) -> None:
+    """Neither neighbour has cross sections, but on the stream raster the reach below lies beside its first cell (or
+    the reach above beside its last), so that end is downstream, though the observations are higher there and the
+    reach's line ends at the other."""
+    rows, cols = np.zeros(30, dtype=np.int64), np.arange(1, 31)
+    observations = np.linspace(105.0, 95.0, 30)
+    network = line_graph(1, 2) if neighbour == "downstream" else line_graph(2, 1)
+    stream_cells = {1: (rows, cols), 2: (np.array([0]), np.array([0 if neighbour == "downstream" else 31]))}
+
+    order, stations = order_reach(network, 1, rows, cols, 10.0, 10.0, {1: (rows, cols)}, observations,
+                                  stream_cells=stream_cells, outlets={1: (0, 31)})
+
+    assert order.tolist() == list(range(29, -1, -1))
+    np.testing.assert_allclose(stations, 10.0 * np.arange(30))
+
+
+def test_a_reach_with_no_neighbour_on_the_stream_raster_is_ordered_by_where_its_line_ends() -> None:
+    """Reach 2 is in the network but not on the stream raster, and the reach's line ends beside its first cell."""
+    rows, cols = np.zeros(30, dtype=np.int64), np.arange(30)
+    observations = np.linspace(105.0, 95.0, 30)
+    network = line_graph(1, 2)
+
+    order, _ = order_reach(network, 1, rows, cols, 10.0, 10.0, {1: (rows, cols)}, observations,
+                           stream_cells={1: (rows, cols)}, outlets={1: (0, -1)})
+
+    assert order.tolist() == list(range(29, -1, -1))
+
+
 def test_a_reach_is_turned_by_the_observations_nearest_its_ends() -> None:
-    """Its high end's last dozen cross sections have no observation (no valid banks there), which legacy's ten at
-    each end didn't allow for: it left the reach running uphill. The ten observations nearest each end still say
-    which end is higher."""
+    """Its high end's last dozen cross sections have no observation (no valid banks there). The ten observations
+    nearest each end still say which end is higher."""
     # Given from the high end, so the stations start at the low end and the reach has to be turned round
     rows, cols = np.zeros(40, dtype=np.int64), np.arange(39, -1, -1)
     observations = 95.0 + 10.0 * cols / 39.0
@@ -254,209 +326,18 @@ def test_a_reach_is_turned_by_the_observations_nearest_its_ends() -> None:
 
     assert order.tolist() == list(range(40))  # from column 39 down to column 0
     np.testing.assert_allclose(stations, 10.0 * np.arange(40))
-    projection = np.argsort(cols, kind="stable")
-    legacy_order, _ = legacy._order_reach_stream_cells_from_network(
-        network, 1, [{"row": int(r), "col": int(c)} for r, c in zip(rows, cols)], {}, projection, observations,
-        10.0, 10.0)
-    assert cols[legacy_order].tolist() == list(range(40))  # legacy's, uphill
 
 
 # --- The network --------------------------------------------------------------------------------------------------
 
 
-def random_network(rng, size):
-    network = nx.DiGraph()
-    for reach in range(1, size + 1):
-        network.add_node(reach, length=float(rng.choice([rng.uniform(50.0, 5000.0), 1.0])))
-    for reach in range(1, size):
-        if rng.random() > 0.12:
-            network.add_edge(reach, int(rng.integers(reach + 1, size + 1)))
-    return network
-
-
-def test_the_network_matches_legacy() -> None:
-    """Outlet elevations, grades and each reach's baseline, on random networks with reaches missing observations."""
-    rng = np.random.default_rng(7)
-    for _ in range(300):
-        network = random_network(rng, int(rng.integers(1, 30)))
-        below = {reach: len(nx.descendants(network, reach)) for reach in network}
-        minima, maxima = {}, {}
-        for reach in network:
-            if rng.random() < 0.75:
-                minima[reach] = 100.0 + 3.0 * below[reach] + float(rng.normal(0.0, 4.0))
-                maxima[reach] = minima[reach] + float(abs(rng.normal(2.0, 2.0)))
-        legacy_network = network.copy()
-        expected = legacy._estimate_network_smoothed_reach_min_bank_elevations(legacy_network, minima, maxima)
-
-        outlets, grades = network_outlet_elevations(network, minima, maxima)
-
-        assert outlets.keys() == expected.keys()
-        for reach in outlets:
-            assert outlets[reach] == pytest.approx(expected[reach], abs=1e-9)
-        assert grades == pytest.approx({reach: data["bank_elevation_grade"]
-                                        for reach, data in legacy_network.nodes(data=True)
-                                        if "bank_elevation_grade" in data}, rel=1e-12)
-        for reach in outlets:
-            stations = np.sort(rng.uniform(0.0, 1000.0, int(rng.integers(1, 8))))
-            want = legacy._interpolate_reach_bank_elevation_surface(legacy_network, reach, stations, expected)
-            baseline, fractions = reach_baseline(network, reach, stations, outlets, grades)
-            np.testing.assert_allclose(baseline, want[0], rtol=0, atol=1e-9)
-            np.testing.assert_allclose(fractions, want[1], rtol=0, atol=1e-12)
-
-
-def test_equal_reach_minima_fall_at_the_minimum_grade() -> None:
-    """Legacy's test: three reaches in a line with the same lowest bank each fall 1 cm per 100 m."""
-    outlets, grades = network_outlet_elevations(line_graph(1, 2, 3), {1: 100.0, 2: 100.0, 3: 100.0}, {})
-
-    assert outlets == pytest.approx({1: 100.0, 2: 100.0 - 0.01, 3: 100.0 - 0.02})
-    assert grades == pytest.approx({1: MIN_GRADE, 2: MIN_GRADE, 3: MIN_GRADE})
-
-
-def test_a_headwater_falls_from_its_highest_bank_and_an_outlet_to_its_lowest() -> None:
-    """Legacy's tests of a headwater, an outlet and a reach on its own."""
-    outlets, grades = network_outlet_elevations(line_graph(1, 2, 3), {1: 100.0, 2: 90.0, 3: 89.0},
-                                                {1: 105.0, 2: 95.0, 3: 90.0})
-
-    assert outlets == pytest.approx({1: 100.0, 2: 90.0, 3: 89.0})
-    assert grades == pytest.approx({1: 0.05, 2: 0.1, 3: 0.01})
-
-    alone = nx.DiGraph()
-    alone.add_node(1, length=100.0)
-    assert network_outlet_elevations(alone, {1: 90.0}, {1: 100.0}) == ({1: 90.0}, pytest.approx({1: 0.1}))
-
-
-def test_a_reach_without_observations_is_filled_in_along_the_network() -> None:
-    """Reach 2 has none, so its outlet is interpolated between reaches 1 and 3 by length."""
-    network = line_graph(1, 2, 3, lengths=[100.0, 300.0, 100.0])
-
-    outlets, _ = network_outlet_elevations(network, {1: 110.0, 3: 100.0}, {1: 112.0, 3: 101.0})
-
-    assert outlets[2] == pytest.approx(110.0 - 10.0 * 300.0 / 400.0)
-
-
-def test_an_outlet_that_rises_above_the_reach_upstream_is_lowered() -> None:
-    outlets, grades = network_outlet_elevations(line_graph(1, 2), {1: 100.0, 2: 105.0}, {1: 101.0, 2: 106.0})
-
-    assert outlets[2] == pytest.approx(100.0 - MIN_GRADE * 100.0)
-    assert grades[2] == pytest.approx(MIN_GRADE)
-
-
 def test_a_network_is_built_from_the_stream_table() -> None:
     """Missing, self and unknown downstream IDs make outlets, and a reach's first row counts."""
-    network = reach_network([1, 2, 3, 4, 2, 5], [2, 3, None, 99, 4, "4"], [100.0, -1.0, float("nan"), 50.0, 7.0, 20.0])
+    network = reach_network([1, 2, 3, 4, 2, 5], [2, 3, None, 99, 4, "4"])
 
+    assert sorted(network.nodes) == [1, 2, 3, 4, 5]
     assert sorted(network.edges) == [(1, 2), (2, 3), (5, 4)]
-    assert [network.nodes[r]["length"] for r in [1, 2, 3, 4, 5]] == [100.0, 1.0, 1.0, 50.0, 20.0]
-    assert reach_network([7], [7], [10.0]).out_degree(7) == 0
-
-
-# --- The surface along a reach ------------------------------------------------------------------------------------
-
-
-def test_an_observation_below_the_line_becomes_an_anchor() -> None:
-    """Legacy's test: the stretch from the start is refitted through the low observation, and from it the line
-    heads for the outlet again."""
-    surface, grades, anchors = reach_bank_surface([np.nan, 8.5, np.nan, np.nan], [10.0, 9.0, 8.0, 7.0],
-                                                  [0.0, 1 / 3, 2 / 3, 1.0], 300.0, 7.0, min_grade=0.001)
-
-    np.testing.assert_allclose(surface, [10.0, 8.5, 7.75, 7.0])
-    np.testing.assert_allclose(grades, [0.015, 0.0075, 0.0075, 0.0075])
-    assert anchors.tolist() == [False, True, False, False]
-
-
-def test_each_lower_observation_refits_from_the_last_anchor() -> None:
-    surface, grades, anchors = reach_bank_surface([np.nan, np.nan, 7.5, 6.4, np.nan], [10.0, 9.0, 8.0, 7.0, 6.0],
-                                                  [0.0, 0.25, 0.5, 0.75, 1.0], 400.0, 6.0, min_grade=0.001)
-
-    np.testing.assert_allclose(surface, [10.0, 8.75, 7.5, 6.4, 6.0])
-    np.testing.assert_allclose(grades, [0.0125, 0.0125, 0.011, 0.004, 0.004])
-    assert anchors.tolist() == [False, False, True, True, False]
-
-
-def test_an_anchor_can_t_be_too_low_to_reach_the_outlet() -> None:
-    surface, _, _ = reach_bank_surface([np.nan, -100.0, np.nan], [10.0, 9.0, 8.0], [0.0, 0.5, 1.0], 100.0, 8.0,
-                                       min_grade=0.001)
-
-    np.testing.assert_allclose(surface, [10.0, 8.05, 8.0])
-
-
-def test_only_observations_within_the_bounds_and_above_the_stream_cell_are_anchors() -> None:
-    """Legacy's test: 10.5 is above the upper bound, 8.5 is level with its stream cell and 7.0 is below the lower
-    bound."""
-    surface, _, anchors = reach_bank_surface([np.nan, 10.5, 9.5, 8.5, 7.0], [12.0, 11.0, 10.0, 9.0, 8.0],
-                                             [0.0, 0.25, 0.5, 0.75, 1.0], 100.0, 8.0, min_grade=0.001,
-                                             thalwegs=[11.0, 9.0, 9.0, 8.5, 6.0], lower=8.0, upper=10.0)
-
-    np.testing.assert_allclose(surface, [12.0, 10.75, 9.5, 8.75, 8.0])
-    assert anchors.tolist() == [False, False, True, False, False]
-
-
-def test_an_observation_just_above_its_stream_cell_can_be_an_anchor() -> None:
-    """Legacy also needed it more than np.isclose's tolerance above, 1.02 mm here, where it is 1 mm above."""
-    args = ([np.nan, 102.0, np.nan], [110.0, 105.0, 100.0], [0.0, 0.5, 1.0], 100.0, 100.0)
-    thalwegs = [np.nan, 101.999, np.nan]
-
-    assert reach_bank_surface(*args, thalwegs=thalwegs)[2].tolist() == [False, True, False]
-    assert legacy._anchor_interpolated_bank_surface_to_cell_observations(
-        *args, MIN_GRADE, None, np.asarray(thalwegs))[2].tolist() == [False, False, False]
-
-
-def test_the_first_cross_section_is_no_higher_than_the_reaches_flowing_in() -> None:
-    surface, _, anchors = reach_bank_surface([9.0, np.nan], [10.0, 9.0], [0.0, 1.0], 100.0, 9.0, min_grade=0.001,
-                                             ceiling=10.0)
-
-    np.testing.assert_allclose(surface, [9.1, 9.0])
-    assert anchors.tolist() == [True, False]
-
-
-def test_the_surface_matches_legacy() -> None:
-    rng = np.random.default_rng(3)
-    for _ in range(1000):
-        n = int(rng.integers(1, 40))
-        fractions = np.sort(rng.random(n))
-        fractions[0] = 0.0
-        if n > 1:
-            fractions[-1] = 1.0
-        outlet = float(rng.uniform(90.0, 100.0))
-        upstream = outlet + float(rng.uniform(0.0, 20.0))
-        baseline = np.minimum.accumulate(upstream + fractions * (outlet - upstream))
-        observations = baseline + rng.normal(0.0, 3.0, n)
-        observations[rng.random(n) < 0.3] = np.nan
-        thalwegs = observations - rng.uniform(-1.0, 3.0, n)
-        thalwegs[np.isclose(observations, thalwegs)] -= 0.1  # where the two differ on purpose (see above)
-        lower, upper = sorted(rng.uniform(85.0, 115.0, 2)) if rng.random() < 0.5 else (-np.inf, np.inf)
-        ceiling = float(upstream + rng.normal(0.0, 2.0)) if rng.random() < 0.5 else None
-        length = float(rng.uniform(10.0, 5000.0))
-
-        want = legacy._anchor_interpolated_bank_surface_to_cell_observations(
-            observations, baseline, fractions, length, outlet, MIN_GRADE, ceiling, thalwegs, lower, upper)
-        got = reach_bank_surface(observations, baseline, fractions, length, outlet, ceiling=ceiling,
-                                 thalwegs=thalwegs, lower=lower, upper=upper)
-
-        np.testing.assert_allclose(got[0], want[0], rtol=0, atol=1e-9)
-        np.testing.assert_allclose(got[1], want[1], rtol=1e-12, atol=1e-15)
-        np.testing.assert_array_equal(got[2], want[2])
-
-
-def test_the_baseline_never_rises_even_with_stations_out_of_order() -> None:
-    """Legacy's guard, kept: stations 0, 60, 30 and 100 m still give a baseline that only falls."""
-    network = line_graph(1)
-    network.nodes[1]["bank_elevation_grade"] = 0.1  # where legacy reads it
-    stations = np.array([0.0, 60.0, 30.0, 100.0])
-
-    baseline, _ = reach_baseline(network, 1, stations, {1: 90.0}, {1: 0.1})
-
-    np.testing.assert_allclose(baseline, [100.0, 94.0, 94.0, 90.0])
-    np.testing.assert_allclose(baseline, legacy._interpolate_reach_bank_elevation_surface(network, 1, stations,
-                                                                                         {1: 90.0})[0])
-
-
-def test_a_reach_of_one_cross_section_is_all_outlet() -> None:
-    network = line_graph(1)
-
-    baseline, fractions = reach_baseline(network, 1, [0.0], {1: 90.0}, {1: 0.01})
-
-    assert baseline.tolist() == [90.0] and fractions.tolist() == [1.0]
+    assert reach_network([7], [7]).out_degree(7) == 0
 
 
 # --- The bank level: the water surface plus the banks' height -----------------------------------------------------
@@ -497,9 +378,8 @@ def test_the_falling_fit_leaves_nan_out() -> None:
     np.testing.assert_allclose(falling_fit([3.0, math.nan, 5.0, 1.0]), [4.0, math.nan, 4.0, 1.0])
 
 
-def test_the_bank_height_is_the_10th_percentile_within_500_m() -> None:
-    assert (BANK_HEIGHT_QUANTILE, BANK_HEIGHT_WINDOW) == (0.1, 500.0)
-    assert METHODS[0] == "water_plus_height"
+def test_the_bank_height_is_the_10th_percentile_within_500_m_or_of_the_5_nearest() -> None:
+    assert (BANK_HEIGHT_QUANTILE, BANK_HEIGHT_WINDOW, MIN_BANK_OBSERVATIONS) == (0.1, 500.0, 5)
 
 
 def test_a_steady_reach_s_bank_elevation_is_its_water_plus_its_banks_height() -> None:
@@ -536,7 +416,7 @@ def test_the_height_is_a_low_percentile_of_the_banks() -> None:
 
 
 def test_a_reach_that_runs_mild_then_steep_keeps_its_banks_above_the_water() -> None:
-    """Legacy's straight line to the outlet passed under the whole mild stretch (BS2)."""
+    """A straight line from the reach's top to its outlet would pass under the whole mild stretch."""
     stations = 30.0 * np.arange(300)
     thalwegs = np.where(stations < 6000.0, 165.0 - 0.0001 * stations, 164.4 - 8.0 * (stations - 6000.0) / 3000.0)
 
@@ -576,13 +456,62 @@ def test_a_reach_without_observations_takes_the_fallback_height() -> None:
     assert np.isnan(reach_bank_levels(thalwegs, np.full(40, math.nan), stations, math.nan)).all()
 
 
+def test_a_lone_high_bank_doesn_t_set_the_height_of_the_cross_sections_round_it() -> None:
+    """A 0.9 m bank at km 1.5, the only one within 500 m of km 1.0-2.0, and 0.2 m banks every 100 m over the reach's
+    first and last 400 m. The 5 nearest to any cross section hold at least four of the low ones, so the height is
+    0.2 m all along; the 500 m window alone would have made it 0.9 m round km 1.5."""
+    stations = 10.0 * np.arange(301)
+    thalwegs = 100.0 - 0.001 * stations
+    heights = np.full(301, math.nan)
+    heights[[0, 10, 20, 30, 40, 260, 270, 280, 290, 300]] = 0.2
+    heights[150] = 0.9
+
+    bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, math.nan)
+
+    np.testing.assert_allclose(bank, thalwegs + 0.2, atol=1e-9)
+
+
+def test_a_window_with_5_or_more_observations_takes_their_10th_percentile_as_before() -> None:
+    """A bank every 100 m, so every 500 m window holds 6 to 11: each cross section's height is the 10th percentile of
+    those, not of the 5 nearest."""
+    stations = 10.0 * np.arange(101)
+    thalwegs = 100.0 - 0.001 * stations
+    heights = np.full(101, math.nan)
+    heights[::10] = np.random.default_rng(1).uniform(0.2, 2.0, 11)
+    observed = np.isfinite(heights)
+    window = np.array([np.quantile(heights[observed & (np.abs(stations - s) <= 500.0)], 0.1) for s in stations])
+
+    bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, math.nan)
+
+    np.testing.assert_allclose(bank, np.maximum(falling_fit(thalwegs + window), thalwegs), atol=1e-9)
+
+
+def test_a_reach_with_fewer_than_5_observations_takes_their_10th_percentile_everywhere() -> None:
+    """Banks 0.4, 1.0 and 1.6 m up at the ends and the middle of a 3 km reach: 0.52 m everywhere, even at the
+    middle, whose 500 m window holds only the 1.0 m bank."""
+    stations = 10.0 * np.arange(301)
+    thalwegs = 100.0 - 0.001 * stations
+    heights = np.full(301, math.nan)
+    heights[[0, 150, 300]] = [0.4, 1.0, 1.6]
+
+    bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, 5.0)
+
+    np.testing.assert_allclose(bank, thalwegs + np.quantile([0.4, 1.0, 1.6], 0.1), atol=1e-9)
+
+
+def test_the_bank_height_needs_at_least_one_observation() -> None:
+    stations = 10.0 * np.arange(40)
+    thalwegs = 100.0 - 0.01 * stations
+    with pytest.raises(ValueError):
+        reach_bank_levels(thalwegs, thalwegs + 1.0, stations, math.nan, min_observations=0)
+
+
 def made_up_reach(thalwegs, observations, cell=30.0, phantom=False):
     """A reach of cross sections one cell apart along a row, flowing into a reach of one cross section without an
     observation of its own (as below the Du Page reach), and with phantom an inflow with no cross sections."""
     count = len(thalwegs)
-    network = line_graph(1, 2, lengths=[count * cell, cell])
+    network = line_graph(1, 2)
     if phantom:
-        network.add_node(0, length=2000.0)
         network.add_edge(0, 1)
 
     def section(z):
@@ -600,17 +529,16 @@ def made_up_reach(thalwegs, observations, cell=30.0, phantom=False):
 
 
 def test_an_inflow_without_cross_sections_doesn_t_cap_the_reach() -> None:
-    """Legacy's network gave the inflow the reach's own lowest observation plus the minimum grade, and that held the
-    reach's bank elevation down to about its outlet's all the way up (BS2)."""
+    """Each reach's bank elevation comes from its own cross sections, so an inflow without any can't hold it down.
+    (Its last 500 m are ramped towards reach 2's, 1 cm lower.)"""
     thalwegs = 100.0 - 0.001 * 30.0 * np.arange(300)
     network, reaches = made_up_reach(thalwegs, thalwegs + 1.5, phantom=True)
 
-    new = smooth_bank_elevations(network, reaches, 30.0, 30.0)[1]
-    old = smooth_bank_elevations(network, reaches, 30.0, 30.0, method="legacy")[1]
+    smoothed = smooth_bank_elevations(network, reaches, 30.0, 30.0)[1]
 
-    np.testing.assert_allclose(new.bank_elevations, thalwegs + 1.5, atol=1e-9)
-    assert old.bank_elevations[0] < thalwegs[0] - 5.0
-    assert not new.anchors.any()
+    away = 30.0 * (299 - np.arange(300)) >= JUNCTION_TAPER
+    np.testing.assert_allclose(smoothed.bank_elevations[away], (thalwegs + 1.5)[away], atol=1e-9)
+    np.testing.assert_allclose(smoothed.bank_elevations, thalwegs + 1.5, atol=0.01)
 
 
 def test_the_site_s_height_fills_in_a_reach_without_observations() -> None:
@@ -619,18 +547,120 @@ def test_the_site_s_height_fills_in_a_reach_without_observations() -> None:
     network, reaches = made_up_reach(thalwegs, np.r_[thalwegs[:30] + 1.2, thalwegs[30:] - 1.0])
     flat = XSection(np.r_[np.full(4, 55.0), 50.0, np.full(4, 55.0)], np.full(9, 0.035), 30.0)
     reaches[3] = ReachSections(np.full(10, 5, np.int64), np.arange(10), [flat] * 10, [NO_BANKS] * 10)
-    network.add_node(3, length=300.0)
+    network.add_node(3)
 
     smoothed = smooth_bank_elevations(network, reaches, 30.0, 30.0)
 
     np.testing.assert_allclose(smoothed[3].bank_elevations, 51.2, atol=1e-9)
 
 
-def test_an_unknown_method_raises() -> None:
-    network, reaches = made_up_reach(np.full(5, 100.0), np.full(5, 101.0))
+# --- Junctions ----------------------------------------------------------------------------------------------------
 
-    with pytest.raises(ValueError, match="method must be one of"):
-        smooth_bank_elevations(network, reaches, 30.0, 30.0, method="lowest")
+
+def flat_reach(level, count=20, spacing=50.0) -> SmoothedReach:
+    """A smoothed reach of count cross sections spacing metres apart, upstream first, all with one bank elevation."""
+    return SmoothedReach([NO_BANKS] * count, np.full(count, float(level)), np.full(count, math.nan), np.arange(count),
+                         spacing * np.arange(count), None)
+
+
+def test_two_reaches_meet_at_their_mean_and_are_left_alone_500_m_away() -> None:
+    """Reach 1's banks at 104 m flow into reach 2's at 102 m: each 950 m long reach is ramped to 103 m at the junction,
+    linearly over its 500 m nearest it."""
+    smoothed = {1: flat_reach(104.0), 2: flat_reach(102.0)}
+
+    tapered = taper_junctions(line_graph(1, 2), smoothed, {1: np.full(20, 100.0), 2: np.full(20, 100.0)})
+
+    stations = 50.0 * np.arange(20)
+    np.testing.assert_allclose(tapered[1].bank_elevations,
+                               104.0 - np.clip(1.0 - (950.0 - stations) / JUNCTION_TAPER, 0.0, 1.0))
+    np.testing.assert_allclose(tapered[2].bank_elevations, 102.0 + np.clip(1.0 - stations / JUNCTION_TAPER, 0.0, 1.0))
+    assert tapered[1].bank_elevations[-1] == tapered[2].bank_elevations[0] == pytest.approx(103.0)
+    np.testing.assert_array_equal(smoothed[1].bank_elevations, 104.0)  # the levels given are left as they were
+
+
+def test_the_ramp_rises_to_a_higher_reach_below_but_never_goes_below_the_stream_cells() -> None:
+    """1 (101 m) meets 2 (105 m) at 103 m, rising on the way; 2 meets 3 (99 m) at 102 m, but 2's stream cells are at
+    104 m, so it stops there."""
+    smoothed = {1: flat_reach(101.0), 2: flat_reach(105.0), 3: flat_reach(99.0)}
+    thalwegs = {1: np.full(20, 100.0), 2: np.full(20, 104.0), 3: np.full(20, 96.0)}
+
+    tapered = taper_junctions(line_graph(1, 2, 3), smoothed, thalwegs)
+
+    assert tapered[1].bank_elevations[-1] == pytest.approx(103.0)
+    assert np.all(np.diff(tapered[1].bank_elevations) >= 0.0)
+    assert tapered[2].bank_elevations[0] == pytest.approx(104.0)  # 103 m, held at the stream cells
+    assert tapered[2].bank_elevations[-1] == pytest.approx(104.0)  # 102 m, held at the stream cells
+    assert tapered[3].bank_elevations[0] == pytest.approx(102.0)
+    for reach, result in tapered.items():
+        assert np.all(result.bank_elevations >= thalwegs[reach])
+
+
+def test_only_the_main_stem_is_tapered_into_the_reach_below() -> None:
+    """Reach 1, with reach 4 above it, is reach 3's main stem; reach 2, with none above it, keeps its levels."""
+    network = reach_network([1, 2, 3, 4], [3, 3, None, 1])
+    smoothed = {reach: flat_reach(level) for reach, level in {1: 106.0, 2: 109.0, 3: 104.0, 4: 108.0}.items()}
+
+    tapered = taper_junctions(network, smoothed, {reach: np.full(20, 100.0) for reach in smoothed})
+
+    np.testing.assert_array_equal(tapered[2].bank_elevations, 109.0)
+    assert tapered[1].bank_elevations[-1] == tapered[3].bank_elevations[0] == pytest.approx(105.0)
+    assert tapered[4].bank_elevations[-1] == tapered[1].bank_elevations[0] == pytest.approx(107.0)
+
+
+def test_a_reach_without_bank_elevations_is_left_out_of_the_taper() -> None:
+    smoothed = {1: flat_reach(104.0), 2: flat_reach(math.nan)}
+
+    tapered = taper_junctions(line_graph(1, 2), smoothed, {1: np.full(20, 100.0), 2: np.full(20, 100.0)})
+
+    np.testing.assert_array_equal(tapered[1].bank_elevations, 104.0)
+    assert np.isnan(tapered[2].bank_elevations).all()
+
+
+def test_the_junction_taper_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="above 0 m"):
+        taper_junctions(line_graph(1, 2), {1: flat_reach(104.0)}, {1: np.full(20, 100.0)}, taper=0.0)
+
+
+def two_reaches(height_above: float, height_below: float, count: int = 40, cell: float = 30.0):
+    """Reach 1 flowing into reach 2 along a row of cells, count cross sections each, on a stream falling 1 m per km,
+    with banks height_above and height_below above it. Also the stream cells' elevations, reach 1's first."""
+    thalwegs = 100.0 - 0.001 * cell * np.arange(2 * count)
+
+    def section(z):
+        elevations = np.full(9, z + 5.0)
+        elevations[4] = z
+        return XSection(elevations, np.full(9, 0.035), cell)
+
+    reaches = {}
+    for reach, part, height in ((1, slice(0, count), height_above), (2, slice(count, 2 * count), height_below)):
+        z = thalwegs[part]
+        reaches[reach] = ReachSections(np.zeros(count, np.int64), np.arange(2 * count)[part], [section(v) for v in z],
+                                       [Banks("test", cell, cell, v + height, v + height, False, True) for v in z])
+    return line_graph(1, 2), reaches, thalwegs
+
+
+def test_smoothed_reaches_meet_at_a_junction_and_keep_their_own_heights_away_from_it() -> None:
+    """Reach 1's banks are 1 m above the stream and reach 2's 3 m: they meet 2 m above it at the junction."""
+    network, reaches, thalwegs = two_reaches(1.0, 3.0)
+
+    smoothed = smooth_bank_elevations(network, reaches, 30.0, 30.0)
+
+    upper, lower = smoothed[1].bank_elevations, smoothed[2].bank_elevations
+    assert upper[-1] == pytest.approx(lower[0])
+    assert upper[-1] == pytest.approx(0.5 * (thalwegs[39] + 1.0 + thalwegs[40] + 3.0))
+    stations = 30.0 * np.arange(40)
+    far_above, far_below = stations[-1] - stations >= JUNCTION_TAPER, stations >= JUNCTION_TAPER
+    np.testing.assert_allclose(upper[far_above], thalwegs[:40][far_above] + 1.0)
+    np.testing.assert_allclose(lower[far_below], thalwegs[40:][far_below] + 3.0)
+
+
+def test_unsmoothed_bank_elevations_aren_t_tapered() -> None:
+    network, reaches, thalwegs = two_reaches(1.0, 3.0)
+
+    smoothed = smooth_bank_elevations(network, reaches, 30.0, 30.0, smooth=False)
+
+    np.testing.assert_allclose(smoothed[1].bank_elevations, thalwegs[:40] + 1.0)
+    np.testing.assert_allclose(smoothed[2].bank_elevations, thalwegs[40:] + 3.0)
 
 
 # --- Everything ---------------------------------------------------------------------------------------------------
@@ -647,7 +677,7 @@ def channel_section(bank_top, bed, width=20.0, spacing=2.0, ordinates=81) -> XSe
 
 def small_network():
     """Reaches 1 and 2 join as reach 3, each of 20 cross sections along a row of 10 m cells."""
-    network = reach_network([1, 2, 3], [3, 3, None], [200.0, 200.0, 200.0])
+    network = reach_network([1, 2, 3], [3, 3, None])
     reaches = {}
     starts = {1: (0, 0), 2: (2, 0), 3: (1, 21)}
     tops = {1: 110.0, 2: 108.0, 3: 104.0}
@@ -661,19 +691,17 @@ def small_network():
     return network, reaches
 
 
-def test_legacy_s_bank_elevations_fall_along_the_network() -> None:
+def test_each_reach_s_bank_elevations_fall_downstream_and_stay_above_its_stream_cells() -> None:
     network, reaches = small_network()
 
-    smoothed = smooth_bank_elevations(network, reaches, 10.0, 10.0, method="legacy")
+    smoothed = smooth_bank_elevations(network, reaches, 10.0, 10.0)
 
     for reach, result in smoothed.items():
         ordered = result.bank_elevations[result.order]
+        thalwegs = np.array([xs.elevations[xs.elevations.size // 2] for xs in reaches[reach].sections])[result.order]
         assert np.all(np.isfinite(ordered))
-        assert np.all(np.diff(ordered) <= -MIN_GRADE * 10.0 * (1 - 1e-9))
-    inflow = min(smoothed[1].bank_elevations[smoothed[1].order[-1]], smoothed[2].bank_elevations[smoothed[2].order[-1]])
-    assert smoothed[3].bank_elevations[smoothed[3].order[0]] <= inflow
-    assert smoothed[3].anchors[10]
-    assert smoothed[3].bank_elevations[10] == pytest.approx(103.3, abs=1e-9)
+        assert np.all(np.diff(ordered) <= 1e-12)
+        assert np.all(ordered >= thalwegs)
 
 
 def test_results_come_back_in_the_order_the_cross_sections_were_given() -> None:
@@ -687,7 +715,6 @@ def test_results_come_back_in_the_order_the_cross_sections_were_given() -> None:
     shuffled = smooth_bank_elevations(network, reaches, 10.0, 10.0)[3]
 
     np.testing.assert_allclose(shuffled.bank_elevations, expected.bank_elevations[shuffle], rtol=1e-15)
-    np.testing.assert_array_equal(shuffled.anchors, expected.anchors[shuffle])
     np.testing.assert_array_equal(shuffled.observations, expected.observations[shuffle])
     assert shuffled.order.tolist() == np.argsort(shuffle)[expected.order].tolist()
 
@@ -701,6 +728,62 @@ def test_each_cross_section_keeps_its_own_banks() -> None:
     assert smoothed[1].widths == ReachWidths(20.0, 20.0, 20.0)
 
 
+def test_unsmoothed_each_cross_section_keeps_its_own_banks_and_bank_elevation() -> None:
+    """With smooth=False, a channel twice as wide as the rest of its reach keeps its banks, reach 3's low bank stays
+    where it is, and a cross section without banks takes its stream cell plus the reach's bank height (2 m here)."""
+    network, reaches = small_network()
+    reaches[1].banks[5] = banks_for_width(reaches[1].sections[5], 40.0)
+    reaches[2].banks[3] = NO_BANKS
+
+    smoothed = smooth_bank_elevations(network, reaches, 10.0, 10.0, smooth=False)
+
+    assert smoothed[1].banks == list(reaches[1].banks) and smoothed[1].widths is None
+    assert smooth_bank_elevations(network, reaches, 10.0, 10.0)[1].banks[5].top_width == pytest.approx(20.0)
+    assert smoothed[3].bank_elevations[10] == pytest.approx(103.3)
+    np.testing.assert_allclose(smoothed[2].bank_elevations, [108.0 - 0.05 * k for k in range(20)])
+    assert sorted(smoothed[3].order.tolist()) == list(range(20))
+
+
+def test_the_width_filter_s_banks_aren_t_observations() -> None:
+    """A cross section without banks gets banks at the reach's median width, for the hydraulics, but the ground
+    there isn't a bank: it gives no observation."""
+    network, reaches = small_network()
+    assert np.isfinite(smooth_bank_elevations(network, reaches, 10.0, 10.0)[1].observations[5])
+    reaches[1].banks[5] = NO_BANKS
+
+    smoothed = smooth_bank_elevations(network, reaches, 10.0, 10.0)[1]
+
+    assert smoothed.banks[5].valid and smoothed.banks[5].top_width == pytest.approx(20.0)
+    assert np.isnan(smoothed.observations[5])
+
+
+def test_a_reach_whose_banks_are_walls_takes_the_site_s_bank_height() -> None:
+    """Reach 2's banks are 3 m up, above its ceilings 2 m up, so it has no observation and takes the site's 1 m, from
+    reach 1 (500 m from the junction, past the taper)."""
+    network, reaches, thalwegs = two_reaches(1.0, 3.0)
+    reaches[2] = reaches[2]._replace(ceilings=thalwegs[40:] + 2.0)
+
+    smoothed = smooth_bank_elevations(network, reaches, 30.0, 30.0)
+
+    assert np.isnan(smoothed[2].observations).all()
+    far_below = 30.0 * np.arange(40) >= JUNCTION_TAPER
+    np.testing.assert_allclose(smoothed[2].bank_elevations[far_below], thalwegs[40:][far_below] + 1.0, atol=1e-9)
+
+
+def test_where_every_bank_is_above_its_ceiling_they_are_all_kept() -> None:
+    """With the largest flow below every bank, as in deep channels without a water mask, the ceilings would leave
+    the site without a bank elevation. The DEM's banks are all there is, so they stay."""
+    network, reaches, thalwegs = two_reaches(1.0, 3.0)
+    expected = smooth_bank_elevations(network, reaches, 30.0, 30.0)
+    for reach, part in ((1, slice(0, 40)), (2, slice(40, 80))):
+        reaches[reach] = reaches[reach]._replace(ceilings=thalwegs[part] + 0.5)
+
+    smoothed = smooth_bank_elevations(network, reaches, 30.0, 30.0)
+
+    for reach in (1, 2):
+        np.testing.assert_array_equal(smoothed[reach].bank_elevations, expected[reach].bank_elevations)
+
+
 def test_a_reach_with_cross_sections_must_be_in_the_network() -> None:
     network, reaches = small_network()
     network.remove_node(2)
@@ -710,8 +793,8 @@ def test_a_reach_with_cross_sections_must_be_in_the_network() -> None:
 
 
 def test_without_an_observation_anywhere_no_reach_gets_a_bank_elevation() -> None:
-    """As legacy, whose network estimate came back empty, so that it dropped every reach. What to do with that is up
-    to the caller: the pipeline drops them only with bank elevations, which is where they're needed."""
+    """What to do with that is up to the caller: the pipeline drops them only with Bathy_Use_Banks, which is where
+    they're needed."""
     network, reaches = small_network()
     for reach, sections in reaches.items():
         reaches[reach] = sections._replace(banks=[NO_BANKS] * len(sections.banks))
@@ -719,63 +802,3 @@ def test_without_an_observation_anywhere_no_reach_gets_a_bank_elevation() -> Non
     smoothed = smooth_bank_elevations(network, reaches, 10.0, 10.0)
 
     assert all(np.isnan(result.bank_elevations).all() for result in smoothed.values())
-
-
-# --- Speed --------------------------------------------------------------------------------------------------------
-
-
-def _best_seconds(function, repeats: int = 5) -> float:
-    function()
-    best = math.inf
-    for _ in range(repeats):
-        start = time.perf_counter()
-        function()
-        best = min(best, time.perf_counter() - start)
-    return best
-
-
-def test_ordering_and_anchoring_are_faster_than_legacy_s() -> None:
-    """A reach of 500 cross sections winding along its cells."""
-    rng = np.random.default_rng(2)
-    x = y = 0.0
-    cells = []
-    while len(cells) < 500:
-        heading = 0.9 * math.sin(len(cells) / 12.0) + 0.7
-        x += math.cos(heading) / 3
-        y += math.sin(heading) / 3
-        cell = (int(round(y)), int(round(x)))
-        if not cells or cell != cells[-1]:
-            cells.append(cell)
-    rows, cols = np.array(cells)[:, 0] + 10, np.array(cells)[:, 1] + 10
-    end = (rows[-1] + 1, cols[-1] + 1)
-    network = line_graph(1, 2)
-    entries = [{"row": int(r), "col": int(c)} for r, c in zip(rows, cols)]
-    grouped = {1: entries, 2: [{"row": int(end[0]), "col": int(end[1])}]}
-    cells_by_reach = {1: (rows, cols), 2: (np.array([end[0]]), np.array([end[1]]))}
-    fractions = np.linspace(0.0, 1.0, 500)
-    baseline = 120.0 - 20.0 * fractions
-    observations = baseline + rng.normal(0.0, 1.0, 500)
-    thalwegs = observations - 2.0
-
-    new_order = _best_seconds(lambda: order_reach(network, 1, rows, cols, 10.0, 10.0, cells_by_reach, observations))
-    old_order = _best_seconds(lambda: legacy._order_reach_stream_cells_from_network(
-        network, 1, entries, grouped, np.arange(500), observations, 10.0, 10.0))
-    new_surface = _best_seconds(lambda: reach_bank_surface(observations, baseline, fractions, 5000.0, 100.0,
-                                                           thalwegs=thalwegs))
-    old_surface = _best_seconds(lambda: legacy._anchor_interpolated_bank_surface_to_cell_observations(
-        observations, baseline, fractions, 5000.0, 100.0, MIN_GRADE, None, thalwegs))
-
-    assert new_order < old_order
-    assert new_surface < old_surface
-
-
-def test_the_network_pass_is_faster_than_legacy_s() -> None:
-    rng = np.random.default_rng(4)
-    network = random_network(rng, 300)
-    minima = {reach: 100.0 + float(rng.normal(0.0, 5.0)) for reach in network}
-    maxima = {reach: value + 2.0 for reach, value in minima.items()}
-
-    new = _best_seconds(lambda: network_outlet_elevations(network, minima, maxima))
-    old = _best_seconds(lambda: legacy._estimate_network_smoothed_reach_min_bank_elevations(network, minima, maxima))
-
-    assert new < old

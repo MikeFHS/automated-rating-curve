@@ -114,11 +114,11 @@ grows with the river, where one a fixed number of cells long spans a whole meand
 of a big river. `Valley_Dir_Dist` (40 cells) is the window of a reach without banks, and of every reach with
 `Valley_Dir_Widths` 0.
 
-The widths are the bank tops' without bathymetry and with `Bathy_Use_Banks`. Banks closer in shorten the window by the
+The widths are the bank tops' in every mode. Banks closer in shorten the window by the
 same share: on synthetic meanders of natural proportions, a window of 10 true channel widths turned the valley a
 median 8° from its axis, and one of 6 widths 26°, against 0.4° at 16. Before 0.5.0, a run without bathymetry took
 the water mask's edge for its banks, the low water's, which on the synthetic channels was a median 0.6 to 0.75 of the
-bank tops' width. With bathymetry and without `Bathy_Use_Banks` the banks are still the DEM's water's edge.
+bank tops' width. With bathymetry and without `Bathy_Use_Banks` the channel is carved between the DEM's water's edges, but the hydraulics, and so the window, take the bank tops.
 
 The table gives the mean size of ARC's error over the floodplain (at 150, 400 and 1000 m³/s, in metres) on seven
 synthetic valleys with 10 m cells, each with four meanders: the four above, whose meanders are long for their channel,

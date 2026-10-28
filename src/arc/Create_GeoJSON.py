@@ -22,7 +22,7 @@ from geojson import Point
 from osgeo import gdal
 from pyproj import CRS
 from scipy.interpolate import interp1d
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, MultiLineString
 
 # local imports
 # from streamflow_processing import Get_Raster_Details, Read_Raster_GDAL
@@ -249,9 +249,8 @@ def Sample_Raster_Value_At_Point(raster_array, geo_transform, point, nodata_valu
             return False
         if np.isnan(value):
             return False
-        if nodata_value is not None and value == nodata_value:
-            return False
-        return True
+        
+        return not (nodata_value is not None and value == nodata_value)
 
     nrows, ncols = raster_array.shape
     for radius in range(max_search_radius + 1):
@@ -709,6 +708,41 @@ def find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Fi
     
     return (seed_gdf)
 
+def Read_Or_Find_SEED_Locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field):
+    """
+    The SEED locations in SEED_Output_File if it is up to date, and otherwise the ones find_SEED_locations finds (and
+    writes there).
+
+    The file is up to date if it was written after the stream lines and the DEM last changed, and each of its SEED
+    locations is on one of the stream lines' streams. A file written for other streams, or before the streams or the
+    DEM changed, would mark the wrong stream cells, so it is replaced; one edited by hand since is kept.
+
+    Parameters
+    ----------
+    StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field: str
+        As find_SEED_locations takes them.
+
+    Returns
+    -------
+    seed_gdf: geodataframe
+        The SEED points, with the ID of the stream each is on in a column named LINKNO.
+    """
+    if os.path.isfile(SEED_Output_File):
+        written = os.path.getmtime(SEED_Output_File)
+        if written < max(os.path.getmtime(StrmShp), os.path.getmtime(DEM_Raster_File)):
+            print(f'The SEED file {SEED_Output_File} is older than the stream lines or the DEM: finding its SEED '
+                  'locations again...')
+        else:
+            seed_gdf = Read_Vector_GDF(SEED_Output_File)
+            streams = set(Read_Vector_GDF(StrmShp)[Stream_ID_Field])
+            if 'LINKNO' in seed_gdf.columns and set(seed_gdf['LINKNO']) <= streams:
+                print(f'Using the SEED locations in {SEED_Output_File}')
+                return seed_gdf
+            print(f"The SEED file {SEED_Output_File} has SEED locations on streams the stream lines don't have: "
+                  'finding its SEED locations again...')
+
+    return find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field)
+
 def FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs, stream_gdf=None, Stream_ID_Field=None,
                           Downstream_ID_Field=None):
     """
@@ -797,8 +831,9 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
         The field in the StrmShp that is used to identify the stream downstream of the stream
     SEED_Output_File : str
         The file path and file name of the output vector file that contains the
-        SEED locations and the unique ID of the stream each represents. When it already exists, its SEED locations
-        are used instead of finding them again. See FindClosestSEEDPoints for the stream cells they mark.
+        SEED locations and the unique ID of the stream each represents. When it already exists and is up to date,
+        its SEED locations are used instead of finding them again, and otherwise it is replaced (see
+        Read_Or_Find_SEED_Locations). See FindClosestSEEDPoints for the stream cells they mark.
     Thin_Output : bool
         True/False of whether or not to filter the output GeoJSON
     COMID_Q_File : str, optional
@@ -826,7 +861,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
 
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + DEM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
+    (_, _, _, _, _, _, _, _, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
     print('Geographic Information:')
     print(geoTransform)
 
@@ -887,11 +922,8 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
         curve_data_gdf = Thin_Curve_data(curve_data_gdf)
 
     # find the SEED locations
-    if os.path.isfile(SEED_Output_File):
-        print("SEED file exists, we're using it...")
-        seed_gdf = Read_Vector_GDF(SEED_Output_File)
-    else:
-        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field)
+    seed_gdf = Read_Or_Find_SEED_Locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field,
+                                           Downstream_ID_Field)
     curve_data_gdf = FindClosestSEEDPoints(seed_gdf, curve_data_gdf, distance_crs, Read_Vector_GDF(StrmShp),
                                            Stream_ID_Field, Downstream_ID_Field)
 
@@ -928,8 +960,9 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
         The field in the StrmShp that is used to identify the stream downstream of the stream
     SEED_Output_File : str
         The file path and file name of the output vector file that contains the
-        SEED locations and the unique ID of the stream each represents. When it already exists, its SEED locations
-        are used instead of finding them again. See FindClosestSEEDPoints for the stream cells they mark.
+        SEED locations and the unique ID of the stream each represents. When it already exists and is up to date,
+        its SEED locations are used instead of finding them again, and otherwise it is replaced (see
+        Read_Or_Find_SEED_Locations). See FindClosestSEEDPoints for the stream cells they mark.
     Thin_Output : bool
         True/False of whether or not to filter the output GeoJSON
     COMID_Q_File : str, optional
@@ -957,7 +990,7 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
 
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + DEM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
+    (_, _, _, _, _, _, _, _, geoTransform, Rast_Projection) = Get_Raster_Details(DEM_Raster_File)
     print('Geographic Information:')
     print(geoTransform)
 
@@ -977,7 +1010,6 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
     
     # Extract the columns for interpolation
     flow_cols = [col for col in vdt_df.columns if col.startswith('q_')]
-    top_width_cols = [col for col in vdt_df.columns if col.startswith('t_')]
     wse_cols = [col for col in vdt_df.columns if col.startswith('wse_')]
 
     # Define the function to calculate TopWidth, Depth, and WSE for each row
@@ -1070,12 +1102,8 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
 
 
     # find the SEED locations
-    if os.path.isfile(SEED_Output_File):
-        print("SEED file exists, we're using it...")
-        seed_gdf = Read_Vector_GDF(SEED_Output_File)
-        
-    else:
-        seed_gdf = find_SEED_locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field, Downstream_ID_Field)
+    seed_gdf = Read_Or_Find_SEED_Locations(StrmShp, DEM_Raster_File, SEED_Output_File, Stream_ID_Field,
+                                           Downstream_ID_Field)
     vdt_gdf = FindClosestSEEDPoints(seed_gdf, vdt_gdf, distance_crs, Read_Vector_GDF(StrmShp), Stream_ID_Field,
                                     Downstream_ID_Field)
 
@@ -1193,7 +1221,7 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
         A list of float values that represent the maximum elevation of the stream cells on the stream reach of the SEED location
     """
     print('\nReading Data from Raster: ' + STRM_Raster_File)
-    (S, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection) = Read_Raster_GDAL(STRM_Raster_File)
+    (S, ncols, nrows, cellsize, yll, yur, xll, xur, _, geotransform, _) = Read_Raster_GDAL(STRM_Raster_File)
     dx = abs(xll-xur) / (ncols)
     dy = abs(yll-yur) / (nrows)
     print(str(dx) + '  ' + str(dy) + '  ' + str(cellsize))
@@ -1212,7 +1240,7 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
     S = None
     
     print('\nReading Data from Raster: ' + DEM_Raster_File)
-    (DEM, dncols, dnrows, dcellsize, dyll, dyur, dxll, dxur, dlat, geotransform, Rast_Projection) = Read_Raster_GDAL(DEM_Raster_File)
+    (DEM, _, _, _, _, _, _, _, _, geotransform, _) = Read_Raster_GDAL(DEM_Raster_File)
     #E = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the STRM Raster Array
     #E[1:(nrows+1), 1:(ncols+1)] = DEM
     #E = E.astype(float)
@@ -1265,13 +1293,12 @@ def Write_SEED_Data_To_File_Using_Stream_Raster(STRM_Raster_File, DEM_Raster_Fil
                 SEED_MinElev.append(COMID_Elev_Min[i])
                 SEED_MaxElev.append(COMID_Elev_Max[i])
     
-    outfile = open(SEED_Point_File,'w')
-    out_str = 'COMID,Lat,Long,Row,Col,MinElev,MaxElev'
-    outfile.write(out_str)
-    for i in range(len(SEED_COMID)):
-        out_str = '\n' + str(SEED_COMID[i]) + ',' + str(SEED_Lat[i]) + ',' + str(SEED_Lon[i]) + ',' + str(SEED_r[i]) + ',' + str(SEED_c[i]) + ',' + str(SEED_MinElev[i]) + ',' + str(SEED_MaxElev[i])
+    with open(SEED_Point_File,'w') as outfile:
+        out_str = 'COMID,Lat,Long,Row,Col,MinElev,MaxElev'
         outfile.write(out_str)
-    outfile.close()
+        for i in range(len(SEED_COMID)):
+            out_str = '\n' + str(SEED_COMID[i]) + ',' + str(SEED_Lat[i]) + ',' + str(SEED_Lon[i]) + ',' + str(SEED_r[i]) + ',' + str(SEED_c[i]) + ',' + str(SEED_MinElev[i]) + ',' + str(SEED_MaxElev[i])
+            outfile.write(out_str)
     return SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev
 
 def GetSEED_Data_From_File(SEED_Point_File):
@@ -1305,21 +1332,21 @@ def GetSEED_Data_From_File(SEED_Point_File):
     SEED_MaxElev: list
         The maximum elevation of the stream cells on the stream reach of the SEED location
     """
-    infile = open(SEED_Point_File,'r')
-    lines = infile.readlines()
-    n = len(lines)-1
-    SEED_r = [0] * n
-    SEED_c = [0] * n
-    SEED_Lat=[0.0] * n
-    SEED_Lon=[0.0] * n
-    SEED_COMID=[0] * n
-    SEED_MinElev=[0.0] * n
-    SEED_MaxElev=[0.0] * n
-    i=-1
-    for line in lines[1:]:
-        i=i+1
-        (SEED_COMID[i], SEED_Lat[i], SEED_Lon[i], SEED_r[i], SEED_c[i], SEED_MinElev[i], SEED_MaxElev[i]) = line.strip().split(',')
-    return SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev
+    with open(SEED_Point_File,'r') as infile:
+        lines = infile.readlines()
+        n = len(lines)-1
+        SEED_r = [0] * n
+        SEED_c = [0] * n
+        SEED_Lat=[0.0] * n
+        SEED_Lon=[0.0] * n
+        SEED_COMID=[0] * n
+        SEED_MinElev=[0.0] * n
+        SEED_MaxElev=[0.0] * n
+        i=-1
+        for line in lines[1:]:
+            i=i+1
+            (SEED_COMID[i], SEED_Lat[i], SEED_Lon[i], SEED_r[i], SEED_c[i], SEED_MinElev[i], SEED_MaxElev[i]) = line.strip().split(',')
+        return SEED_Lat, SEED_Lon, SEED_COMID, SEED_r, SEED_c, SEED_MinElev, SEED_MaxElev
 
 def Write_GeoJSON_File(OutGeoJSON_File, OutProjection, curve_data_gdf):
     """
@@ -1488,7 +1515,7 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Raster(CurveParam_File, COMID_Q_Fil
 
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + STRM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
+    (_, _, _, _, _, _, _, _, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
     print('Geographic Information:')
     print(geoTransform)
 
@@ -1609,7 +1636,7 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
 
     # Get the Extents and cellsizes of the Raster Data
     print('\nGetting the Spatial information from ' + STRM_Raster_File)
-    (minx, miny, maxx, maxy, dx, dy, ncols, nrows, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
+    (_, _, _, _, _, _, _, _, geoTransform, Rast_Projection) = Get_Raster_Details(STRM_Raster_File)
     print('Geographic Information:')
     print(geoTransform)
 
@@ -1629,7 +1656,6 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Raster(VDTDatabaseFileName, COMID_Q_F
     
     # Extract the columns for interpolation
     flow_cols = [col for col in vdt_df.columns if col.startswith('q_')]
-    top_width_cols = [col for col in vdt_df.columns if col.startswith('t_')]
     wse_cols = [col for col in vdt_df.columns if col.startswith('wse_')]
 
     # Define the function to calculate TopWidth, Depth, and WSE for each row

@@ -132,7 +132,8 @@ of 0.95.
 flow, in each mode, with the low flow and with the bankfull flow. In every case `Flow_File_BF` fills the carved
 channel exactly to the mode's level at normal depth: the DEM's water surface, or the bank elevation. Each mode given
 its own flow carves the true channel, to a millimetre, with a water mask or without: without `Bathy_Use_Banks` the
-banks are the DEM's water's edge, and with it the bank tops. In a canyon whose bench is above the water that carries
+channel is carved between the DEM's water's edges, and with it below the bank tops; the hydraulics divide at the bank
+tops in both. In a canyon whose bench is above the water that carries
 the maximum flow, the bench isn't taken for the banks. `testing/test_bank_modes.py` checks each mode's banks on single
 cross sections: the water level beside a burned stream cell, masks too narrow, too wide or spilling onto the
 floodplain, a valley wall above the maximum flow's water, and noise on the water; and without bathymetry, the bank tops

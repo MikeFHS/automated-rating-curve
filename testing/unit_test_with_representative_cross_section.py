@@ -2,13 +2,13 @@
 Synthetic ARC test for generating the representative cross-section output.
 
 This file follows the same pattern as the other stand-alone synthetic tests in
-``automated-rating-curve/testing``:
+``testing``:
 
 1. Automated test mode
-   ``pytest automated-rating-curve/testing/unit_test_with_representative_cross_section.py``
+   ``pytest testing/unit_test_with_representative_cross_section.py``
 
 2. Manual diagnostic mode
-   ``python automated-rating-curve/testing/unit_test_with_representative_cross_section.py``
+   ``python testing/unit_test_with_representative_cross_section.py``
 
 The automated test runs ARC end to end on one synthetic reach, writes the
 representative cross-section CSV, and validates the exported table. Manual
@@ -18,16 +18,16 @@ mode writes the same artifacts into a persistent folder under
 
 from __future__ import annotations
 
-from pathlib import Path
 import stat
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from osgeo import gdal, osr
 
 from arc import Arc
-from arc.hydraulic_data import REPRESENTATIVE_CROSS_SECTION_COLUMNS
+from arc.outputs import REPRESENTATIVE_CROSS_SECTION_COLUMNS
 
 gdal.UseExceptions()
 
@@ -200,6 +200,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray, stream: np.ndarray) -> di
     with mannings_path.open("w", encoding="utf-8") as mannings_file:
         mannings_file.write("lu\tdesc\troughness\n")
         mannings_file.write(f"1\tland\t{roughness}\n")
+        mannings_file.write(f"80\twater\t{roughness}\n")  # ARC makes the stream cells water
 
     return {
         "dem_path": dem_path,
@@ -236,7 +237,6 @@ def run_representative_case(output_root: Path) -> pd.DataFrame:
             "Print_AP_Database": "",
             "Print_Curve_File": "",
             "AROutBATHY": "",
-            "AROutFLOOD": "",
             "Stream_Slope_Method": "local_average",
             "LC_Water_Value": 80,
             "VDT_Database_NumIterations": 2,

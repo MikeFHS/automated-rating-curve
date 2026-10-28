@@ -8,6 +8,25 @@ averaged, and a reach stops at the first stage where any cross section's hydraul
 representative cross section is then built from the averages: its area and top width kept from falling as the stage
 rises, and its depth at each stage the one that grows the width linearly from the stage below to give that area.
 
+The discharge is Manning's, K sqrt(S) f (f the slope_adjustment_factor), at a slope S that is the cross section's own
+slope, the water at normal depth, unless the cross section has a rating curve from the standard step (a sample's
+curve). Then, at each of the rating curve's water surfaces, it is the curve's flow, so the representative cross
+sections average the water the VDT database has. Between two of them it goes from one flow to the other
+(BETWEEN_INCREMENTS): with "conveyance", in step with the cross section's conveyance K, Q_1 + (Q_2 - Q_1) (K - K_1) /
+(K_2 - K_1), and never beyond Q_1 or Q_2, so that a curve at normal depth (flows in proportion to K) gives normal
+depth's discharge between its water surfaces too; with "linear", linear in the water surface, as the VDT database is
+read. Below and above them it is Manning's at the curve's friction slope there, the slope at which the cross section
+carries the curve's flow, (Q / (f K))^2: the water stays as far above (or below) normal depth as at the curve's ends.
+Of water surfaces held at the baseflow level at several flows, the highest flow's counts. A cross
+section's discharge never falls as its stage rises: where it would, as where water spills onto flat ground, the
+discharge below is held, as the rating curves hold their last increment.
+
+With banks, the channel carries its share of the discharge, its conveyance over the whole section's at one friction
+slope, and the velocity is the channel's (Mean_Velocity, Representative_Velocity); without banks it's the whole
+section's. Mean_Section_Velocity is always the whole section's, discharge over area, the VDT database's velocity. The
+friction slope each cross section's discharge implies at each stage, (Q / (f K))^2, is averaged as Mean_Friction_Slope:
+its own slope where it has no curve and its discharge isn't held.
+
 The means are summed as numpy sums them, so they are numpy's nanmean and nanstd to the bit.
 """
 from __future__ import annotations
@@ -33,6 +52,8 @@ from arc.xsection.xsection import XSection
 
 DEPTH_INCREMENT = 0.10  # metres between stages
 MAX_DEPTH = 25.0  # the highest stage above the stream cell
+# How a rating curve's discharge goes between its water surfaces (see the notes above): "conveyance" or "linear"
+BETWEEN_INCREMENTS = "linear"
 
 REPRESENTATIVE_CROSS_SECTION_COLUMNS = [
     'COMID', 'Cross_Section_Count', 'Hydraulic_Sample_Count', 'Depth_Stage_Index', 'Depth_Stage_Meters',
@@ -40,7 +61,7 @@ REPRESENTATIVE_CROSS_SECTION_COLUMNS = [
     'Mean_Velocity', 'Representative_Velocity', 'Mean_Top_Width', 'Mean_Cross_Sectional_Area', 'Mean_WSE',
     'Representative_Cross_Sectional_Area', 'Representative_Depth_Increment', 'Representative_Depth',
     'Representative_Top_Width', 'Representative_Stage_Elevation', 'Representative_Left_Station',
-    'Representative_Right_Station',
+    'Representative_Right_Station', 'Mean_Friction_Slope', 'Mean_Section_Velocity',
 ]
 _INTEGER_COLUMNS = ['COMID', 'Cross_Section_Count', 'Hydraulic_Sample_Count', 'Depth_Stage_Index']
 
@@ -51,6 +72,48 @@ class RepresentativeSample(NamedTuple):
     xs: XSection
     thalweg: float
     slope: float
+    curve: np.ndarray | None = None  # its rating curve from the standard step, (count, 2): water surfaces and flows
+
+
+@njit(cache=True, error_model="numpy")
+def _curve_nodes(stations, elevations, mannings_n, starts, centers, lefts, rights, curve_starts, curve_wse,
+                 curve_q, k_decay, shallow_factor, deep_factor, slope_factor):
+    """Each cross section's rating curve as _staged_means reads it (see the notes above), the profiles as it takes
+    them and cross section j's curve from curve_starts[j] to curve_starts[j + 1]: where each one's start, the water
+    surfaces rising, their flows, the conveyances there, and the friction slopes. A water surface lower than the one
+    before, or where the flow or conveyance isn't above 0, is left out."""
+    count = centers.size
+    node_starts = np.zeros(count + 1, np.int64)
+    levels = np.empty(curve_wse.size)
+    flows = np.empty(curve_wse.size)
+    conveyances = np.empty(curve_wse.size)
+    slopes = np.empty(curve_wse.size)
+    m = 0
+    for j in range(count):
+        start, end = starts[j], starts[j + 1]
+        first = m
+        for i in range(curve_starts[j], curve_starts[j + 1]):
+            wse, q = curve_wse[i], curve_q[i]
+            if not (np.isfinite(wse) and np.isfinite(q) and q > 0.0) or (m > first and wse < levels[m - 1]):
+                continue
+
+            k = section_hydraulics(stations[start:end], elevations[start:end], mannings_n[start:end], centers[j],
+                                   lefts[j], rights[j], wse, k_decay, shallow_factor, deep_factor)[3]
+            if not (np.isfinite(k) and k > 0.0):
+                continue
+
+            if m > first and wse == levels[m - 1]:
+                m -= 1  # held at the baseflow level: the higher flow's
+
+            levels[m] = wse
+            flows[m] = q
+            conveyances[m] = k
+            slopes[m] = (q / (slope_factor * k)) ** 2
+            m += 1
+
+        node_starts[j + 1] = m
+
+    return node_starts, levels[:m], flows[:m], conveyances[:m], slopes[:m]
 
 
 def monotonic_cumulative_max(values: np.ndarray) -> np.ndarray:
@@ -171,19 +234,25 @@ def _keep_within_two_deviations(values, count, keep, squares):
 
 
 @njit(cache=True, error_model="numpy")
-def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, rights, thalwegs, slopes, k_decay,
-                  shallow_factor, deep_factor, slope_factor, stage_count):
+def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, rights, thalwegs, slopes, node_starts,
+                  node_levels, node_flows, node_conveyances, node_slopes, by_conveyance, k_decay, shallow_factor,
+                  deep_factor, slope_factor, stage_count):
     """A reach's stages: for each stage from the first, how many of its cross sections were averaged (0 for none, and
-    no row), and their mean discharge, velocity, top width, area and water surface elevation. The cross sections'
-    profiles are end to end in stations, elevations and mannings_n, cross section j's from starts[j] to
-    starts[j + 1], and only those with a slope above 0 count. At the first stage where one's hydraulics aren't all
-    finite, the reach stops, and only the stages before it are returned."""
+    no row), and their mean discharge, velocity, top width, area, water surface elevation, friction slope and section
+    velocity. The cross sections' profiles are end to end in stations, elevations and mannings_n, cross section j's
+    from starts[j] to starts[j + 1], and only those with a slope above 0 count. Its rating curve is at the water
+    surfaces node_levels[node_starts[j]:node_starts[j + 1]], with those flows, conveyances and friction slopes
+    (_curve_nodes), its discharge between them in step with its conveyance if by_conveyance and otherwise linear in the
+    water surface, and where it has none, its discharge is at its slope. At the first stage where one's hydraulics
+    aren't all finite, the reach stops, and only the stages before it are returned."""
     count = centers.size
     averaged = np.zeros(stage_count, np.int64)
-    means = np.zeros((stage_count, 5))
-    values = np.empty((5, count))  # each counted cross section's discharge, velocity, top width, area and WSE
+    means = np.zeros((stage_count, 7))
+    # each counted cross section's discharge, velocity, top width, area, WSE, friction slope and section velocity
+    values = np.empty((7, count))
     keep = np.empty(count, np.bool_)
     scratch = np.empty(count)
+    held = np.zeros(count)  # each cross section's discharge at the stage below, which it doesn't fall from
     for stage in range(1, stage_count + 1):
         depth = stage * DEPTH_INCREMENT
         n = 0
@@ -197,21 +266,44 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
             area, perimeter, top_width, k, channel_area, channel_k = section_hydraulics(
                 stations[start:end], elevations[start:end], mannings_n[start:end], centers[j], lefts[j], rights[j],
                 wse, k_decay, shallow_factor, deep_factor)
-            # With banks, the velocity is the channel's
-            scale = np.sqrt(slope) * slope_factor
             if area <= 0.0 or perimeter <= 0.0 or k <= 0.0:
-                area = perimeter = velocity = discharge = 0.0
+                area = perimeter = velocity = section_velocity = discharge = 0.0
             else:
-                discharge = k * scale
-                if lefts[j] >= 0.0 or rights[j] >= 0.0:
-                    velocity = channel_k * scale / channel_area if channel_area > 0.0 else 0.0
+                first, last = node_starts[j], node_starts[j + 1]
+                curved = last > first and node_levels[first] <= wse <= node_levels[last - 1]
+                if curved:
+                    # Within the rating curve: from the flow at the water surface below to the one above
+                    upper = min(first + np.searchsorted(node_levels[first:last], wse), last - 1)
+                    lower = max(upper - 1, first)
+                    q1, q2 = node_flows[lower], node_flows[upper]
+                    k1, k2 = node_conveyances[lower], node_conveyances[upper]
+                    if upper == lower or wse == node_levels[upper]:
+                        discharge = q2
+                    elif by_conveyance and k2 != k1:
+                        discharge = min(max(q1 + (q2 - q1) * (k - k1) / (k2 - k1), min(q1, q2)), max(q1, q2))
+                    else:
+                        discharge = np.interp(wse, node_levels[first:last], node_flows[first:last])
                 else:
-                    velocity = discharge / area
+                    if last > first:  # beyond its ends: at its friction slope there
+                        slope = node_slopes[first] if wse < node_levels[first] else node_slopes[last - 1]
+                    discharge = k * np.sqrt(slope) * slope_factor
+
+                if curved or discharge < held[j]:
+                    # The friction slope its discharge implies: its own where it carries its own slope's
+                    discharge = max(discharge, held[j])
+                    slope = (discharge / (slope_factor * k)) ** 2
+                held[j] = discharge
+                section_velocity = discharge / area
+                # With banks, the velocity is the channel's: its share of the discharge, at one friction slope
+                if lefts[j] >= 0.0 or rights[j] >= 0.0:
+                    velocity = discharge * channel_k / k / channel_area if channel_area > 0.0 else 0.0
+                else:
+                    velocity = section_velocity
 
             if not (np.isfinite(area) and np.isfinite(perimeter) and np.isfinite(velocity)
                     and np.isfinite(discharge) and np.isfinite(top_width)):
                 return averaged[:stage - 1], means[:stage - 1]
-            
+
             if area <= 0.0 or top_width <= 0.0 or discharge < 0.0:
                 continue
 
@@ -220,6 +312,8 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
             values[2, n] = top_width
             values[3, n] = area
             values[4, n] = wse
+            values[5, n] = slope
+            values[6, n] = section_velocity
             n += 1
 
         if n == 0:
@@ -238,7 +332,7 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
             continue
 
         averaged[stage - 1] = kept
-        for column in range(5):
+        for column in range(7):
             m = 0
             for i in range(n):
                 if keep[i]:
@@ -257,12 +351,20 @@ def _reach_columns(comid: int, group: Sequence[RepresentativeSample], parameters
     starts[1:] = np.cumsum([profile.stations.size for profile in profiles])
     vertices = [np.concatenate([np.asarray(getattr(profile, name), dtype=np.float64) for profile in profiles])
                 for name in ("stations", "elevations", "mannings_n")]
+    sections = (*vertices, starts, np.array([profile.center for profile in profiles], dtype=np.int64),
+                np.array([sample.xs.left_bank_distance for sample in group], dtype=np.float64),
+                np.array([sample.xs.right_bank_distance for sample in group], dtype=np.float64))
+    # Each cross section's rating curve, end to end, none for those without one
+    curves = [np.empty((0, 2)) if sample.curve is None else np.asarray(sample.curve, dtype=np.float64).reshape(-1, 2)
+              for sample in group]
+    curve_starts = np.zeros(len(group) + 1, dtype=np.int64)
+    curve_starts[1:] = np.cumsum([curve.shape[0] for curve in curves])
+    curve = np.concatenate(curves)
+    nodes = _curve_nodes(*sections, curve_starts, curve[:, 0].copy(), curve[:, 1].copy(), *parameters, slope_factor)
     averaged, means = _staged_means(
-        *vertices, starts, np.array([profile.center for profile in profiles], dtype=np.int64),
-        np.array([sample.xs.left_bank_distance for sample in group], dtype=np.float64),
-        np.array([sample.xs.right_bank_distance for sample in group], dtype=np.float64),
-        np.array([sample.thalweg for sample in group], dtype=np.float64),
-        np.array([sample.slope for sample in group], dtype=np.float64), *parameters, slope_factor, stage_count)
+        *sections, np.array([sample.thalweg for sample in group], dtype=np.float64),
+        np.array([sample.slope for sample in group], dtype=np.float64), *nodes, BETWEEN_INCREMENTS == "conveyance",
+        *parameters, slope_factor, stage_count)
     stages = np.flatnonzero(averaged) + 1
     if stages.size == 0:
         return None
@@ -271,7 +373,7 @@ def _reach_columns(comid: int, group: Sequence[RepresentativeSample], parameters
     depths = stages * DEPTH_INCREMENT
     thalweg = float(np.nanmean([s.thalweg for s in group]))
     slopes = [s.slope for s in group if s.slope > 0.0]
-    discharge, velocity, top_width, area, wse = means[stages - 1].T
+    discharge, velocity, top_width, area, wse, friction, section_velocity = means[stages - 1].T
     # The representative cross section: its area and top width kept from falling as the stage rises
     representative_area = monotonic_cumulative_max(area)
     fallback = representative_area / np.maximum(depths, 1e-9)
@@ -300,6 +402,8 @@ def _reach_columns(comid: int, group: Sequence[RepresentativeSample], parameters
         'Representative_Stage_Elevation': np.full(rows, thalweg) + representative_depths,
         'Representative_Left_Station': -0.5 * width,
         'Representative_Right_Station': 0.5 * width,
+        'Mean_Friction_Slope': friction,
+        'Mean_Section_Velocity': section_velocity,
     }
 
 
@@ -333,9 +437,10 @@ def highest_stage(thalweg: float) -> float:
     return thalweg + _stage_count() * DEPTH_INCREMENT
 
 
-def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLike) -> pd.DataFrame:
-    """Write the representative cross sections rounded to 6 decimals, as CSV or, for a .parquet path, Parquet
-    (arc.outputs.tables), and return them."""
+def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLike,
+                                        metadata: dict[str, str] | None = None) -> pd.DataFrame:
+    """Write the representative cross sections rounded to 6 decimals, as CSV or, for a .parquet path, Parquet with
+    metadata (arc.outputs.tables), and return them."""
     if df is None or df.empty:
         # typed, so that an empty Parquet file still has integer and float columns
         df = pd.DataFrame({col: pd.Series(dtype=np.int64 if col in _INTEGER_COLUMNS else np.float64)
@@ -345,6 +450,6 @@ def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLi
         numeric = [c for c in df.columns if c not in _INTEGER_COLUMNS]
         df[numeric] = df[numeric].round(6)
 
-    write_table(df, path)
+    write_table(df, path, metadata)
     LOG.info('Finished writing ' + str(path))
     return df

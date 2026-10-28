@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import math
-import time
 
 import numpy as np
 import pytest
 
-from arc.Automated_Rating_Curve_Generator import get_stream_direction_information
-from arc.cross_section import CrossSection
 from arc.hydraulics import top_widths
-from arc.xsection.orientation import (LEGACY_TEST_DEPTH, TEST_DEPTH, angle_offsets, downhill_stream_direction, narrowest_cross_section,
-                                      narrowest_direction, stream_direction)
+from arc.xsection.orientation import (
+    TEST_DEPTH,
+    angle_offsets,
+    narrowest_direction,
+    stream_direction,
+)
 from arc.xsection.sampling import sample_cross_section, sample_elevations
 
 CELL = 10.0
 REACH = 7
+HALF_A_METRE = 0.5  # a test depth that finds a channel's own width rather than its valley's
 
 
 def stream_raster(cells, shape=(61, 61)):
@@ -53,31 +55,25 @@ def test_a_straight_stream_runs_along_its_cells(step, expected) -> None:
 
 def test_the_direction_is_in_metres_where_cells_are_not_square() -> None:
     """With 10 m wide, 20 m tall cells, a stream one row down for two columns across runs at 45 degrees on the
-    ground. Legacy fitted it in cells, at 26.6 degrees."""
+    ground, not the 26.6 degrees it makes in cells."""
     streams = stream_raster([(30 + k, 30 + 2 * k) for k in range(-5, 6)])
 
     assert stream_direction(streams, 30, 30, 10, 10.0, 20.0) == pytest.approx(math.pi / 4, abs=1e-12)
-    assert get_stream_direction_information(30, 30, streams, 11)[0] == pytest.approx(math.atan(0.5), abs=1e-12)
 
 
 def test_rows_and_columns_are_treated_alike() -> None:
-    """Transposing the raster mirrors a stream's direction about 45 degrees. Legacy's fit of rows against columns
-    didn't: on straight streams at random angles it moved by up to 5 degrees."""
+    """Transposing the raster mirrors a stream's direction about 45 degrees, as it should. (A fit of rows against
+    columns doesn't: on straight streams at random angles it moves by up to 5 degrees.)"""
     rng = np.random.default_rng(0)
-    new_error = legacy_error = 0.0
+    error = 0.0
     for _ in range(400):
         streams, centre = rasterised_line(rng.uniform(0.0, math.pi), rng.uniform(-0.5, 0.5))
         transposed = streams.T.copy()
 
-        new_error = max(new_error, axis_difference(stream_direction(transposed, centre, centre, 10, CELL, CELL),
-                                                   math.pi / 2 - stream_direction(streams, centre, centre, 10, CELL,
-                                                                                  CELL)))
-        legacy_error = max(legacy_error, axis_difference(
-            get_stream_direction_information(centre, centre, transposed, 10)[0],
-            math.pi / 2 - get_stream_direction_information(centre, centre, streams, 10)[0]))
+        error = max(error, axis_difference(stream_direction(transposed, centre, centre, 10, CELL, CELL),
+                                           math.pi / 2 - stream_direction(streams, centre, centre, 10, CELL, CELL)))
 
-    assert new_error < 1e-12
-    assert legacy_error > math.radians(3.0)
+    assert error < 1e-12
 
 
 def test_straight_streams_are_measured_as_well_near_the_columns_as_near_the_rows() -> None:
@@ -95,8 +91,8 @@ def test_straight_streams_are_measured_as_well_near_the_columns_as_near_the_rows
 
 
 def test_a_stream_with_one_step_sideways() -> None:
-    """Ten cells down a column, stepping one column over half way, and the same cells along a row. Legacy's came
-    out 78.7 and 8.3 degrees from the rows, which don't mirror each other."""
+    """Ten cells down a column, stepping one column over half way, and the same cells along a row: the two
+    directions mirror each other."""
     along_a_column = stream_raster([(r, 30 if r <= 30 else 31) for r in range(25, 35)])
     along_a_row = along_a_column.T.copy()
 
@@ -105,36 +101,23 @@ def test_a_stream_with_one_step_sideways() -> None:
 
     assert down == pytest.approx(math.pi / 2 - across, abs=1e-12)
     assert math.degrees(across) == pytest.approx(8.34, abs=0.01)
-    assert math.degrees(get_stream_direction_information(30, 30, along_a_column, 5)[0]) == pytest.approx(78.69,
-                                                                                                         abs=0.01)
-    assert math.degrees(get_stream_direction_information(30, 30, along_a_row, 5)[0]) == pytest.approx(8.28, abs=0.01)
 
 
 def test_the_square_reaches_as_far_each_way() -> None:
-    """A cell of the reach 5 rows and 5 columns on counts, as does one 5 back. Legacy missed the one 5 on."""
+    """A cell of the reach 5 rows and 5 columns on counts, as does one 5 back."""
     ahead = stream_raster([(30, 30), (35, 35)])
     behind = stream_raster([(30, 30), (25, 25)])
 
     assert stream_direction(ahead, 30, 30, 5, CELL, CELL) == pytest.approx(math.pi / 4)
     assert stream_direction(behind, 30, 30, 5, CELL, CELL) == pytest.approx(math.pi / 4)
-    assert get_stream_direction_information(30, 30, ahead, 5) == (0.0, 0.0)
-    assert get_stream_direction_information(30, 30, behind, 5)[0] == pytest.approx(math.pi / 4)
 
 
 def test_a_lone_cell_s_cross_section_runs_along_its_row() -> None:
-    """As legacy's did, though legacy called its stream direction 0."""
+    """With no other cell of its reach nearby, its stream direction is pi / 2, so its cross section runs along its
+    row."""
     streams = stream_raster([(30, 30), (30, 40)])
 
     assert stream_direction(streams, 30, 30, 5, CELL, CELL) == pytest.approx(math.pi / 2)
-    assert get_stream_direction_information(30, 30, streams, 5) == (0.0, 0.0)
-
-
-@pytest.mark.parametrize(("fall", "expected"), [(0.01, 0.0), (-0.01, math.pi), (0.0, 0.0)])
-def test_with_a_dem_the_direction_points_downhill(fall, expected) -> None:
-    streams = stream_raster([(30, c) for c in range(20, 41)])
-    dem = np.tile(100.0 - fall * CELL * np.arange(61.0), (61, 1))
-
-    assert downhill_stream_direction(streams, dem, 30, 30, 5, CELL, CELL) == pytest.approx(expected, abs=1e-12)
 
 
 def test_only_a_stream_cell_has_a_direction() -> None:
@@ -142,8 +125,6 @@ def test_only_a_stream_cell_has_a_direction() -> None:
 
     with pytest.raises(ValueError, match="isn't a stream cell"):
         stream_direction(streams, 31, 30, 5, CELL, CELL)
-    with pytest.raises(ValueError, match="same shape"):
-        downhill_stream_direction(streams, np.zeros((5, 5)), 30, 30, 5, CELL, CELL)
 
 
 def test_the_square_stops_at_the_raster_s_edge() -> None:
@@ -156,20 +137,11 @@ def test_the_square_stops_at_the_raster_s_edge() -> None:
 # --- The angle search ---------------------------------------------------------------------------------------------
 
 
-def legacy_offsets(degree_manipulation: float, degree_interval: float) -> np.ndarray:
-    class Holder:
-        pass
-
-    holder = Holder()
-    CrossSection.set_angles_to_test(holder, {"d_degree_manipulation": degree_manipulation,
-                                             "d_degree_interval": degree_interval})
-    return np.asarray(holder.l_angles_to_test)
-
-
-@pytest.mark.parametrize(("manipulation", "interval"), [(6.0, 1.0), (1.1, 1.0), (0.0, 1.0), (10.0, 0.0), (7.0, 2.0),
-                                                       (180.0, 90.0)])
-def test_the_offsets_are_legacy_s(manipulation, interval) -> None:
-    np.testing.assert_array_equal(angle_offsets(manipulation, interval), legacy_offsets(manipulation, interval))
+@pytest.mark.parametrize(("manipulation", "interval", "degrees"), [
+    (6.0, 1.0, [0, -1, 1, -2, 2, -3, 3]), (1.1, 1.0, [0]), (0.0, 1.0, [0]), (10.0, 0.0, [0]), (7.0, 2.0, [0, -2, 2]),
+    (180.0, 90.0, [0, -90, 90])])
+def test_the_offsets_go_out_an_interval_at_a_time_to_half_of_degree_manip(manipulation, interval, degrees) -> None:
+    np.testing.assert_allclose(angle_offsets(manipulation, interval), np.radians(degrees), rtol=1e-15)
 
 
 def test_the_search_samples_as_sample_cross_section_does() -> None:
@@ -212,27 +184,17 @@ def test_the_search_turns_the_cross_section_across_the_channel(start, expected) 
     assert math.degrees(direction) == pytest.approx(expected, abs=1e-9)
 
 
-def test_the_search_matches_legacy_along_rows_and_columns() -> None:
+def test_a_quarter_turn_finds_a_channel_the_stream_direction_runs_across() -> None:
     """A channel down column 100, from a stream direction wrongly flowing east. Turned a quarter turn, the cross
-    section runs along a row and crosses the channel, which legacy found too, at the same width."""
+    section runs along a row and crosses the channel, 5 m wide half a metre up."""
     dem = v_valley(math.pi / 2)
-    params = {"d_x_section_distance": 1000.0, "dx": CELL, "dy": CELL, "d_degree_manipulation": 180.0,
-              "d_degree_interval": 90.0, "i_boundary_number": 0, "nrows": 201, "ncols": 201,
-              "b_FindBanksBasedOnLandCover": False, "i_lc_water_value": 80, "d_bathymetry_trapzoid_height": 0.2,
-              "b_bathy_use_banks": False, "s_output_bathymetry_path": ""}
-    old = CrossSection(CELL, CELL, dem, np.zeros(dem.shape, dtype=np.uint8), None, params)
-    old.associate_with_precomputed_index_arrays(*CrossSection.create_cross_section_ordinates(params))
-    old.set_cross_section(100, 100, 15, math.pi / 2)  # legacy's cross section for a stream flowing east
-    old.test_angles_and_reset_cross_section(100, 100)
 
-    direction, xs = narrowest_cross_section(dem, np.ones_like(dem), 100, 100, 0.0, 1000.0, CELL, CELL,
-                                            angle_offsets(180, 90), test_depth=LEGACY_TEST_DEPTH)
-    left, right = top_widths(xs.elevations, xs.ordinate_distance,
-                             xs.elevations[xs.elevations.size // 2] + LEGACY_TEST_DEPTH)
+    direction = narrowest_direction(dem, 100, 100, 0.0, 1000.0, CELL, CELL, angle_offsets(180, 90),
+                                    test_depth=HALF_A_METRE)
+    elevations, spacing = sample_elevations(dem, 100, 100, direction, 1000.0, CELL, CELL)
+    left, right = top_widths(elevations, spacing, elevations[elevations.size // 2] + HALF_A_METRE)
 
-    assert axis_difference(direction - math.pi / 2, old.d_xs_direction) == pytest.approx(0.0, abs=1e-12)
-    assert left + right == pytest.approx(old.calculate_top_width_of_wse(old.get_thalweg() + LEGACY_TEST_DEPTH),
-                                         abs=1e-3)
+    assert axis_difference(direction, math.pi / 2) == pytest.approx(0.0, abs=1e-12)
     assert left + right == pytest.approx(2.0 * 0.5 / 0.2, rel=1e-12)
 
 
@@ -246,24 +208,25 @@ def test_equally_narrow_directions_keep_the_first() -> None:
 
 
 def uncapped_choice(dem, row, col, start, length, offsets) -> int:
-    """Which offset legacy's rule would pick: the smallest top width 0.5 m up, however far each cross section
-    reaches."""
+    """Which offset comparing whole widths would pick: the smallest top width 0.5 m up, however far each cross
+    section reaches."""
     widths = []
     for offset in offsets:
         elevations, spacing = sample_elevations(dem, row, col, start + offset, length, CELL, CELL)
-        left, right = top_widths(elevations, spacing, elevations[elevations.size // 2] + LEGACY_TEST_DEPTH)
+        left, right = top_widths(elevations, spacing, elevations[elevations.size // 2] + HALF_A_METRE)
         widths.append(left + right)
     return int(np.argmin(widths))
 
 
 def test_water_reaching_every_cross_section_s_ends_doesnt_choose_the_direction() -> None:
     """On a flat floodplain the water 0.5 m up reaches both ends of every cross section, whose lengths differ: 50 m
-    a side along rows and columns, 42 m on the diagonals. Legacy's rule picks a diagonal, the shortest."""
+    a side along rows and columns, 42 m on the diagonals. Comparing whole widths would pick a diagonal, the
+    shortest."""
     dem = np.full((201, 201), 100.0)
     dem[100, 100] = 99.8
     offsets = angle_offsets(90, 45)
 
-    assert narrowest_direction(dem, 100, 100, 0.0, 100.0, CELL, CELL, offsets, test_depth=LEGACY_TEST_DEPTH) == 0.0
+    assert narrowest_direction(dem, 100, 100, 0.0, 100.0, CELL, CELL, offsets, test_depth=HALF_A_METRE) == 0.0
     assert uncapped_choice(dem, 100, 100, 0.0, 100.0, offsets) == 1
 
 
@@ -280,13 +243,13 @@ def channel_by_a_floodplain(shape, row, col, angle=math.radians(30.0)) -> np.nda
 def test_a_side_reaching_the_raster_s_edge_leaves_the_other_side_to_choose() -> None:
     """The channel three cells from the raster's west edge, so the floodplain floods to the edge, which each
     direction's cross section reaches at a different distance. The north-east side still shows which way the
-    channel runs. Legacy's rule picked the direction that reached the edge soonest."""
+    channel runs. Comparing whole widths would pick the direction that reaches the edge soonest."""
     dem = channel_by_a_floodplain((101, 60), 50, 3)
     offsets = angle_offsets(40, 5)
     start = math.radians(20.0)
 
     assert math.degrees(narrowest_direction(dem, 50, 3, start, 600.0, CELL, CELL, offsets,
-                                            test_depth=LEGACY_TEST_DEPTH)) == pytest.approx(30.0)
+                                            test_depth=HALF_A_METRE)) == pytest.approx(30.0)
     assert math.degrees(start + offsets[uncapped_choice(dem, 50, 3, start, 600.0, offsets)]) == pytest.approx(40.0)
 
 
@@ -297,7 +260,7 @@ def test_water_reaching_missing_ground_counts_as_reaching_the_end() -> None:
     dem[-(cols - 50) * CELL * 0.5 + (rows - 50) * CELL * math.sqrt(0.75) > 30.0] = np.nan
 
     direction = narrowest_direction(dem, 50, 50, math.radians(20.0), 600.0, CELL, CELL, angle_offsets(40, 5),
-                                    test_depth=LEGACY_TEST_DEPTH)
+                                    test_depth=HALF_A_METRE)
 
     assert math.degrees(direction) == pytest.approx(30.0)
 
@@ -326,11 +289,11 @@ def test_the_width_is_compared_at_the_test_depth() -> None:
     assert narrowest_direction(dem, 100, 100, start, 600.0, CELL, CELL, offsets, test_depth=1.5) == start
 
 
-def test_the_test_depth_is_5_m_where_legacy_s_was_half_a_metre() -> None:
-    assert (TEST_DEPTH, LEGACY_TEST_DEPTH) == (5.0, 0.5)
+def test_the_test_depth_is_5_m() -> None:
+    assert TEST_DEPTH == 5.0
 
 
-def test_the_default_depth_finds_the_valley_where_legacy_s_found_the_channel() -> None:
+def test_the_default_depth_finds_the_valley_where_half_a_metre_finds_the_channel() -> None:
     """A V channel 1 m deep and 50 m wide at 30 degrees, down a valley whose floor is 400 m wide at 60 degrees, with
     walls rising 10 cm a metre, all planes that linear interpolation between cells reproduces. Half a metre up the
     water fills only the channel; 5 m up it floods the valley floor out to 240 m either side of its axis."""
@@ -345,7 +308,7 @@ def test_the_default_depth_finds_the_valley_where_legacy_s_found_the_channel() -
 
     assert math.degrees(narrowest_direction(dem, 100, 100, start, 600.0, CELL, CELL, offsets)) == pytest.approx(60.0)
     assert math.degrees(narrowest_direction(dem, 100, 100, start, 600.0, CELL, CELL, offsets,
-                                            test_depth=LEGACY_TEST_DEPTH)) == pytest.approx(30.0)
+                                            test_depth=HALF_A_METRE)) == pytest.approx(30.0)
 
 
 def test_an_offset_beyond_a_quarter_turn_is_taken_half_a_turn_round() -> None:
@@ -356,20 +319,6 @@ def test_an_offset_beyond_a_quarter_turn_is_taken_half_a_turn_round() -> None:
     assert narrowest_direction(dem, 100, 100, start, 1000.0, CELL, CELL, [-0.1 - math.pi]) == pytest.approx(start - 0.1)
 
 
-def test_the_narrowest_cross_section_is_sampled_in_its_direction() -> None:
-    dem = v_valley(math.radians(30.0))
-    manning_n = np.full(dem.shape, 0.035)
-
-    direction, xs = narrowest_cross_section(dem, manning_n, 100, 100, math.radians(12.0), 1000.0, CELL, CELL,
-                                            angle_offsets(40, 3))
-    expected = sample_cross_section(dem, manning_n, 100, 100, direction, 1000.0, CELL, CELL)
-
-    np.testing.assert_array_equal(xs.elevations, expected.elevations)
-    np.testing.assert_array_equal(xs.mannings_n, expected.mannings_n)
-    assert xs.ordinate_distance == expected.ordinate_distance
-    assert math.degrees(direction) == pytest.approx(30.0)
-
-
 def test_no_offsets_to_try_keeps_the_direction() -> None:
     dem = v_valley(math.radians(30.0))
 
@@ -377,37 +326,21 @@ def test_no_offsets_to_try_keeps_the_direction() -> None:
     assert narrowest_direction(dem, 100, 100, 0.3, 1000.0, CELL, CELL, []) == 0.3
 
 
-# --- Speed --------------------------------------------------------------------------------------------------------
-
-
-def _seconds_per_call(function, calls: int) -> float:
-    function()
-    best = math.inf
-    for _ in range(5):
-        start = time.perf_counter()
-        for _ in range(calls):
-            function()
-        best = min(best, (time.perf_counter() - start) / calls)
-    return best
-
-
-def test_the_search_is_faster_than_legacy_s() -> None:
-    """Seven directions over a 5 km cross section of 10 m cells, sampling the chosen one, against legacy's search
-    and resampling."""
-    rng = np.random.default_rng(0)
-    dem = (100.0 + rng.normal(0.0, 0.3, (1200, 1200))).astype(np.float32)
-    manning_n = np.full(dem.shape, 0.035)
-    params = {"d_x_section_distance": 5000.0, "dx": CELL, "dy": CELL, "d_degree_manipulation": 6.0,
-              "d_degree_interval": 1.0, "i_boundary_number": 0, "nrows": 1200, "ncols": 1200,
-              "b_FindBanksBasedOnLandCover": False, "i_lc_water_value": 80, "d_bathymetry_trapzoid_height": 0.2,
-              "b_bathy_use_banks": False, "s_output_bathymetry_path": ""}
-    old = CrossSection(CELL, CELL, dem, np.ones(dem.shape, dtype=np.uint8), None, params)
-    old.associate_with_precomputed_index_arrays(*CrossSection.create_cross_section_ordinates(params))
-    old.set_cross_section(600, 600, 7, 7 * math.pi / 30)
-    offsets = angle_offsets(6.0, 1.0)
-
-    new = _seconds_per_call(lambda: narrowest_cross_section(dem, manning_n, 600, 600, 0.7, 5000.0, CELL, CELL,
-                                                            offsets, test_depth=LEGACY_TEST_DEPTH), calls=200)
-    legacy = _seconds_per_call(lambda: old.test_angles_and_reset_cross_section(600, 600), calls=200)
-
-    assert new < legacy
+def test_a_reach_s_cells_give_the_stream_raster_s_direction() -> None:
+    """reach_direction, from the reach's cells in row order, gives the direction stream_direction gives from the
+    raster, bit for bit: with reaches crossing, cells at the raster's edges, windows of any size and cells alone."""
+    from arc.xsection.orientation import reach_direction
+    from arc.xsection.stream_path import stream_cells_by_reach
+    rng = np.random.default_rng(66)
+    for _ in range(200):
+        shape = (int(rng.integers(1, 40)), int(rng.integers(1, 40)))
+        streams = np.where(rng.random(shape) < rng.uniform(0.05, 0.6), rng.integers(1, 4, shape), 0).astype(np.int32)
+        reaches = stream_cells_by_reach(streams)
+        dx, dy = float(rng.uniform(5.0, 40.0)), float(rng.uniform(5.0, 40.0))
+        for reach, (rows, cols) in reaches.items():
+            for i in rng.integers(0, rows.size, min(rows.size, 5)):
+                distance = int(rng.integers(0, 12))
+                row, col = int(rows[i]), int(cols[i])
+                expected = stream_direction(streams, row, col, distance, dx, dy)
+                got = reach_direction(rows, cols, row, col, distance, dx, dy)
+                assert np.float64(got).view(np.uint64) == np.float64(expected).view(np.uint64)

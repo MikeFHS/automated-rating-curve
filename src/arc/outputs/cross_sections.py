@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from arc import LOG
+from arc.outputs.tables import with_metadata
 
 XS_EXPORT_COLUMNS = ['COMID', 'Row', 'Col', 'XS1_Profile', 'Ordinate_Dist', 'Manning_N_Raster1', 'XS2_Profile',
                      'Manning_N_Raster2', 'r1', 'c1', 'r2', 'c2']
@@ -123,13 +124,14 @@ def _list_array(arrays) -> pa.ListArray:
     return pa.ListArray.from_arrays(pa.array(offsets, type=pa.int32()), pa.array(values, type=pa.float64()))
 
 
-def write_cross_sections(records: list[CrossSectionRecord], path: os.PathLike) -> pd.DataFrame:
-    """Write the cross-section file, tab-separated or, for a .parquet path, Parquet, and return its table (with the
-    arrays as text or as arrays)."""
+def write_cross_sections(records: list[CrossSectionRecord], path: os.PathLike,
+                         metadata: dict[str, str] | None = None) -> pd.DataFrame:
+    """Write the cross-section file, tab-separated or, for a .parquet path, Parquet with metadata (see
+    arc.outputs.tables), and return its table (with the arrays as text or as arrays)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     if str(path).endswith('.parquet'):
         table = cross_section_table(records)
-        pq.write_table(table, path, **_PARQUET_OPTIONS)
+        pq.write_table(with_metadata(table, metadata), path, **_PARQUET_OPTIONS)
         df = table.to_pandas()
     else:
         df = cross_section_dataframe(records)

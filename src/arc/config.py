@@ -13,33 +13,13 @@ from arc._log import LOG
 
 StreamSlopeMethod = Literal["local_average", "local_average_corrected", "reach_average", "end_points", "local_fit"]
 
-# curve2flood's keys (curve2flood.config.Config) that aren't ARC's: one input file often drives both models, so they
-# are allowed and ignored
-_CURVE2FLOOD_KEYS = {
-    'comid_flow_file', 'outfld', 'outdep', 'outwse', 'outvel', 'make_output_gpkg', 'mapper', 'tw_multfact',
-    'topwidthplausiblelimit', 'localfloodoption', 'flood_waterlc_and_strm_cells', 'flood_bathy_mask', 'land_watervalue',
-    'set_depth', 'flow_direction_file', 'filled_dem_file', 'stream_info_file', 'fldpln_library', 'fsoutbathy',
-    'fldpln_min_flood_depth',
-    # Its multi-point interpolation mapper's options
-    'mpi_topwidth_threshold_m', 'mpi_xs_point_spacing_m', 'mpi_remove_hwm_outliers', 'mpi_hwm_outlier_method',
-    'mpi_hwm_outlier_threshold', 'mpi_hwm_outlier_group_by', 'mpi_hwm_outlier_min_samples', 'mpi_corridor_buffer_m',
-    'mpi_anchor_buffer_m', 'mpi_use_topwidth_buffers', 'mpi_corridor_topwidth_factor', 'mpi_anchor_topwidth_factor',
-    'mpi_connectivity', 'mpi_k', 'mpi_power', 'mpi_max_distance_m', 'mpi_use_topwidth_max_distance',
-    'mpi_maxdist_topwidth_factor', 'mpi_min_topwidth_m', 'mpi_max_topwidth_m', 'mpi_fallback_topwidth_m',
-    'mpi_smooth_sigma_pixels', 'mpi_apply_wse_sanity_filter', 'mpi_wse_sanity_tolerance_m', 'mpi_fast_mode',
-    'mpi_one_based_vdt_rc',
-    # Its other names for set_depth and localfloodoption, from FloodSpreader
-    'floodspreader_specifydepth', 'floodlocalonly',
-    # Its retired keys, which it ignores with a warning
-    'max_wse_rise', 'fldpln_max_wse_rise', 'median_filter_size', 'fldpln_median_filter_size', 'max_drop_below_source',
-    'fldpln_max_drop_below_source',
-    # Keys nencarta writes into the input files it shares with curve2flood, which neither model uses
-    'outshp', 'fs_adjust_flow_by_fraction'}
 # Keys that ARC input files often carry (Create_ARC_Model_Input_File writes some of them) but ARC doesn't use
 _IGNORED_KEYS = {'spatial_units', 'str_limit_val', 'print_vdt'}
 # Keys ARC used to read and no longer does, with why: they're ignored with a warning
 _RETIRED_KEYS = {'x_section_dist': "each cross section reaches as far as its water needs, out to the raster's edge "
-                                   "(see arc.pipeline)"}
+                                   "(see arc.pipeline)",
+                 'aroutflood': "ARC no longer writes the raster of the cells with rating curves; the VDT database's "
+                               "Row and Col give them"}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -48,9 +28,7 @@ class Configs:
 
     Make one with `from_file` (YAML, or text with a key and its value on each line) or `from_mapping` (a dictionary).
     Each field is its input-file key in lower case, and keys are case-insensitive, so DEM_File and dem_file are the
-    same. curve2flood's keys are allowed and ignored, so that one file can drive both models, and so are a few older
-    keys ARC no longer uses (with a warning for those it once read). Any other unknown key raises ValueError, naming
-    the closest known key. The fields after compression are worked out from the others (`validate_options`), and
+    same. The fields after compression are worked out from the others (`validate_options`), and
     can't be set.
     """
     # Inputs files
@@ -61,8 +39,10 @@ class Configs:
     lu_raster_sameres: os.PathLike | None = None
     lu_manning_n: os.PathLike | None = None
     manual_cross_sections_file: os.PathLike | None = None
-    # Where the water is (its non-zero cells), on the DEM's grid: the banks are where its water ends. curve2flood
-    # reads it too, only to flood its cells (Flood_Bathy_Mask): it burns the bathymetry in wherever ARC carved.
+    # Where the water is (its non-zero cells), on the DEM's grid: its flat water gives the water level the banks are
+    # found from, and its edge holds the DEM's water or is the banks where none are found (arc.bathymetry.banks).
+    # curve2flood reads it too, only to flood its cells (Flood_Bathy_Mask): it burns the bathymetry in wherever ARC
+    # carved.
     bathywatermask: os.PathLike | None = None
 
     # Input file field names
@@ -129,6 +109,9 @@ class Configs:
     # channel's on the cell's own cross section (arc.xsection.valley): over the floodplain of a meandering river the
     # water runs down the valley, not along the channel, and Manning's equation takes the flow square to the section
     valley_sections: bool = False
+    # Reconstruct each narrow channel's ground below the cell scale, where its cross section's banks are under 10 cells
+    # apart (arc.xsection.subcell): straight lines between the cells' means turn its corners into ramps
+    subcell_channels: bool = False
     # How far each way along the stream the valley's direction and sinuosity are taken over (a Gaussian of half that,
     # arc.xsection.valley.valley_axes), about a meander's length: as many of the reach's channel widths (its cross
     # sections' median bank-to-bank width), or with 0, or for a reach without banks, Valley_Dir_Dist cells
@@ -156,7 +139,12 @@ class Configs:
     build_representative_cross_section: bool = False
     representative_cross_section_file: os.PathLike | None = None
     bathy_out_file: os.PathLike | None = None
-    aroutflood: os.PathLike | None = None
+    # A table with a row per stream cell: what each step of the run decided for it, and its QA_Flag
+    # (arc.outputs.decisions)
+    print_decision_log: os.PathLike | None = None
+    # A text file of the run's messages, at the info level whatever the console shows, after the ARC version and the
+    # inputs the run used
+    log_file: os.PathLike | None = None
 
     compression: str = "ZSTD"
 
@@ -175,6 +163,11 @@ class Configs:
     def from_mapping(cls, params: dict):
         """The inputs from a dictionary of the input file's keys and values."""
         return cls(**cls._normalize_keys(params))
+
+    def as_mapping(self) -> dict:
+        """The inputs as a dictionary of their keys (in lower case) and values, defaults included: from_mapping makes
+        the same Configs from it."""
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.init}
 
     @classmethod
     def from_file(cls, file_path: os.PathLike):
@@ -228,15 +221,24 @@ class Configs:
                 LOG.warning(f"{retired} is no longer used, and is ignored: {reason}.")
 
         known = {f.name for f in fields(cls) if f.init}
-        unknown = sorted(set(params) - known - _CURVE2FLOOD_KEYS - _IGNORED_KEYS - set(_RETIRED_KEYS))
+        unknown = sorted(set(params) - known - _IGNORED_KEYS - set(_RETIRED_KEYS))
         if unknown:
             described = []
             for key in unknown:
                 close = difflib.get_close_matches(key, sorted(known), n=1)
                 described.append(f'{key!r}' + (f' (did you mean {close[0]!r}?)' if close else ''))
             raise ValueError(f'Unrecognized config key(s): {", ".join(described)}')
-        # The curve2flood, ignored and retired keys are allowed in the inputs, but aren't fields
+        # The ignored and retired keys are allowed in the inputs, but aren't fields
         return {key: value for key, value in params.items() if key in known}
+
+    @classmethod
+    def check_keys(cls, params: dict) -> dict:
+        """Check some of an input file's keys and values without the rest of a run's: each key must be ARC's and each
+        value of its type. Returns them by field name, typed. For programs that write ARC's input files, to check the
+        settings a user gives them before the inputs exist; `from_mapping` checks a whole run."""
+        params = cls._normalize_keys(params)
+        hints = get_type_hints(cls)
+        return {key: _coerce(key, value, hints[key]) for key, value in params.items()}
 
     def _coerce_types(self) -> None:
         # Text input files give every value as a string, so convert each one to its field's type

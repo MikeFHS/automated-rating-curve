@@ -1,23 +1,34 @@
 from __future__ import annotations
 
+import itertools
 import math
-import time
 
 import numpy as np
 import pytest
-from numba import njit
 
-from arc import bathymetry, hydraulics
-from arc.Automated_Rating_Curve_Generator import _fill_bathymetry_nan_cells
-from arc.bathymetry import (Banks, bank_control_elevation, banks_at_elevation, banks_by_flat_water,
-                            banks_by_land_cover, banks_by_width_to_depth_ratio, banks_for_width, bathymetry_depth,
-                            burn_into_raster, carve_channel, channel_depth, fill_bathymetry_gaps, find_banks, in_bank,
-                            ordinate_cells, power_law_geometry, sample_land_cover, set_bank_distances,
-                            set_in_bank_roughness, single_cell_banks, trapezoid_depth)
-from arc.bathymetry import banks as banks_module
-from arc.bathymetry import channel as channel_module
-from arc.cross_section import (CrossSection, _adjust_one_side_for_bathymetry, _find_bank_using_width_to_depth_ratio,
-                               find_depth_of_bathymetry)
+from arc import hydraulics
+from arc.bathymetry import (
+    Banks,
+    bank_control_elevation,
+    banks_by_flat_water,
+    banks_by_land_cover,
+    banks_by_width_to_depth_ratio,
+    banks_for_width,
+    bathymetry_depth,
+    burn_into_raster,
+    carve_channel,
+    channel_depth,
+    find_banks,
+    in_bank,
+    ordinate_cells,
+    power_law_geometry,
+    sample_land_cover,
+    set_bank_distances,
+    set_in_bank_roughness,
+    single_cell_banks,
+    trapezoid_depth,
+)
+from arc.hydraulics import DepthRoughness
 from arc.xsection.xsection import XSection
 
 BED = 100.0
@@ -61,36 +72,6 @@ def random_section(rng, size, spacing) -> XSection:
     return make_section(np.round(elevations, int(rng.integers(2, 5))), spacing)
 
 
-def legacy_cross_section(xs: XSection, *, use_banks: bool, land_cover=None, trapezoid_height=0.2) -> CrossSection:
-    """Legacy ARC's CrossSection holding the same two half profiles, left as side 1, and a DEM row holding them."""
-    size = xs.elevations.size
-    center = size // 2
-    profile1, profile2 = xs.elevations[center::-1].copy(), xs.elevations[center:].copy()
-    params = {
-        "d_x_section_distance": 4.0 * size, "b_FindBanksBasedOnLandCover": land_cover is not None,
-        "i_lc_water_value": WATER, "d_bathymetry_trapzoid_height": trapezoid_height, "b_bathy_use_banks": use_banks,
-        "d_degree_manipulation": 0.0, "d_degree_interval": 0.0, "i_boundary_number": 0, "nrows": 3,
-        "ncols": size + 2, "s_output_bathymetry_path": None,
-    }
-    dem = np.zeros((3, size + 2))
-    legacy = CrossSection(1.0, 1.0, dem, np.zeros((3, size + 2), dtype=np.uint8),
-                          np.zeros((3, size + 2), dtype=np.int64), params)
-    legacy.xs1_n, legacy.xs2_n = profile1.size, profile2.size
-    legacy.d_ordinate_dist = float(xs.ordinate_distance)
-    legacy.da_xs_profile1 = np.append(profile1, 99999.9)  # the legacy sampler's sentinel after the last ordinate
-    legacy.da_xs_profile2 = np.append(profile2, 99999.9)
-    legacy.ia_xc_row1_index_main = np.ones(profile1.size, dtype=np.int64)
-    legacy.ia_xc_column1_index_main = center + 1 - np.arange(profile1.size)
-    legacy.ia_xc_row2_index_main = np.ones(profile2.size, dtype=np.int64)
-    legacy.ia_xc_column2_index_main = center + 1 + np.arange(profile2.size)
-    dem[1, 1:size + 1] = xs.elevations
-    if land_cover is not None:
-        land_cover = np.asarray(land_cover)
-        legacy.ia_lc_xs1 = np.append(land_cover[center::-1], 0).astype(np.uint8)
-        legacy.ia_lc_xs2 = np.append(land_cover[center:], 0).astype(np.uint8)
-    return legacy
-
-
 # --- Banks -------------------------------------------------------------------------------------------------------
 
 
@@ -106,8 +87,7 @@ def test_flat_water_banks_are_where_the_ground_is_0p1_m_above_the_stream_cell() 
 
 def test_width_to_depth_banks_are_where_the_water_spills_out_of_the_channel() -> None:
     """The ratio of top width to depth falls while the channel fills and rises once the water reaches the
-    floodplains, so the banks are at the bank tops, 12 m out. Legacy ARC found bank ordinates 12 and 12, but counted
-    its top width as 12 + 12 - 1 = 23 m."""
+    floodplains, so the banks are at the bank tops, 12 m out."""
     banks = banks_by_width_to_depth_ratio(channel_and_floodplains())
 
     assert (banks.left, banks.right) == pytest.approx((12.0, 12.0), rel=1e-12)
@@ -116,46 +96,72 @@ def test_width_to_depth_banks_are_where_the_water_spills_out_of_the_channel() ->
     assert banks.valid and not banks.single_cell
 
 
-def test_width_to_depth_banks_come_from_the_same_stage_as_legacy() -> None:
-    """Legacy returned each bank's ordinate as the whole number of spacings to the water's edge, after rounding the
-    edge to the millimetre, at the stage it chose."""
-    rng = np.random.default_rng(2)
-    compared = 0
-    for _ in range(400):
-        spacing = float(rng.choice([1.0, 2.5, 10.0]))
-        xs = random_section(rng, 2 * int(rng.integers(3, 50)) + 1, spacing)
+def test_width_to_depth_banks_don_t_look_past_ground_25_m_up() -> None:
+    """The stages come from the ordinates out to the first more than 25 m above the stream cell on each side, so the
+    ground beyond it, however low or high, doesn't move the banks, and a cross section can end there."""
+    rng = np.random.default_rng(5)
+    for _ in range(300):
+        spacing = float(rng.choice([1.0, 10.0]))
+        xs = random_section(rng, 2 * int(rng.integers(5, 40)) + 1, spacing)
         center = xs.elevations.size // 2
-        profile1, profile2 = xs.elevations[center::-1].copy(), xs.elevations[center:].copy()
-        legacy = _find_bank_using_width_to_depth_ratio(BED, profile1, profile2, profile1.size, profile2.size, spacing)
-        left, right, _ = banks_module._width_to_depth_banks(xs.elevations, spacing)
-        if math.isnan(left):
-            assert legacy == (0, 0)
-            continue
-        compared += 1
-        assert (math.floor(round(left, 3) / spacing), math.floor(round(right, 3) / spacing)) == legacy
-    assert compared > 300
+        left, right = center - int(rng.integers(1, center)), center + int(rng.integers(1, center))
+        elevations = xs.elevations.copy()
+        elevations[[left, right]] = elevations[center] + 26.0
+        beyond = elevations.copy()
+        beyond[:left] = BED + rng.uniform(-5.0, 30.0, left)
+        beyond[right + 1:] = BED + rng.uniform(-5.0, 30.0, beyond.size - right - 1)
+
+        np.testing.assert_equal(banks_by_width_to_depth_ratio(make_section(beyond, spacing)),
+                                banks_by_width_to_depth_ratio(make_section(elevations, spacing)))
 
 
-def test_flat_water_banks_match_the_legacy_ordinates() -> None:
-    """Legacy returned the last ordinate below the flat water without bank elevations, and the first above it with
-    them (or the ordinate count when the water reached the end)."""
+def valley_side(dip: float) -> XSection:
+    """A stream cell partway up a valley side, at 10 m spacing: the ground rises 1 m in 10 to its left, and to its
+    right falls `dip` metres over 2 km to the valley floor, then rises 1 m in 10 up the far side."""
+    distance = 10.0 * np.arange(0.0, 301.0)
+    right = BED - dip * np.minimum(distance, 2000.0) / 2000.0 + 0.1 * np.maximum(distance - 2000.0, 0.0)
+    return make_section(np.concatenate([(BED + 0.1 * distance)[:0:-1], right]), spacing=10.0)
+
+
+def test_banks_from_the_dem_dont_take_the_far_side_of_a_valley_its_water_drains_into() -> None:
+    """Water above a stream cell on a valley side drains away down it, and the ground that stops it is the valley's
+    far side, kilometres out (as along a stream on the side of the Salt Lake valley, n40w112): no bank there, from
+    either method. Ground dipping no more than MAX_BANK_DIP below the stream cell holds the water in its channel."""
+    from arc.bathymetry.banks import MAX_BANK_DIP
+    held, drains = valley_side(0.9 * MAX_BANK_DIP), valley_side(30.0)
+
+    assert banks_by_flat_water(held).right > 2000.0 and banks_by_flat_water(held).valid
+    assert math.isnan(banks_by_flat_water(drains).right) and not banks_by_flat_water(drains).valid
+    assert math.isnan(banks_by_width_to_depth_ratio(drains).right)
+    assert find_banks(drains).method == "none"
+
+
+def flat_water_edge(side: np.ndarray, spacing: float) -> float:
+    """How far out from the stream cell (side[0]) the ground first reaches 0.1 m above it, or the end of the side,
+    but NaN if the ground before then falls more than MAX_BANK_DIP below the stream cell."""
+    from arc.bathymetry.banks import MAX_BANK_DIP
+    level = side[0] + 0.1
+    for k in range(1, side.size):
+        if side[k] >= level:
+            return spacing * (k - 1 + (level - side[k - 1]) / (side[k] - side[k - 1]))
+        if side[k] < side[0] - MAX_BANK_DIP:
+            return math.nan
+    return spacing * (side.size - 1)
+
+
+def test_flat_water_banks_are_where_the_ground_first_reaches_the_flat_water() -> None:
+    """On random sections, each side's bank is where the ground first reaches 0.1 m above the stream cell, or the
+    end of the side if it never does, unless the water drains away over ground more than MAX_BANK_DIP below it."""
     rng = np.random.default_rng(3)
     for _ in range(300):
         spacing = float(rng.choice([1.0, 10.0]))
         xs = random_section(rng, 2 * int(rng.integers(3, 40)) + 1, spacing)
         center = xs.elevations.size // 2
-        legacy = legacy_cross_section(xs, use_banks=False)
+
         banks = banks_by_flat_water(xs)
-        for distance, profile, count in ((banks.left, legacy.da_xs_profile1, legacy.xs1_n),
-                                         (banks.right, legacy.da_xs_profile2, legacy.xs2_n)):
-            last_wet = legacy._find_bank(profile, count, wse=True)
-            first_dry = legacy._find_bank(profile, count, wse=False)
-            if first_dry == count:  # the water reaches the end of the side
-                assert distance == pytest.approx(center * spacing, rel=1e-12)
-            elif profile[first_dry] == BED + 0.1:  # the ground is exactly at the flat water
-                assert distance == pytest.approx(first_dry * spacing, rel=1e-12)
-            else:
-                assert math.floor(distance / spacing) == last_wet == first_dry - 1
+
+        assert banks.left == pytest.approx(flat_water_edge(xs.elevations[center::-1], spacing), rel=1e-12, nan_ok=True)
+        assert banks.right == pytest.approx(flat_water_edge(xs.elevations[center:], spacing), rel=1e-12, nan_ok=True)
 
 
 def test_land_cover_banks_are_half_way_to_the_first_land() -> None:
@@ -168,9 +174,9 @@ def test_land_cover_banks_are_half_way_to_the_first_land() -> None:
     assert banks.top_width == pytest.approx(90.0, rel=1e-12)  # the nine cells of water
 
 
-def test_land_cover_banks_match_legacy_without_bank_elevations() -> None:
-    """Legacy (without bank elevations) put each bank at the first ordinate that isn't water, and counted
-    bank_index_1 + bank_index_2 - 1 cells of channel: the same width as the banks here."""
+def test_land_cover_banks_are_half_way_to_the_first_land_at_random() -> None:
+    """On random land cover: each bank is half way from the last water out from the stream cell to the first land,
+    and the banks are valid if the water is at least two cells wide."""
     rng = np.random.default_rng(4)
     for _ in range(300):
         size = 2 * int(rng.integers(3, 30)) + 1
@@ -179,15 +185,19 @@ def test_land_cover_banks_match_legacy_without_bank_elevations() -> None:
         land_cover[center] = WATER
         land_cover[0] = land_cover[-1] = 30  # land on both sides
         xs = random_section(rng, size, 10.0)
-        _, index1, index2 = legacy_cross_section(xs, use_banks=False, land_cover=land_cover)._find_wse_and_banks_by_lc()
+        first_land = [next(k for k in range(1, center + 1) if side[k] != WATER)
+                      for side in (land_cover[center::-1], land_cover[center:])]
+
         banks = banks_by_land_cover(xs, land_cover, WATER)
-        assert (banks.left, banks.right) == pytest.approx(((index1 - 0.5) * 10.0, (index2 - 0.5) * 10.0), rel=1e-12)
-        assert banks.valid == (index1 + index2 - 1 > 1)
+
+        assert (banks.left, banks.right) == pytest.approx(((first_land[0] - 0.5) * 10.0,
+                                                           (first_land[1] - 0.5) * 10.0), rel=1e-12)
+        assert banks.valid == (first_land[0] + first_land[1] - 1 >= 2)
 
 
 def test_land_cover_needs_water_at_the_stream_cell_and_land_on_each_side() -> None:
-    """Legacy (without bank elevations) didn't check the stream cell, and gave a side that is water all the way
-    out bank index 0, a bank at the stream cell. It also stopped the search there instead of trying the others."""
+    """A side that is water all the way out has no bank, and nor does a stream cell that isn't water, so the search
+    goes on to the other methods."""
     xs = channel_and_floodplains()
     all_water_left = np.full(61, float(WATER))
     all_water_left[34:] = 30.0
@@ -212,10 +222,10 @@ def test_land_cover_off_the_raster_is_no_bank() -> None:
     assert banks.right == pytest.approx(4.5, rel=1e-12)
 
 
-@pytest.mark.parametrize("spacing, widest", [(1.0, 2.0), (14.9, 29.8), (15.0, 15.0), (30.0, 30.0)])
-def test_a_width_prior_of_two_spacings_or_less_makes_a_single_cell_channel(spacing: float, widest: float) -> None:
-    """One spacing or less from 15 m up. Legacy returned None, and so no single-cell channel, at exactly 15 m. The
-    channel is the prior's width, and its banks' elevations are the ordinates' either side, as legacy's were."""
+@pytest.mark.parametrize("spacing, widest", [(1.0, 1.0), (14.9, 14.9), (15.0, 15.0), (30.0, 30.0)])
+def test_a_width_prior_of_one_spacing_or_less_makes_a_single_cell_channel(spacing: float, widest: float) -> None:
+    """At any resolution (legacy ARC allowed two spacings below 15 m). The channel is the prior's width, and its banks'
+    elevations are the ordinates' either side."""
     xs = symmetric(BED + np.arange(0.0, 11.0), spacing)
 
     assert find_banks(xs, target_width=widest).single_cell
@@ -228,8 +238,7 @@ def test_a_width_prior_of_two_spacings_or_less_makes_a_single_cell_channel(spaci
 
 
 def test_a_single_cell_channel_is_the_stream_cell_s_width() -> None:
-    """Half a spacing either side of the stream cell, with the neighbours' elevations. Legacy's banks were the
-    neighbours, two spacings apart, which it counted as one."""
+    """Half a spacing either side of the stream cell, with the neighbours' elevations."""
     xs = make_section([BED + 3.0, BED + 1.5, BED, BED + 0.5, BED + 3.0], spacing=10.0)
     banks = single_cell_banks(xs)
 
@@ -248,8 +257,8 @@ def test_banks_a_width_puts_within_a_spacing_take_the_neighbours_ground() -> Non
         assert (banks.left_elevation, banks.right_elevation) == (BED + 1.0, BED + 2.0)
     banks = banks_for_width(xs, 30.0)  # 15 m out, half way to the next ordinates
     assert (banks.left_elevation, banks.right_elevation) == pytest.approx((BED + 2.0, BED + 3.0))
-    # Banks found from the DEM keep the ground where they are, however near
-    assert banks_at_elevation(xs, BED + 0.5).left_elevation == pytest.approx(BED + 0.5)
+    # Banks found from the DEM keep the ground where they are, however near: flat water 1 m from the stream cell
+    assert banks_by_flat_water(xs).left_elevation == pytest.approx(BED + 0.1)
 
 
 def test_a_single_cell_channel_needs_an_ordinate_on_the_raster_each_side() -> None:
@@ -260,19 +269,26 @@ def test_a_single_cell_channel_needs_an_ordinate_on_the_raster_each_side() -> No
 
 
 def test_the_search_order() -> None:
+    """The land cover, the width-to-depth ratio, flat water, and only then the width prior."""
     xs = channel_and_floodplains()
     land_cover = np.full(61, 30.0)
     land_cover[30 - 5:30 + 6] = WATER
 
-    assert find_banks(xs, target_width=1.5, land_cover=land_cover, water_value=WATER).method == "single_cell"
+    assert find_banks(xs, target_width=1.5, land_cover=land_cover, water_value=WATER).method == "land_cover"
     assert find_banks(xs, land_cover=land_cover, water_value=WATER).method == "land_cover"
+    assert find_banks(xs, target_width=1.5).method == "width_to_depth_ratio"
     assert find_banks(xs).method == "width_to_depth_ratio"
     # A V's width-to-depth ratio never rises, so its banks are flat water's
-    assert find_banks(symmetric(BED + 0.02 * np.arange(0.0, 41.0))).method == "flat_water"
-    # A V too steep for its flat water to span two spacings has no valid banks
-    none = find_banks(symmetric(BED + 0.5 * np.arange(0.0, 5.0)))
+    v = symmetric(BED + 0.02 * np.arange(0.0, 41.0))
+    assert find_banks(v, target_width=1.5).method == find_banks(v).method == "flat_water"
+    # A V too steep for its flat water to span two spacings has no valid banks, unless a prior gives it a single cell
+    steep = symmetric(BED + 0.5 * np.arange(0.0, 5.0))
+    none = find_banks(steep)
     assert (none.method, none.valid) == ("none", False)
     assert math.isnan(none.left)
+    assert find_banks(steep, target_width=0.8).method == "single_cell"
+    # A prior wider than a single cell gives no banks: the bathymetry gives the channel its reach's median width
+    assert not find_banks(steep, target_width=1.5).valid
 
 
 def test_banks_need_a_channel_two_spacings_wide() -> None:
@@ -304,29 +320,6 @@ def test_banks_for_a_width_split_it_between_the_sides() -> None:
     assert not banks_for_width(xs, 0.0).valid and not banks_for_width(xs, math.nan).valid
 
 
-def test_banks_for_a_width_match_legacy() -> None:
-    """Legacy rounded each side's share to whole spacings, at least one."""
-    rng = np.random.default_rng(6)
-    for _ in range(300):
-        spacing = float(rng.choice([1.0, 10.0]))
-        size = 2 * int(rng.integers(2, 30)) + 1
-        xs = random_section(rng, size, spacing)
-        width = float(rng.uniform(1.1, 2.5) * spacing * rng.integers(1, size // 2 + 2))
-        index1, index2, cells = legacy_cross_section(xs, use_banks=False)._find_bank_by_target_width(width)
-        if cells <= 1:
-            continue
-        banks = banks_for_width(xs, width)
-        clamp = lambda distance: min(max(round(distance / spacing), 1), size // 2)
-        assert (clamp(banks.left), clamp(banks.right)) == (index1, index2)
-
-
-def test_banks_at_an_elevation_are_the_water_edges_there() -> None:
-    banks = banks_at_elevation(channel_and_floodplains(), BED + 1.5)
-
-    assert (banks.left, banks.right) == pytest.approx((11.5, 11.5), rel=1e-12)
-    assert not banks_at_elevation(channel_and_floodplains(), BED).valid
-
-
 def test_valid_banks_divide_the_hydraulics() -> None:
     xs = channel_and_floodplains()
     banks = find_banks(xs)
@@ -334,10 +327,13 @@ def test_valid_banks_divide_the_hydraulics() -> None:
     set_bank_distances(xs, banks)
 
     assert (xs.left_bank_distance, xs.right_bank_distance) == (banks.left, banks.right)
-    assert hydraulics.discharge(xs, SLOPE, wse=103.0) == pytest.approx(
-        hydraulics.compound_conveyance(xs.elevations, xs.mannings_n, 1.0, 12.0, 12.0, 103.0) * math.sqrt(SLOPE))
+    parts = hydraulics.compound_geometry(xs, wse=103.0)
+    assert parts.channel.top_width == pytest.approx(24.0)  # bank to bank
+    assert parts.left_overbank.area > 0.0 and parts.right_overbank.area > 0.0
+    divided = hydraulics.discharge(xs, SLOPE, wse=103.0)
     set_bank_distances(xs, NO_BANKS)
     assert (xs.left_bank_distance, xs.right_bank_distance) == (-1.0, -1.0)
+    assert hydraulics.discharge(xs, SLOPE, wse=103.0) < divided  # as one section, the floodplains hold it back
 
 
 def test_the_bank_control_elevation_is_the_lower_bank_above_the_stream_cell() -> None:
@@ -357,8 +353,7 @@ def test_in_bank_ordinates_get_the_water_s_roughness() -> None:
     assert xs.mannings_n[7:13].tolist() == [0.02] * 6
     assert xs.mannings_n[6] == xs.mannings_n[13] == 0.035
     assert not in_bank(xs, banks._replace(valid=False)).any()
-    # A single-cell channel's banks are half a spacing out, so only its stream cell is between them. Legacy's bank
-    # indices, the ordinates either side, were included too.
+    # A single-cell channel's banks are half a spacing out, so only its stream cell is between them
     assert np.flatnonzero(in_bank(xs, single_cell_banks(xs))).tolist() == [10]
 
 
@@ -372,42 +367,62 @@ def test_a_trapezoid_s_depth_carries_the_baseflow(q: float) -> None:
     assert trapezoid_discharge(depth, 16.0, 24.0) == pytest.approx(q, rel=1e-12)
 
 
-def test_a_trapezoid_s_depth_is_legacy_s_to_within_its_1_cm_steps() -> None:
-    """Legacy stepped the depth up in steps down to 1 cm and returned the last depth not carrying the baseflow."""
-    rng = np.random.default_rng(7)
-    for _ in range(500):
-        top = float(rng.uniform(2.0, 200.0))
-        bottom = top * (1 - 2 * float(rng.uniform(0.0, 0.5)))
-        q = float(np.exp(rng.uniform(math.log(0.01), math.log(3000.0))))
-        slope = float(np.exp(rng.uniform(math.log(1e-5), math.log(0.05))))
-        legacy = find_depth_of_bathymetry(q, bottom, top, slope, N)
-        if legacy < 24.0:
-            assert legacy - 1e-9 < trapezoid_depth(q, bottom, top, slope, N) <= legacy + 0.01 + 1e-9
-
-
 def test_every_channel_is_a_trapezoid_as_wide_as_its_banks() -> None:
+    """With a constant n, the cross section's own, and ground nowhere below the channel, the depth is the trapezoid's."""
     xs = channel_and_floodplains()
+    xs.mannings_n[:] = N
     banks = find_banks(xs)  # 24 m apart
 
-    assert channel_depth(xs, banks, 20.0, SLOPE, trapezoid_height=0.2) == trapezoid_depth(20.0, 14.4, 24.0, SLOPE, N)
+    assert channel_depth(xs, banks, 20.0, SLOPE, trapezoid_height=0.2) == \
+        pytest.approx(trapezoid_depth(20.0, 14.4, 24.0, SLOPE, N), rel=1e-12)
     # Without valid banks, one cell wide: at 1 m spacing, a trapezoid 1 m across the top
     assert channel_depth(xs, banks._replace(valid=False), 2.0, SLOPE, trapezoid_height=0.2) == \
-        trapezoid_depth(2.0, 0.6, 1.0, SLOPE, N)
+        pytest.approx(trapezoid_depth(2.0, 0.6, 1.0, SLOPE, N), rel=1e-12)
 
 
 def test_a_single_cell_channel_is_a_trapezoid_whatever_the_ground_beside_it() -> None:
-    """Legacy's was a triangle up to the ordinates either side, narrowed by how far they stood above the water. Here
-    it's a trapezoid of the single cell's width, as wide as the width prior that made it, if one did."""
+    """A trapezoid of the single cell's width, or as wide as the width prior that made it, if one did."""
     xs = make_section([BED + 3.0, BED + 0.5, BED, BED + 0.8, BED + 3.0], spacing=10.0)
+    xs.mannings_n[:] = N
 
     assert channel_depth(xs, single_cell_banks(xs), 2.0, SLOPE, trapezoid_height=0.2) == \
-        trapezoid_depth(2.0, 6.0, 10.0, SLOPE, N)
+        pytest.approx(trapezoid_depth(2.0, 6.0, 10.0, SLOPE, N), rel=1e-12)
     prior = find_banks(xs, target_width=4.0)
     assert prior.single_cell
-    assert channel_depth(xs, prior, 2.0, SLOPE, trapezoid_height=0.2) == trapezoid_depth(2.0, 2.4, 4.0, SLOPE, N)
+    assert channel_depth(xs, prior, 2.0, SLOPE, trapezoid_height=0.2) == \
+        pytest.approx(trapezoid_depth(2.0, 2.4, 4.0, SLOPE, N), rel=1e-12)
     # Narrower is deeper, for the same baseflow
     assert channel_depth(xs, prior, 2.0, SLOPE, trapezoid_height=0.2) > \
         channel_depth(xs, single_cell_banks(xs), 2.0, SLOPE, trapezoid_height=0.2)
+
+
+@pytest.mark.parametrize("spacing", [1.0, 30.0])
+@pytest.mark.parametrize("bank_elevation", [None, BED + 0.4], ids=["water surface", "bank elevation"])
+@pytest.mark.parametrize(("roughness", "slope_factor"), [
+    (None, 1.0), (DepthRoughness(), 1.0), (DepthRoughness(), 1.7), (DepthRoughness(3.0, 4.0, 0.8), 0.6)],
+    ids=["constant n", "depth-varying n", "with a slope factor", "other factors"])
+def test_the_carved_channel_carries_the_baseflow_at_its_level_by_the_rating_curve_s_own_hydraulics(
+        spacing: float, bank_elevation, roughness, slope_factor: float) -> None:
+    """Whatever the roughness and slope factor, the rating curve's hydraulics on the carved cross section carry the
+    baseflow with the water at the reference level: the stream cell's elevation, or the bank elevation. Depth-varying
+    n is rougher in shallow water, so the channel is carved deeper than a constant n's."""
+    offsets = spacing * np.arange(-60, 61)
+    xs = make_section(np.where(np.abs(offsets) <= 40.0, BED, BED + 0.1 * (np.abs(offsets) - 40.0)), spacing)
+    banks = find_banks(xs)
+    set_in_bank_roughness(xs, banks, N)
+
+    depth = channel_depth(xs, banks, 25.0, SLOPE, trapezoid_height=0.2, mannings_n=N, roughness=roughness,
+                          slope_factor=slope_factor, bank_elevation=bank_elevation)
+    constant_n = channel_depth(xs, banks, 25.0, SLOPE, trapezoid_height=0.2, mannings_n=N,
+                               bank_elevation=bank_elevation)
+    carve_channel(xs, banks, depth, trapezoid_height=0.2, bank_elevation=bank_elevation)
+    set_bank_distances(xs, banks)
+
+    level = BED if bank_elevation is None else bank_elevation
+    assert hydraulics.discharge(xs, SLOPE, wse=level, roughness=roughness, slope_factor=slope_factor) == \
+        pytest.approx(25.0, rel=1e-10)
+    if roughness is not None and slope_factor == 1.0:
+        assert depth > constant_n
 
 
 def test_no_baseflow_is_no_depth_and_no_slope_no_answer() -> None:
@@ -504,26 +519,19 @@ def test_with_bank_elevations_the_channel_can_raise_the_ground_too() -> None:
 
 
 def test_with_bank_elevations_the_channel_stays_between_its_banks() -> None:
-    """Legacy ARC's staged test case: banks 2 m out at 11 m, 1.5 m deep. Legacy carved one ordinate too far, taking
-    the bank ordinate down to the 9.5 m bed and the 12 m ground beyond it down to 11 m."""
+    """Banks 2 m out at 11 m, 1.5 m deep: the bank ordinates are the channel's top, and the ground beyond them
+    stays."""
     xs = make_section([12.0, 11.0, 10.4, 10.0, 10.5, 11.0, 12.0])
     banks = Banks("test", 2.0, 2.0, 11.0, 11.0, False, True)
-    legacy = legacy_cross_section(xs, use_banks=True, trapezoid_height=0.1)
-    legacy.Calculate_Bathymetry_Based_on_RiverBank_Elevations(
-        np.full((3, 9), np.nan), bank_search_result={
-            "function_used": "test", "i_bank_1_index": 2, "i_bank_2_index": 2, "bank_elev_1": 11.0,
-            "bank_elev_2": 11.0, "smoothed_bank_elevation": 11.0, "is_valid": True, "bathymetry_depth": 1.5})
 
     carve_channel(xs, banks, 1.5, trapezoid_height=0.1, bank_elevation=11.0)
 
     assert xs.elevations.tolist() == pytest.approx([12.0, 11.0, 9.5, 9.5, 9.5, 11.0, 12.0])
-    assert legacy.da_xs_profile2[:4].tolist() == pytest.approx([9.5, 9.5, 9.5, 11.0])
 
 
 def test_a_lopsided_channel_carves_one_stream_cell_elevation() -> None:
-    """Banks 20 m left and 1 m right of the stream cell, so it lies within the right bank's 4.2 m slope. Legacy carved
-    each half from its own bank only, so its halves gave the stream cell 8.0 m and 9.5 m, and the raster their
-    average."""
+    """Banks 20 m left and 1 m right of the stream cell, so it lies within the right bank's 4.2 m slope. Each
+    ordinate takes the channel's elevation at its distance from the nearer bank."""
     elevations = np.full(43, 13.0)
     elevations[1:23] = 10.0  # the stream cell is ordinate 21
     xs = make_section(elevations)
@@ -542,9 +550,10 @@ def test_a_lopsided_channel_carves_one_stream_cell_elevation() -> None:
 
 
 @pytest.mark.parametrize("use_banks", [False, True])
-def test_symmetric_channels_carve_as_legacy_did_for_the_same_trapezoid(use_banks: bool) -> None:
-    """Told a trapezoid of the same width, whose banks it places by index and side distance, legacy's per-side burn
-    gives the same profile wherever each half is nearest its own bank."""
+def test_a_symmetric_channel_is_its_trapezoid_at_every_ordinate(use_banks: bool) -> None:
+    """On random sections, banks and trapezoid heights: between the banks each ordinate is on the trapezoid, whose
+    sides rise from its bed to the reference level over trapezoid_height of its top width. Without bank elevations
+    the ground is only ever lowered."""
     rng = np.random.default_rng(9)
     for _ in range(300):
         spacing = float(rng.choice([1.0, 3.0, 10.0]))
@@ -561,16 +570,10 @@ def test_symmetric_channels_carve_as_legacy_did_for_the_same_trapezoid(use_banks
         carve_channel(xs, Banks("test", half, half, np.nan, np.nan, False, True), depth,
                       trapezoid_height=trapezoid_height, bank_elevation=reference if use_banks else None)
 
-        index = math.floor(half / spacing + 1e-12)
-        left = profile[center::-1].copy()
-        right = profile[center:].copy()
-        for side in (left, right):
-            _adjust_one_side_for_bathymetry(index, 2 * half, 2 * half * (1 - 2 * trapezoid_height),
-                                            2 * half * trapezoid_height, np.zeros(side.size, dtype=np.int64),
-                                            np.arange(side.size), side, np.full((1, side.size), np.nan),
-                                            half - index * spacing, reference - depth, depth, spacing,
-                                            side[np.newaxis, :].copy(), use_banks)
-        np.testing.assert_allclose(xs.elevations, np.concatenate([left[::-1], right[1:]]), atol=1e-12)
+        to_bank = half - spacing * np.abs(np.arange(-center, center + 1))
+        channel = reference - depth + depth * np.maximum(1.0 - to_bank / (2 * half * trapezoid_height), 0.0)
+        carved = channel if use_banks else np.minimum(profile, channel)
+        np.testing.assert_allclose(xs.elevations, np.where(to_bank >= -1e-9 * spacing, carved, profile), atol=1e-12)
 
 
 def test_a_single_cell_channel_lowers_only_the_stream_cell() -> None:
@@ -589,10 +592,12 @@ def test_a_single_cell_channel_lowers_only_the_stream_cell() -> None:
 def test_what_isn_t_carved() -> None:
     flat = lambda: make_section(np.full(25, BED))
 
-    # A depth of 25 m or more, without bank elevations (legacy's limit)
-    assert not carve_channel(flat(), BANKS_10_M_OUT, 25.0, trapezoid_height=0.2).any()
-    assert carve_channel(flat(), BANKS_10_M_OUT, 25.0, trapezoid_height=0.2, bank_elevation=BED).any()
-    # A depth or bank elevation that isn't finite (legacy made the whole profile NaN)
+    # Any depth is carved, with bank elevations or without (legacy left 25 m or more uncarved without them)
+    deep = flat()
+    assert carve_channel(deep, BANKS_10_M_OUT, 40.0, trapezoid_height=0.2).any()
+    assert deep.elevations[12] == pytest.approx(BED - 40.0)
+    assert carve_channel(flat(), BANKS_10_M_OUT, 40.0, trapezoid_height=0.2, bank_elevation=BED).any()
+    # A depth or bank elevation that isn't finite
     xs = flat()
     assert not carve_channel(xs, BANKS_10_M_OUT, math.nan, trapezoid_height=0.2, bank_elevation=BED).any()
     assert not carve_channel(xs, BANKS_10_M_OUT, 1.0, trapezoid_height=0.2, bank_elevation=math.nan).any()
@@ -603,7 +608,6 @@ def test_what_isn_t_carved() -> None:
 
 
 def test_a_trapezoid_height_of_zero_is_a_rectangle() -> None:
-    """Legacy divided by zero at the bank ordinate, raising ZeroDivisionError without bank elevations."""
     xs = make_section(np.full(25, BED))
 
     carve_channel(xs, BANKS_10_M_OUT, 2.0, trapezoid_height=0.0, bank_elevation=BED + 1.0)
@@ -769,259 +773,81 @@ def test_land_cover_is_sampled_from_the_nearest_cells_and_nan_off_the_raster() -
     assert values[2:7].tolist() == [10.0, 11.0, 12.0, 13.0, 14.0]
 
 
-def test_the_raster_takes_the_first_value_then_averages() -> None:
-    raster = np.full((2, 4), np.nan, dtype=np.float32)
-    rows = np.array([0, 0, 0, 5])
-    cols = np.array([0, 1, 2, 0])
-    changed = np.array([True, True, False, True])
-
-    burn_into_raster(raster, rows, cols, np.array([1.0, 2.0, 3.0, 4.0]), changed)
-    burn_into_raster(raster, rows, cols, np.array([3.0, 2.0, 3.0, 4.0]), changed)
-
-    assert raster[0, 0] == 2.0  # 1, then the average of 1 and 3
-    assert raster[0, 1] == 2.0
-    assert np.isnan(raster[0, 2])  # never changed
-    assert np.isnan(raster[1]).all()  # the ordinate off the raster was skipped
+def _burn_all(shape, burns_in_order) -> np.ndarray:
+    raster = np.full(shape, np.nan, dtype=np.float32)
+    counts = np.zeros(shape, dtype=np.int32)
+    for rows, cols, elevations, changed in burns_in_order:
+        burn_into_raster(raster, counts, np.array(rows), np.array(cols), np.array(elevations, dtype=np.float64),
+                         np.array(changed))
+    return raster
 
 
-def test_a_gap_with_bathymetry_in_four_of_the_cells_around_it_gets_their_mean() -> None:
-    """The middle cell has bathymetry in four of the eight cells around it, and without the last of them, three. The
-    others, next to the raster's edge, have at most three, since beyond the edge counts as no bathymetry."""
-    raster = np.full((3, 3), np.nan)
-    raster[0, 0], raster[0, 2], raster[2, 0], raster[2, 1] = 1.0, 2.0, 3.0, 6.0
-    three = raster.copy()
-    three[2, 1] = np.nan
-
-    assert fill_bathymetry_gaps(raster) is raster
-    assert raster[1, 1] == 3.0
-    assert np.isnan(raster).sum() == 4
-    assert np.isnan(fill_bathymetry_gaps(three)).sum() == 6
-
-
-def test_every_gap_is_filled_from_the_raster_as_it_was() -> None:
-    """The gap at (1, 1) has four neighbours with bathymetry, and the one at (1, 2) three, so it stays a gap even
-    though filling (1, 1) gives it a fourth. Given a fourth of its own at (0, 2), it gets the mean of its four, leaving
-    out (1, 1)'s fill."""
-    raster = np.full((3, 4), np.nan)
-    raster[0, 0], raster[0, 1], raster[1, 0], raster[2, 0] = 1.0, 2.0, 3.0, 6.0
-    raster[1, 3], raster[2, 3] = 5.0, 5.0
-    fourth = raster.copy()
-    fourth[0, 2] = 8.0
-
-    fill_bathymetry_gaps(raster)
-    fill_bathymetry_gaps(fourth)
-
-    assert raster[1, 1] == 3.0
-    assert np.isnan(raster[1, 2])
-    assert fourth[1, 1] == 4.0
-    assert fourth[1, 2] == 5.0
+def test_overlapping_cross_sections_burn_their_mean_whatever_their_order() -> None:
+    """Three cross sections of five ordinates, centred on (0, 2), (2, 2) and (4, 2), all crossing cell (1, 3) off their
+    centres, at 1, 2 and 6 m. The ordinate that isn't changed and the one off the raster burn nothing."""
+    burns = [([0, 0, 0, 1, 9], [0, 1, 2, 3, 0], [5.0, 5.0, 5.0, 1.0, 5.0], [False, True, True, True, True]),
+             ([2, 2, 2, 1, 2], [0, 1, 2, 3, 4], [5.0, 5.0, 5.0, 2.0, 5.0], [True, True, True, True, True]),
+             ([4, 4, 4, 1, 4], [0, 1, 2, 3, 4], [5.0, 5.0, 5.0, 6.0, 5.0], [True, True, True, True, True])]
+    for order in itertools.permutations(burns):
+        raster = _burn_all((5, 5), order)
+        assert raster[1, 3] == 3.0  # (1 + 2 + 6) / 3
+        assert np.isnan(raster[0, 0])  # never changed
+        assert np.isfinite(raster).sum() == 1 + 2 + 4 + 4  # nothing off the raster
 
 
-def test_the_gap_fill_matches_legacy_s() -> None:
-    """Random rasters, float32 and float64, from nearly empty to nearly full."""
-    rng = np.random.default_rng(2)
-    for trial in range(300):
-        shape = tuple(int(s) for s in rng.integers(1, 30, 2))
-        raster = rng.normal(95.0, 2.0, shape)
-        raster[rng.random(shape) < rng.uniform(0.0, 1.0)] = np.nan
-        if trial % 2 == 0:
-            raster = raster.astype(np.float32)
+def test_a_cross_section_s_centre_cell_takes_its_own_bed() -> None:
+    """Cell (1, 1) is the centre of one cross section, at 2 m, and crossed off their centres by two others, at 5 and
+    8 m, before and after it: it keeps the centre's 2 m, which is the VDT database's Elev there. A cell at the centre
+    of two cross sections takes the mean of their centres, and a centre burns even where its carve left it as it
+    was, unless the carve changed nothing at all."""
+    own = ([1, 1, 1], [0, 1, 2], [3.0, 2.0, 3.0], [True, True, True])
+    before = ([1, 0, 0], [1, 1, 2], [5.0, 9.0, 9.0], [True, True, True])  # centred on (0, 1)
+    after = ([2, 2, 1], [0, 1, 1], [9.0, 9.0, 8.0], [True, True, True])  # centred on (2, 1)
+    for order in itertools.permutations([own, before, after]):
+        assert _burn_all((3, 3), order)[1, 1] == 2.0
 
-        expected = _fill_bathymetry_nan_cells(raster.copy())
+    second = ([0, 1, 2], [1, 1, 1], [6.0, 4.0, 6.0], [True, False, True])  # its centre unchanged, still at 4 m
+    assert _burn_all((3, 3), [before, own, second])[1, 1] == 3.0
+    nothing = ([0, 1, 2], [1, 1, 1], [6.0, 4.0, 6.0], [False, False, False])
+    assert np.isnan(_burn_all((3, 3), [nothing])).all()
 
-        np.testing.assert_array_equal(fill_bathymetry_gaps(raster), expected)
-        assert raster.dtype == expected.dtype
+def filled_gaps(raster: np.ndarray) -> np.ndarray:
+    """The gap fill the slow way: each gap with at least four of its eight neighbours in the raster as it was gets
+    their mean, added up one at a time in float64, row by row (Python's sum() would compensate its rounding)."""
+    filled = raster.copy()
+    rows, cols = raster.shape
+    for r in range(rows):
+        for c in range(cols):
+            if not np.isnan(raster[r, c]):
+                continue
+            around = [float(raster[rr, cc]) for rr in range(max(r - 1, 0), min(r + 2, rows))
+                      for cc in range(max(c - 1, 0), min(c + 2, cols)) if not np.isnan(raster[rr, cc])]
+            if len(around) >= 4:
+                total = 0.0
+                for value in around:
+                    total += value
+                filled[r, c] = total / len(around)
+    return filled
 
+def test_burning_cross_sections_all_at_once_is_burning_them_one_by_one() -> None:
+    """Burns, which gathers the carved cross sections and burns each cell's ordinates in their order, gives the raster
+    burn_into_raster gives, bit for bit: with cross sections crossing, centres shared, ordinates off the raster, and
+    cross sections that changed nothing."""
+    from arc.bathymetry import Burns
+    rng = np.random.default_rng(64)
+    for _ in range(300):
+        shape = (int(rng.integers(1, 15)), int(rng.integers(1, 15)))
+        raster = np.full(shape, np.nan, dtype=np.float32)
+        counts = np.zeros(shape, dtype=np.int32)
+        burns = Burns(shape)
+        for _ in range(int(rng.integers(0, 12))):
+            size = 2 * int(rng.integers(0, 6)) + 1
+            rows = rng.integers(-2, shape[0] + 2, size)
+            cols = rng.integers(-2, shape[1] + 2, size)
+            elevations = rng.normal(95.0, 2.0, size)
+            changed = rng.random(size) < rng.choice([0.0, 0.5, 1.0])
+            burn_into_raster(raster, counts, rows, cols, elevations, changed)
+            burns.add(rows, cols, elevations, changed)
+        burned = burns.burned().to_array()
+        assert np.array_equal(burned.view(np.uint32), raster.view(np.uint32))
 
-def test_without_bank_elevations_no_gap_is_filled_above_the_ground() -> None:
-    """A channel carved to 95 m through ground at 100 m, with a pool at 94 m that it wasn't carved into, and one cell
-    whose bathymetry is above the ground. That cell is dropped and filled again from its neighbours, as legacy did,
-    but where legacy then filled the pool to 95 m, above its ground, here it stays a gap. Bathymetry level with the
-    ground stays, and so does a fill level with it."""
-    ground = np.full((7, 9), 100.0, dtype=np.float32)
-    ground[3, 4] = 94.0
-    ground[3, 2] = ground[2, 3] = 95.0
-    raster = np.full((7, 9), np.nan, dtype=np.float32)
-    raster[2:5, 1:8] = 95.0
-    raster[3, 4] = raster[3, 2] = np.nan
-    raster[2, 6] = 100.5
-
-    expected = _fill_bathymetry_nan_cells(np.where(raster > ground, np.nan, raster).astype(np.float32))
-    fill_bathymetry_gaps(raster, ground)
-
-    assert expected[3, 4] == 95.0
-    assert np.isnan(raster[3, 4])
-    assert raster[2, 6] == raster[3, 2] == raster[2, 3] == 95.0
-    expected[3, 4] = np.nan
-    np.testing.assert_array_equal(raster, expected)
-
-
-def test_the_gap_fill_needs_a_2d_floating_raster_and_ground_like_it() -> None:
-    with pytest.raises(ValueError, match="2-D"):
-        fill_bathymetry_gaps(np.full(4, np.nan))
-    with pytest.raises(TypeError, match="floating"):
-        fill_bathymetry_gaps(np.zeros((2, 2), dtype=np.int32))
-    with pytest.raises(ValueError, match="ground"):
-        fill_bathymetry_gaps(np.full((2, 2), np.nan), np.zeros((2, 3)))
-
-
-# --- Speed (each compiled loop runs once first, so compilation isn't counted) --------------------------------------
-
-# Compiled but not cached: a cache wouldn't pick up changes to the functions these call in other modules.
-
-
-@njit
-def _repeat_legacy_trapezoid(q, calls):
-    total = 0.0
-    for i in range(calls):
-        total += find_depth_of_bathymetry(q * (1.0 + 1e-9 * (i % 7)), 16.0, 24.0, SLOPE, N)
-    return total
-
-
-@njit
-def _repeat_trapezoid(q, calls):
-    total = 0.0
-    for i in range(calls):
-        total += trapezoid_depth(q * (1.0 + 1e-9 * (i % 7)), 16.0, 24.0, SLOPE, N)
-    return total
-
-
-@njit
-def _repeat_legacy_width_to_depth(profile1, profile2, spacing, calls):
-    total = 0
-    for _ in range(calls):
-        total += _find_bank_using_width_to_depth_ratio(BED, profile1, profile2, profile1.size, profile2.size, spacing)[0]
-    return total
-
-
-@njit
-def _repeat_width_to_depth(elevations, spacing, calls):
-    total = 0.0
-    for _ in range(calls):
-        total += banks_module._width_to_depth_banks(elevations, spacing)[0]
-    return total
-
-
-@njit
-def _repeat_legacy_burn(profile, rows, cols, dem, output, calls):
-    total = 0.0
-    for _ in range(calls):
-        for _side in range(2):
-            carved = profile.copy()
-            _adjust_one_side_for_bathymetry(12, 240.0, 144.0, 48.0, rows, cols, carved, output, 0.0, 98.0, 2.0,
-                                            10.0, dem, False)
-            total += carved[0]
-    return total
-
-
-@njit
-def _repeat_carve(elevations, calls):
-    """The ordinates' carve, legacy's burn's job. The channel's profile is extra, and in the whole-section test."""
-    total = 0.0
-    changed = np.zeros(elevations.size, dtype=np.bool_)
-    for _ in range(calls):
-        carved = elevations.copy()
-        channel_module._carve(carved, 10.0, 120.0, 120.0, BED, 2.0, 0.2, True, changed)
-        total += carved[carved.size // 2]
-    return total
-
-
-def _seconds_per_call(repeat, *args, calls: int) -> float:
-    """Best of five timed runs, after one untimed call to compile."""
-    repeat(*args, 1)
-    best = math.inf
-    for _ in range(5):
-        start = time.perf_counter()
-        repeat(*args, calls)
-        best = min(best, (time.perf_counter() - start) / calls)
-    return best
-
-
-def _seconds_per_python_call(function, calls: int) -> float:
-    function()
-    best = math.inf
-    for _ in range(5):
-        start = time.perf_counter()
-        for _ in range(calls):
-            function()
-        best = min(best, (time.perf_counter() - start) / calls)
-    return best
-
-
-def typical_section() -> XSection:
-    """5 km at 10 m spacing (501 ordinates): a 20 m wide, 2 m deep channel in a valley with 2% side slopes."""
-    distance = np.abs(10.0 * np.arange(-250, 251))
-    rng = np.random.default_rng(1)
-    elevations = BED + np.minimum(distance, 10.0) * 0.2 + np.maximum(distance - 10.0, 0.0) * 0.02
-    elevations += rng.normal(0.0, 0.05, distance.size)
-    elevations[250] = BED
-    return make_section(elevations, spacing=10.0)
-
-
-def test_the_bank_search_is_faster_than_legacy_s() -> None:
-    xs = typical_section()
-    legacy = legacy_cross_section(xs, use_banks=False)
-
-    new = _seconds_per_python_call(lambda: find_banks(xs), calls=2000)
-    old = _seconds_per_python_call(legacy.get_wse_or_lc_bank_search_result, calls=500)
-    kernel = _seconds_per_call(_repeat_width_to_depth, xs.elevations, 10.0, calls=2000)
-    legacy_kernel = _seconds_per_call(_repeat_legacy_width_to_depth, xs.elevations[250::-1].copy(),
-                                      xs.elevations[250:].copy(), 10.0, calls=500)
-
-    assert new < old
-    assert kernel < legacy_kernel
-
-
-def test_the_trapezoid_depth_and_the_carve_are_faster_than_legacy_s() -> None:
-    xs = typical_section()
-    rows = np.zeros(251, dtype=np.int64)
-    cols = np.arange(251)
-
-    for q in [1.0, 20.0, 300.0]:
-        assert _seconds_per_call(_repeat_trapezoid, q, calls=20000) < _seconds_per_call(
-            _repeat_legacy_trapezoid, q, calls=20000)
-    assert _seconds_per_call(_repeat_carve, xs.elevations, calls=20000) < _seconds_per_call(
-        _repeat_legacy_burn, xs.elevations[250:].copy(), rows, cols, xs.elevations[250:][np.newaxis, :].copy(),
-        np.full((1, 251), np.nan), calls=10000)
-
-
-def test_a_cross_section_s_whole_bathymetry_is_faster_than_legacy_s() -> None:
-    """Finding the banks, the depth, and carving the channel into a sampled cross section. Legacy reused one
-    CrossSection, reloading each sampled profile into it."""
-    xs = typical_section()
-    raster = np.full((1, 501), np.nan)
-    rows, cols = np.zeros(501, dtype=np.intp), np.arange(501, dtype=np.intp)
-    legacy = legacy_cross_section(xs, use_banks=False)
-    profile1, profile2 = legacy.da_xs_profile1.copy(), legacy.da_xs_profile2.copy()
-    legacy_raster = np.full((3, 503), np.nan)
-
-    def new() -> None:
-        section = make_section(xs.elevations, spacing=10.0)
-        banks = find_banks(section)
-        set_bank_distances(section, banks)
-        depth = bathymetry_depth(section, banks, 20.0, SLOPE, trapezoid_height=0.2)
-        burn_into_raster(raster, rows, cols, section.elevations,
-                         carve_channel(section, banks, depth.depth, trapezoid_height=0.2))
-
-    def old() -> None:
-        legacy.da_xs_profile1[:] = profile1
-        legacy.da_xs_profile2[:] = profile2
-        result = legacy.get_wse_or_lc_bank_search_result()
-        result["bathymetry_depth"] = legacy.calculate_hydraulic_bathymetry_depth(20.0, SLOPE, result)
-        legacy.Calculate_Bathymetry_Based_on_WSE_or_LC(legacy_raster, bank_search_result=result)
-
-    assert _seconds_per_python_call(new, calls=1000) < _seconds_per_python_call(old, calls=300)
-
-
-def test_the_gap_fill_is_faster_than_legacy_s() -> None:
-    """A 2000 x 2000 raster, empty but for channels three cells wide every 50 columns, with 2% of their cells gaps."""
-    rng = np.random.default_rng(0)
-    raster = np.full((2000, 2000), np.nan, dtype=np.float32)
-    for first in range(10, 2000, 50):
-        raster[:, first:first + 3] = 95.0
-    raster[rng.random(raster.shape) < 0.02] = np.nan
-
-    new = _seconds_per_python_call(lambda: fill_bathymetry_gaps(raster.copy()), calls=3)
-    old = _seconds_per_python_call(lambda: _fill_bathymetry_nan_cells(raster.copy()), calls=3)
-
-    assert new < old

@@ -61,7 +61,9 @@ BANK_HEIGHT_QUANTILE = 0.1  # the bank's height above the water: this quantile o
 BANK_HEIGHT_WINDOW = 500.0  # ...within this many metres either side along the reach...
 MIN_BANK_OBSERVATIONS = 5  # ...or, where fewer are, of this many nearest along it
 JUNCTION_TAPER = 500.0  # metres either side of a junction over which two reaches' bank elevations are made to meet
-WATER_BANKS = "land_cover"  # the method of banks found where the water mask's or the land cover's water ends
+# The methods of banks found at the water's edge, the mask's or the land cover's (land_cover) or the DEM's with the
+# banks at the water (water_edge): the water shows the channel's width, where the DEM's banks are only an estimate
+WATER_BANKS = ("land_cover", "water_edge")
 
 
 class ReachWidths(NamedTuple):
@@ -116,7 +118,7 @@ def filter_reach_widths(sections: Sequence[XSection], banks: Sequence[Banks]) ->
     
     q25, median, q75 = widths
     for k, (xs, b) in enumerate(zip(sections, banks)):
-        if b.valid and b.method == WATER_BANKS:
+        if b.valid and b.method in WATER_BANKS:
             continue
 
         if not b.valid or b.top_width < q25 or b.top_width > q75:
@@ -165,7 +167,7 @@ def below_ceilings(observations, banks: Sequence[Banks], ceilings) -> np.ndarray
         return observations
     
     ceilings = np.asarray(ceilings, dtype=np.float64)
-    from_the_dem = np.array([b.method != WATER_BANKS for b in banks], dtype=bool)
+    from_the_dem = np.array([b.method not in WATER_BANKS for b in banks], dtype=bool)
     observations[from_the_dem & (observations > ceilings)] = math.nan  # a NaN ceiling compares False
     return observations
 

@@ -41,7 +41,7 @@ Stream_File	/path/to/streams.tif
 ```
 
 Keys aren't case-sensitive. Keys that ARC does not know stops the run with an error that suggests the closest key, so a typo
-can't go unnoticed. Give Curve2Flood its own input file. Leave an output out to skip it.
+can't go unnoticed. Leave an output out to skip it.
 
 ## What a run needs
 
@@ -108,14 +108,13 @@ a higher MCC being a better map: differences of a few thousandths are within the
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `X_Section_Dist` | | No longer used, and ignored with a warning: each cross section reaches as far as its water needs, out to the raster's edge. |
 | `Gen_Dir_Dist` | 10 | How many cells each way around a stream cell to fit the stream's direction to, among its own reach's cells. |
 | `Degree_Manip` | 1.1 | The range of angles, in degrees, to turn the cross section through to find where the valley is narrowest: up to half of it each way from square to the stream. 0 turns the search off, and so does anything under twice `Degree_Interval`, as the defaults are. |
 | `Degree_Interval` | 1.0 | The step between those angles, in degrees. |
 | `Low_Spot_Range` | 0 | How many points either side of the stream cell to look along the cross section for lower ground. If there is some, the cross section moves to the cell of the lowest point. 0 turns this off. |
 | `Stream_Slope_Method` | local_average_corrected | `local_average`, `local_average_corrected`, `reach_average`, `end_points` or `local_fit` (see [Stream Slope Methods](stream_slope_methods.md)). |
 | `Gen_Slope_Dist` | 10 | How many cells each way around a stream cell the slope methods use. At least 1, except for `end_points`, which doesn't use it. |
-| `Slope_Low_Percentile`, `Slope_High_Percentile` | 5, 95 | The percentiles of a reach's slopes that `reach_average` and `local_average_corrected` work between (25 and 75 before 2026-10-25). |
+| `Slope_Low_Percentile`, `Slope_High_Percentile` | 5, 95 | The percentiles of a reach's slopes that `reach_average` and `local_average_corrected` work between. |
 | `Valley_Sections` | False | Take each cross section's overbanks from lines out from its banks square to the valley, at the valley's slope, and its channel from its own (see [Valley Cross Sections](valley_sections.md)): over a meandering river's floodplain, the water runs down the valley, not along the channel. |
 | `Valley_Dir_Widths` | 16 | How far along the stream, in channel widths either way, the valley's direction and the stream's sinuosity are taken over, for `Valley_Sections`: about a meander's length, which is 10 to 14 widths (see [Valley Cross Sections](valley_sections.md#the-window)). A reach's width is the median distance between its cross sections' banks. 0 uses `Valley_Dir_Dist` for every reach. |
 | `Subcell_Channels` | False | Reconstruct the ground of each channel under 10 cells across below the cell scale (the polyline whose cells' means are the DEM's and whose slope changes least, kept between each cell's and its neighbours' means), instead of joining the cells with straight lines, which turns a narrow channel's corners into ramps and leaves it too little area. A carved channel keeps its carve between its banks. See [Limitations](limitations.md#narrow-channels-and-the-dems-cells). |
@@ -127,7 +126,7 @@ a higher MCC being a better map: differences of a few thousandths are within the
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `Depth_Varying_N` | False | Make Manning's n change with the depth of the water, as below (True before 2026-10-25). False keeps each land cover's n at every depth. |
+| `Depth_Varying_N` | False | Make Manning's n change with the depth of the water. False keeps each land cover's n at every depth. |
 | `k_decay` | 6.0 | How quickly n falls to its deep-water value as the water deepens, per metre. Above 0. |
 | `shallow_factor` | 2.0 | n at the water's edge, as a multiple of the table's n. At least 1. |
 | `deep_factor` | 1.0 | n in deep water, as a multiple of the table's n. Above 0 and at most 1. |
@@ -159,7 +158,7 @@ See [Bathymetry](bathymetry.md) for how these are used.
 | Key | Default | Description |
 | --- | --- | --- |
 | `BATHY_Out_File` | | Where to write the bathymetry raster. Giving it turns the bathymetry on, which needs `Flow_File_BF` or the drainage-area depth law (`coefficient_depth`, `exponent_depth`) for the depth (without either, ARC warns and writes no bathymetry: the width law alone gives no depth), and `StrmShp_File` with `reach_id` and `downstream_reach_id`. `AROutBATHY` is another name for it, and wins if both are given. |
-| `Bathy_Use_Banks` | False | False: the DEM at the stream cell is the water's surface at `Flow_File_BF`, the banks are the DEM's water's edge, and the channel is carved below it. True: the banks are the bank tops, mask or not, the bank elevation is the level `Flow_File_BF` fills the channel to, and the channel is rebuilt below it. See [Find the banks](bathymetry.md#1-find-the-banks). |
+| `Bathy_Use_Banks` | False | False: the DEM at the stream cell is the water's surface at `Flow_File_BF`, and the channel is carved below it, between the DEM's water's edges; the rating curves divide the carved cross section at the bank tops all the same. True: the banks are the bank tops, mask or not, the bank elevation is the level `Flow_File_BF` fills the channel to, and the channel is rebuilt below it. See [Find the banks](bathymetry.md#1-find-the-banks). |
 | `Bathy_Trap_H` | 0.2 | The share of the channel's top width that each sloping side of its trapezoid takes, from 0 (a rectangle) to 0.5 (a triangle). |
 | `Bathy_Smooth_Banks` | True | Smooth each reach's channel widths and bank elevations. False keeps each cross section's own. |
 | `Bathy_Smooth_Bed` | True, or False with `Standard_Step` or `Bathy_Use_Banks` | Smooth each reach's channel bed with a running median. False keeps each cross section's own bed (missing depths are still filled in), and turns `Bathy_Bed_Cap` off. With `Standard_Step` or `Bathy_Use_Banks` it is off unless given: each channel then carries the baseflow at its banks, where a smoothed bed leaves narrow channels too shallow and wide ones too deep. The standard step's water rides above the dips that leaves; without it, each rating curve's water lands metres above or below its banks (see [Bathymetry](bathymetry.md#4-smooth-the-bed-along-each-reach)). |

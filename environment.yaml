@@ -10,15 +10,16 @@ dependencies:
   - pyogrio
   - gdal
   - pip
+  # netCDF4, xarray, zarr and s3fs: the flow file tool (Create_ARC_Streamflow_Input) only
   - netCDF4
   - xarray
+  - zarr
+  - s3fs
   - geojson
   - pyyaml
   - networkx
-  - dask
   - numba
   - scipy
   - tqdm
   - pyproj
   - shapely
-  - s3fs

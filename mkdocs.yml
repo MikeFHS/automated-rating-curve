@@ -38,6 +38,7 @@ extra_javascript:
 
 extra_css:
   - https://unpkg.com/katex@0/dist/katex.min.css
+  - stylesheets/api.css
 
 nav:
   - Home: index.md
@@ -46,11 +47,14 @@ nav:
     - Getting Started: getting_started.md
     - Model Input File: model_input_file.md
     - Outputs: outputs.md
+    - Limitations: limitations.md
     - API: api.md
   - Technical Details:
     - Key Concepts: miscellaneous.md
     - Bathymetry: bathymetry.md
     - Stream Slope Methods: stream_slope_methods.md
+    - Standard Step: standard_step.md
+    - Valley Cross Sections: valley_sections.md
     - Running the Tests: testing_unit_tests.md
   - Examples:
     - Produce Streamflow Inputs: produce_streamflow_inputs.md
@@ -69,14 +73,25 @@ plugins:
           paths: [src]
           options:
             filters:
-              - "!^_[^_]"
+              - "!^_"
+            heading_level: 3
             show_signature: true
-            show_signature_annotations: true
+            # The parameter tables give the types, so the signatures leave them out
+            show_signature_annotations: false
+            # Each signature in its own code block, one parameter a line (formatted by ruff)
+            separate_signature: true
+            line_length: 80
+            signature_crossrefs: true
             docstring_style: numpy
-            docstring_section_style: table
+            docstring_section_style: spacy
             show_source: false
             show_root_heading: true
             show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_labels: false
             merge_init_into_class: true
+            members_order: source
             annotations_path: brief
-            show_if_no_docstring: true
+            # Configs' fields have no docstrings: Model Input File describes them
+            show_if_no_docstring: false

@@ -95,12 +95,14 @@ def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
 
 def channel_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezoid_height: float,
                   mannings_n: float = DEFAULT_MANNINGS_N, roughness: DepthRoughness | None = None,
-                  slope_factor: float = 1.0, bank_elevation: float | None = None) -> float:
+                  slope_factor: float = 1.0, bank_elevation: float | None = None,
+                  divide: Banks | None = None) -> float:
     """How deep the channel is carved below its reference level, bank_elevation or else the stream cell's elevation,
     for the cross section to carry the baseflow q there by its rating curve's hydraulics (see the notes above and
     arc.bathymetry.channel.carved_depth): with roughness, the rating curves' DepthRoughness (None for a constant n),
-    and slope_factor. The trapezoid's depth with a constant mannings_n starts the search, and is the depth of a cross
-    section without Manning's n to carve with.
+    and slope_factor, divided at `divide` if the hydraulics don't divide it at the banks it's carved between. The
+    trapezoid's depth with a constant mannings_n starts the search, and is the depth of a cross section without
+    Manning's n to carve with.
 
     Zero for no baseflow, and for a channel without valid banks where the cross section isn't on the raster either
     side of the stream cell. NaN for a slope that isn't positive.
@@ -120,20 +122,21 @@ def channel_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezo
     
     from arc.bathymetry.channel import carved_depth  # which imports this module
     return carved_depth(xs, banks, q, slope, guess, trapezoid_height=trapezoid_height, roughness=roughness,
-                        slope_factor=slope_factor, bank_elevation=bank_elevation)
+                        slope_factor=slope_factor, bank_elevation=bank_elevation, divide=divide)
 
 
 def bathymetry_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezoid_height: float,
                      target_depth: float | None = None, mannings_n: float = DEFAULT_MANNINGS_N,
                      roughness: DepthRoughness | None = None, slope_factor: float = 1.0,
-                     bank_elevation: float | None = None) -> BathymetryDepth:
+                     bank_elevation: float | None = None, divide: Banks | None = None) -> BathymetryDepth:
     """The depth to carve the channel to: a drainage-area target depth if there's a valid one, which always applies,
-    or otherwise channel_depth for the baseflow, which applies only with baseflow."""
+    or otherwise channel_depth for the baseflow, which applies only with baseflow (`divide` as it takes it)."""
     if target_depth is not None and math.isfinite(target_depth) and target_depth > 0.0:
         return BathymetryDepth(float(target_depth), True, "target_depth")
     
     depth = channel_depth(xs, banks, q, slope, trapezoid_height=trapezoid_height, mannings_n=mannings_n,
-                          roughness=roughness, slope_factor=slope_factor, bank_elevation=bank_elevation)
+                          roughness=roughness, slope_factor=slope_factor, bank_elevation=bank_elevation,
+                          divide=divide)
     return BathymetryDepth(depth, bool(q > 0.0), "baseflow_manning")
 
 

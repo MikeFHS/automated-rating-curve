@@ -5,6 +5,31 @@ channel's top width is the sum of the two. find_banks tries the methods in turn 
 channel at least two ordinate spacings wide. Where none does, a drainage-area width prior that says the channel is no
 wider than a cell, which no DEM can show, makes it the prior's width. A channel whose width is given, by a prior or a
 reach's median width, can be any width, narrower than a cell included: its banks are wherever the width puts them.
+
+What a bank is depends on what the banks are for (find_banks' `at`, which arc.pipeline.banks_at picks):
+
+- "water" (bathymetry, Bathy_Use_Banks False): the DEM is the water's surface, and the banks are where it meets the
+  land: half way between the last cell out from the stream cell no more than FLAT_WATER_DEPTH above the water level
+  and the first above it, so that a channel the carve fills is only ever the DEM's water, and the cells where land
+  meets water keep their elevations. Never width-to-depth, which finds the bank tops. The water mask only stops the
+  DEM's water running more than MASK_REACH cells past its edge, as across a floodplain at the water's level.
+  These are the carve's banks: the hydraulics divide the carved cross section at the bank tops all the same
+  ("divide", arc.pipeline.dividing_banks).
+- "tops" (bathymetry, Bathy_Use_Banks True): the banks are the bankfull channel's tops, where the water spills out of
+  it, mask or not: width-to-depth over the stages above the water level, never stopping inside the DEM's water, and
+  never above the water that carries the cross section's maximum flow (`ceiling`): a bank above it is a valley wall,
+  which would carve the valley. Where it finds none, the water's edges, the DEM's or the mask's.
+- "divide" (no bathymetry): the banks only divide the cross section into channel and overbanks, which the
+  divided-channel method does at the bank tops; the mask's edge, the low water's, would leave the bank faces above it
+  in the overbanks. So the bank tops as with "tops", no higher than the maximum flow's water: a bank above it is still
+  a valley wall, which would give the floodplain below it the water's n. But where the ratio is still falling at that
+  water, the channel holds it, and the banks are its edges rather than the highest stage's below it, so that the
+  hydraulics don't divide it.
+- "any": the mask or the land cover, then width-to-depth, then flat water. find_banks' default, and the search ARC
+  ran without bathymetry before 0.5.0.
+
+The water level is the DEM's water's surface (_water_level): beside a stream cell burned below it, the mask's flat
+water next to it, and otherwise the stream cell's own elevation.
 """
 from __future__ import annotations
 
@@ -30,9 +55,14 @@ MAX_BANK_HEIGHT = 25.0
 # The width-to-depth search's stages are at least this far apart (m), so that it looks past the centimetres of noise
 # on a DEM's water or bed (see _width_to_depth_banks)
 MIN_STAGE_STEP = 0.1
+# With the banks at the water's edge, how many cells past the mask's edge the DEM's water may run before the mask's edge
+# stops it: farther, it is running across a floodplain at the water's level
+MASK_REACH = 2
 
-METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width")
-_NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH = range(6)
+METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width", "water_edge")
+_NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH, _WATER_EDGE = range(7)
+AT = ("any", "water", "tops", "divide")  # find_banks' `at`
+_ANY, _WATER, _TOPS, _DIVIDE = range(4)
 _NO_LAND_COVER = np.empty(0)
 
 
@@ -151,12 +181,15 @@ def _sift_down(heap, i, size):
 
 
 @njit(cache=True, error_model="numpy")
-def _width_to_depth_banks(elevations, spacing):
+def _width_to_depth_banks(elevations, spacing, lowest=0.0, keep_last=False):
     """The banks at the stage where the ratio of top width to depth stops falling, and that stage's height above the
-    stream cell, or NaNs. The stages tried are the heights of the ordinates above the stream cell, lowest first, out
-    on each side to the first more than `MAX_BANK_HEIGHT` above it: as far as water that high could reach, which is as
-    far as any stage's width looks. A stage less than `MIN_STAGE_STEP` above the last one tried is skipped, unless it's
-    the highest (a short or gently rising floodplain may have no ordinate that much above the bank). This handles DEM noise well. 
+    stream cell, or NaNs. The stages tried are the heights of the ordinates above the stream cell (above `lowest`
+    metres above it), lowest first, out on each side to the first more than `MAX_BANK_HEIGHT` above it: as far as water
+    that high could reach, which is as far as any stage's width looks. A stage less than `MIN_STAGE_STEP` above the last
+    one tried is skipped, unless it's the highest (a short or gently rising floodplain may have no ordinate that much
+    above the bank). This handles DEM noise well. The depth in the ratio is always the stage's height above the stream
+    cell. If the ratio never rises, NaNs, or with keep_last, the highest stage's banks (where walls, as below a
+    ceiling, end the stages before the water spills).
 
     The search usually stops a few stages up, so the heights come off a heap as needed rather than all being sorted.
     """
@@ -172,7 +205,8 @@ def _width_to_depth_banks(elevations, spacing):
             height = float(elevations[j]) - thalweg
             if height > MAX_BANK_HEIGHT:
                 break
-            if height > 0.0:
+
+            if height > lowest:
                 heap[size] = height
                 size += 1
                 
@@ -199,12 +233,81 @@ def _width_to_depth_banks(elevations, spacing):
         
         last_left, last_right, last_height, last_ratio = left, right, height, ratio
 
+    if keep_last:
+        return last_left, last_right, last_height
+    
     return np.nan, np.nan, np.nan
 
 
 @njit(cache=True, error_model="numpy")
 def _flat_water_banks(elevations, spacing):
     return top_widths(elevations, spacing, float(elevations[elevations.size // 2]) + FLAT_WATER_DEPTH)
+
+
+@njit(cache=True, error_model="numpy")
+def _water_level(elevations, land_cover, water):
+    """The DEM's water's surface: where the mask's (or the land cover's) water next to the stream cell is flat, two
+    cells or more within FLAT_WATER_DEPTH of each other on a side, their median (the lower side's), as beside a stream
+    cell burned below the water; otherwise the stream cell's own elevation, as without a mask. A cell half water and
+    half bank at the water's edge stands above the water, and the floodplain a mask that spills takes in higher still:
+    neither makes a flat run, so neither raises the level."""
+    center = elevations.size // 2
+    stream = float(elevations[center])
+    if land_cover.size != elevations.size:
+        return stream
+    
+    level = np.inf
+    for step in (-1, 1):
+        end = elevations.size - 1 if step > 0 else 0
+        run = np.empty(elevations.size)
+        count = 0
+        j = center
+        while j != end:
+            j += step
+            if land_cover[j] != water or not elevations[j] < OFF_RASTER_ELEVATION:
+                break
+
+            if count and abs(elevations[j] - run[0]) > FLAT_WATER_DEPTH:
+                break
+
+            run[count] = elevations[j]
+            count += 1
+
+        if count >= 2:
+            level = min(level, float(np.median(run[:count])))
+
+    return max(level, stream) if level < np.inf else stream
+
+
+@njit(cache=True, error_model="numpy")
+def _water_edge_banks(elevations, spacing, level):
+    """The DEM's water's edges: each half way between the last ordinate out from the stream cell no more than
+    FLAT_WATER_DEPTH above the water level and the first above it, so that n ordinates of water make a channel n
+    spacings wide and the first of land stays outside it. NaN on a side whose water runs off the raster."""
+    center = elevations.size // 2
+    out = np.full(2, np.nan)
+    for side, step in enumerate((-1, 1)):
+        end = elevations.size - 1 if step > 0 else 0
+        j = center
+        while j != end and elevations[j + step] < OFF_RASTER_ELEVATION and elevations[j + step] <= level + FLAT_WATER_DEPTH:
+            j += step
+
+        if j != end and elevations[j + step] < OFF_RASTER_ELEVATION:
+            out[side] = (abs(j - center) + 0.5) * spacing
+
+    return out[0], out[1]
+
+
+@njit(cache=True, error_model="numpy")
+def _below(elevations, height):
+    """The ordinates, with those more than `height` above the stream cell made walls (no stage reaches past them)."""
+    out = elevations.copy()
+    center = elevations.size // 2
+    for j in range(elevations.size):
+        if elevations[j] - elevations[center] > height:
+            out[j] = OFF_RASTER_ELEVATION
+
+    return out
 
 
 @njit(cache=True, error_model="numpy")
@@ -266,9 +369,72 @@ def _held(elevations, spacing, left, right):
 
 
 @njit(cache=True, error_model="numpy")
-def _search(elevations, spacing, land_cover, water, target_width):
+def _search_water(elevations, spacing, land_cover, water):
+    """The banks at the DEM's water's edge, the mask's edge stopping it MASK_REACH cells past it (see the notes above),
+    or NaNs."""
+    level = _water_level(elevations, land_cover, water)
+    left, right = _held(elevations, spacing, *_water_edge_banks(elevations, spacing, level))
+    if land_cover.size == elevations.size:
+        mask_left, mask_right = _land_cover_banks(land_cover, water, spacing)
+        if not left >= 0.0 or (mask_left >= 0.0 and left > mask_left + MASK_REACH * spacing):
+            left = mask_left
+        if not right >= 0.0 or (mask_right >= 0.0 and right > mask_right + MASK_REACH * spacing):
+            right = mask_right
+
+    return left, right
+
+
+@njit(cache=True, error_model="numpy")
+def _search_tops(elevations, spacing, land_cover, water, ceiling, keep_last):
+    """The bank tops above the water level and below `ceiling` (see the notes above), the method that found them, and
+    the distances; the water's edges (the DEM's, or else the mask's) where width-to-depth finds none. Where the ratio is
+    still falling at `ceiling`, the banks are the highest stage's below it with `keep_last` (for the carve, a bank on
+    the ground), and otherwise `ceiling`'s own water's edges (for the hydraulics, which then don't divide that water)."""
+    center = elevations.size // 2
+    level = _water_level(elevations, land_cover, water)
+    edge_left, edge_right = _held(elevations, spacing, *top_widths(elevations, spacing, level + FLAT_WATER_DEPTH))
+    mask_left, mask_right = np.nan, np.nan
+    if land_cover.size == elevations.size:
+        mask_left, mask_right = _land_cover_banks(land_cover, water, spacing)
+
+    lowest = max(level - float(elevations[center]), 0.0) + FLAT_WATER_DEPTH
+    stages = elevations if not ceiling >= 0.0 else _below(elevations, ceiling)
+    left, right, _ = _width_to_depth_banks(stages, spacing, lowest, keep_last and ceiling >= 0.0)
+    if not keep_last and not (left >= 0.0 and right >= 0.0) and ceiling > lowest:
+        left, right = top_widths(elevations, spacing, float(elevations[center]) + min(ceiling, MAX_BANK_HEIGHT))
+
+    left, right = _held(elevations, spacing, left, right)
+    # never inside the DEM's water: the water fills its own channel before it spills
+    inside = edge_left >= 0.0 and edge_right >= 0.0 and (left < edge_left - spacing or right < edge_right - spacing)
+    if _resolved(left, right, spacing) and not inside:
+        return _WIDTH_TO_DEPTH, left, right
+    if _resolved(edge_left, edge_right, spacing):
+        return _WATER_EDGE, edge_left, edge_right
+    if _resolved(mask_left, mask_right, spacing):
+        return _LAND_COVER, mask_left, mask_right
+    
+    return _NONE, np.nan, np.nan
+
+
+@njit(cache=True, error_model="numpy")
+def _search(elevations, spacing, land_cover, water, target_width, at=_ANY, ceiling=np.nan):
     """The method find_banks uses, and the distances to the left and right banks."""
     center = elevations.size // 2
+    if at == _WATER:
+        left, right = _search_water(elevations, spacing, land_cover, water)
+        if _resolved(left, right, spacing):
+            return _WATER_EDGE, left, right
+    elif at == _TOPS or at == _DIVIDE:
+        method, left, right = _search_tops(elevations, spacing, land_cover, water, ceiling, at == _TOPS)
+        if method != _NONE:
+            return method, left, right
+        
+    if at != _ANY:
+        if _is_single_cell(target_width, spacing, _on_raster_ordinates(elevations, center, -1),
+                           _on_raster_ordinates(elevations, center, 1)):
+            return _SINGLE_CELL, 0.5 * target_width, 0.5 * target_width
+        return _NONE, np.nan, np.nan
+
     if land_cover.size == elevations.size:
         left, right = _land_cover_banks(land_cover, water, spacing)
         if _resolved(left, right, spacing):
@@ -309,35 +475,46 @@ def _with_elevations(elevations, spacing, method, left, right):
 
 
 @njit(cache=True, error_model="numpy")
-def _find_banks(elevations, spacing, land_cover, water, target_width):
+def _find_banks(elevations, spacing, land_cover, water, target_width, at=_ANY, ceiling=np.nan):
     """find_banks for arrays: the method used, the distances to the left and right banks, and their elevations."""
-    method, left, right = _search(elevations, spacing, land_cover, water, target_width)
+    method, left, right = _search(elevations, spacing, land_cover, water, target_width, at, ceiling)
     return _with_elevations(elevations, spacing, method, left, right)
 
 
 def find_banks(xs: XSection, *, target_width: float | None = None, land_cover: np.ndarray | None = None,
-               water_value: float | None = None) -> Banks:
-    """Find a cross section's banks, trying in turn:
+               water_value: float | None = None, at: str = "any", ceiling: float | None = None) -> Banks:
+    """Find a cross section's banks (see the notes above for `at`).
+
+    With at="any", it tries in turn:
 
     1. The land cover, or a water mask (water_value 1), if given (see banks_by_land_cover).
     2. The stage where the ratio of top width to depth stops falling (see banks_by_width_to_depth_ratio).
     3. The water's edges 0.1 m above the stream cell (see banks_by_flat_water).
 
+    With at="water", the DEM's water's edges, held by the mask; with at="tops", width-to-depth over the stages above the
+    water level and below `ceiling` (metres above the stream cell), or the water's edges; with at="divide", the same,
+    but `ceiling`'s water's edges where the ratio is still falling there.
+
     It keeps the first to resolve a channel at least two ordinate spacings wide. If none does, a drainage-area width
     prior (target_width) no wider than one ordinate spacing makes a single-cell channel that wide: a channel too narrow
-    for any DEM to show. Otherwise the banks are not valid, and the bathymetry gives the channel its reach's median
-    width, or its prior's, or one cell (single_cell_banks). None of 1 to 3 gives a bank on a side whose water runs off
-    the raster: its edge is the raster's, not a bank. Nor do 2 and 3 on a side whose water drains away from the stream,
-    over ground more than MAX_BANK_DIP below it.
+    for any DEM to show. Otherwise the banks are not valid: the bathymetry gives the channel its reach's median width,
+    or its prior's, or one cell (single_cell_banks), and without it the cross section is all channel. No method gives a
+    bank on a side whose water runs off the raster: its edge is the raster's, not a bank. Nor do the DEM's on a side
+    whose water drains away from the stream, over ground more than MAX_BANK_DIP below it.
 
     The prior comes last so that it doesn't override the banks the water mask, the land cover or the DEM find.
     """
+    if at not in AT:
+        raise ValueError(f"at must be one of {', '.join(AT)}, not {at!r}.")
+    
     if land_cover is None:
         values, water = _NO_LAND_COVER, np.nan
     else:
         values, water = _land_cover_values(xs, land_cover, water_value)
+        
     method, left, right, left_elevation, right_elevation = _find_banks(
-        xs.elevations, float(xs.ordinate_distance), values, water, _optional(target_width))
+        xs.elevations, float(xs.ordinate_distance), values, water, _optional(target_width), AT.index(at),
+        _optional(ceiling))
     return Banks(METHODS[method], left, right, left_elevation, right_elevation, method == _SINGLE_CELL,
                  method != _NONE)
 

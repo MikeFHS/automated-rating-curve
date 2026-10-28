@@ -170,12 +170,12 @@ class Raster:
     @classmethod
     def write_array(cls, array: np.ndarray, reference: Raster, output_path: os.PathLike, *,
                     dtype: np.dtype | type | None = None, compression: str | None = "ZSTD",
-                    nodata_value: float | None = None) -> Raster:
+                    nodata_value: float | None = None, metadata: dict[str, str] | None = None) -> Raster:
         """Write a single-band GeoTIFF on the reference raster's grid, and return it.
 
-        A compressed raster is written in 512 x 512 tiles without a predictor, which suits ARC's bathymetry and flood
-        rasters: they are almost all empty, and tiles hand the compressor whole empty blocks. A nodata value is only
-        set if given.
+        A compressed raster is written in 512 x 512 tiles without a predictor, which suits ARC's bathymetry raster: it
+        is almost all empty, and tiles hand the compressor whole empty blocks. A nodata value is only set if given, and
+        metadata, keys and values, go in the file's tags (as arc.outputs.tables.run_metadata gives them).
         """
         array = np.asarray(array)
         if array.shape != reference.shape:
@@ -196,6 +196,9 @@ class Raster:
                            eType=gdal_array.NumericTypeCodeToGDALTypeCode(dtype), options=options)
         ds.SetGeoTransform(reference.geotransform)
         ds.SetProjection(reference.projection)
+        if metadata:
+            ds.SetMetadata(dict(metadata))
+            
         band = ds.GetRasterBand(1)
         if nodata_value is not None:
             band.SetNoDataValue(float(nodata_value))

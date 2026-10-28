@@ -1,5 +1,5 @@
- [build-system]
-requires = ["setuptools"]
+[build-system]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,19 +13,14 @@ dependencies = [
   "geopandas",
   "pyogrio",
   "gdal",
-  "pip",
-  "netCDF4",
-  "xarray",
   "geojson",
   "networkx",
-  "dask",
   "numba",
   "pyyaml",
   "scipy",
   "tqdm",
   "pyproj",
   "shapely",
-  "s3fs"
 ]
 requires-python = ">= 3.10"
 authors = [
@@ -40,16 +35,30 @@ maintainers = [
     {name = "Drew Loney", email = "drew@follumhydro.com"},
     {name = "Louis 'Ricky' Rosas", email = "lrr43@byu.edu"},
 ]
-license = { text = "BSD-3-Clause" }
+license = "GPL-3.0-only"
+license-files = ["license.txt"]
 readme = "README.md"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Hydrology",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+# Create_ARC_Streamflow_Input: GEOGLOWS flows from netCDF files and from the zarr stores on S3
+streamflow = [
+  "xarray",
+  "netCDF4",
+  "zarr",
+  "s3fs",
 ]
 
 [tool.setuptools.dynamic]

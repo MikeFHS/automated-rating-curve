@@ -37,6 +37,11 @@ class XSection:
     # With Valley_Sections, the overbanks from lines out from the banks square to the valley (arc.xsection.valley):
     # when it's set, the hydraulics take the channel from this cross section and the overbanks from those
     valley: "Valley | None" = field(init=False, default=None)
+    # With Subcell_Channels (arc.xsection.subcell): the ordinates as they were before the bathymetry first carved them,
+    # and the banks it carved between, and whether the profile has the channel reconstructed below the cell scale
+    ground: np.ndarray | None = field(init=False, default=None)
+    carved_banks: tuple[float, float] | None = field(init=False, default=None)
+    subcell: bool = field(init=False, default=False)
     # The last spliced profile and what it was spliced from (arc.hydraulics.hydraulic_profile), which it knows by
     # identity: arrays changed in place after a splice aren't seen, so replace them instead
     _spliced: tuple | None = field(init=False, default=None)

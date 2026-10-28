@@ -57,7 +57,7 @@ The rating curves change in two ways:
 - The water surface at each flow is the standard step's (held up to the baseflow), and the velocity and top width are
   the cross section's own there.
 
-The water usually stands higher than at normal depth, about a tenth of the depth on the FIM sites, because the
+The water usually stands higher than at normal depth because the
 narrowest cross sections hold it up. Take that into account when choosing Manning's n and `slope_adjustment_factor`.
 
 ## VDT database
@@ -131,7 +131,7 @@ decided for it, then a row for each cell skipped for want of a slope.
 | `Baseflow`, `Max_Flow` | The cell's flows from the flow file (m³/s). |
 | `Slope`, `Slope_Source` | The slope (m/m), and where it came from: `cell` (its own), `reach` (its reach's, the cell having none of its own) or `neighbours` (its reach having none, its neighbours' in the stream network). |
 | `Bank_Method` | How its banks were found: `width_to_depth_ratio` (the bank tops, with `Bathy_Use_Banks` or without bathymetry), `water_edge` (the DEM's water's edge: with bathymetry and without `Bathy_Use_Banks`, or where no bank tops were found), `land_cover` (the water mask's or the land cover's water's edge, where neither the bank tops nor the DEM's water's edge are found), `target_width` (the width power law, none being found), `single_cell` (one cell wide, none being found) or `none`. ARC before 0.5.0 also wrote `flat_water`, the DEM's water 0.1 m above the stream cell. |
-| `Channel_Width` | The width between the banks the hydraulics use (m). |
+| `Channel_Width` | The width between the banks the hydraulics use (m): the bank tops, also without `Bathy_Use_Banks`, where `Bank_Method` is the carve's `water_edge`. |
 | `Bank_Elevation` | The smoothed bank elevation, with bathymetry (m). |
 | `Carve`, `Carve_Depth` | How the bathymetry carved the channel, and how deep (m): `baseflow` (the depth that carries `Flow_File_BF`), `depth_law` (the drainage-area depth), `stream_level` (the baseflow at the stream cell's level, see `Bathy_Bankless_Max_Baseflow`) or `none`; empty without bathymetry. |
 | `Valley_Section` | Whether its overbanks were taken square to the valley (`Valley_Sections`). |

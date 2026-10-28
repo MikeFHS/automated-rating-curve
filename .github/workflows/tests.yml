@@ -1,0 +1,56 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same pull request or branch cancels the run still going
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        # A login shell, so that the conda environment is active in every step
+        shell: bash -el {0}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the conda environment from environment.yaml
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          miniforge-version: latest
+          environment-file: environment.yaml
+          activate-environment: arc
+          conda-remove-defaults: "true"
+
+      - name: Install ARC and the test tools
+        run: |
+          conda install --yes --channel conda-forge pytest matplotlib
+          python -m pip install --no-deps -e .
+
+      - name: Show the environment
+        run: conda list
+
+      - name: Unit tests
+        run: pytest testing -ra
+
+      - name: End-to-end tests on synthetic channels
+        env:
+          MPLBACKEND: Agg
+        run: pytest testing/unit_test_with_*.py -ra

@@ -22,8 +22,8 @@ _ENTRY_POINTS = {'Arc': '.arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
                  'Create_ARC_Streamflow_Input': '.streamflow_processing',
                  'Process_ARC_Geospatial_Data': '.process_geospatial_data'}
 
-__all__ = ['Arc', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector']
-__version__ = '0.4.0'
+__all__ = ['LOG', 'Arc', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector']
+__version__ = '0.5.0'
 
 
 def __getattr__(name):

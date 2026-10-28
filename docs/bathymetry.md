@@ -98,14 +98,20 @@ water. Where the water mask's (or the land cover's) water next to the stream cel
 above the water, and the floodplain a mask that spills onto it higher still, so neither raises the level.
 
 **Without `Bathy_Use_Banks`: the DEM's water's edge.** The DEM shows the water, so the banks are where the water meets
-the land: half way between the last cell out from the stream cell no more than 0.1 m above the water level and the
-first cell above it, so that n cells of water make a channel n cells wide, and the first cell of land stays outside the
+the land: half way between the last cell out from the stream cell no more than 0.1 m above the water level and the first
+cell above it, so that n cells of water make a channel n cells wide, and the first cell of land stays outside the
 channel and keeps its elevation. The width-to-depth ratio isn't used: it finds the bank tops, and carving below the
 water as wide as them lowers the bank faces. A water mask only stops the DEM's water running more than two cells past
 the mask's edge, as it does across a floodplain at the water's level; a mask wider than the DEM's water doesn't widen
 the channel. On 2,688 synthetic channels with exact, narrow, wide, shifted and spilling masks, the carve lowered land
 above the water at 4% of them, against 29% with an exact mask and 94% with a wrong one for the order below; on the 68
-FIM sites, at none of the cross sections, against 48%.
+FIM sites, at none of the cross sections, against 48%. The carve stops at the water's edge, but the channel doesn't: the
+hydraulics divide the carved cross section at its bank tops, found as without bathymetry (below), and give the water's n
+out to them, so that the bank faces above the water carry the channel's water at higher flows rather than the
+floodplain's. On the synthetic channels whose carve resolved, dividing at the water's edge left the water at twice
+bankfull more than 0.1 m off the same carve divided at the true bank tops at 20% of them, against 3% at the bank tops;
+on six real sites it moved the division at 30 to 57% of the cells, and lowered the water at the maximum flow a median 0
+to 8 cm.
 
 **With `Bathy_Use_Banks`: the bank tops.** The banks are where the water spills from the bankfull channel, mask or
 not: the width-to-depth ratio (method 2 below) over the levels above the water level, never stopping inside the DEM's
@@ -115,21 +121,21 @@ edges are the banks. Where it finds no banks, they are the water's edges (the DE
 channels the bankfull level was within 0.3 m of the truth at 63% of them, against 21% for the mask's edge, and on the
 FIM sites banks above the maximum flow's water fell from 11% of cross sections to 0.4%.
 
-**Without bathymetry: the bank tops too.** The banks divide each cross section into its channel and overbanks: the
-channel takes the water's Manning's n, the conveyance is the sum of the three parts', and with
-[Valley_Sections](valley_sections.md) the overbank lines start at the banks and the valley is taken over
-`Valley_Dir_Widths` times their width. The divided-channel method divides at the bank tops, so ARC finds them as with
-`Bathy_Use_Banks`, mask or not, and no higher than the maximum flow's water: on five FIM sites run without bathymetry, 9
-to 28% of the banks found without that limit were above it, valley walls that would give the floodplain below them the
-water's n and stretch the valley's window. Where the ratio is still falling at that water, the channel holds it, and the
-banks are its edges (with `Bathy_Use_Banks`, the highest level's below it, a bank on the ground), so that the hydraulics
-don't divide it. Water the standard step backs up above it, behind a lake or a confluence, is divided there (see
-[Limitations](limitations.md)). A run that only builds representative cross sections reads no maximum flow, so its banks
-aren't held below it. Before 0.5.0 it took the water mask's edge first, the low water's, partway down the bank faces. On
-the synthetic channels with the DEM showing the bed, those banks were within 0.3 m of the bank tops at 19% of them (3%
-with an exact mask), against 56%. The bank faces above the low water went to the overbanks with the land's n, so the
-water at twice bankfull was more than 0.1 m off at 35% of them, against 13%. And the valley's window fell to about 10
-channel widths, which turned its direction a median 8° on natural meanders.
+**Without bathymetry: the bank tops too.** The banks divide each cross section into its channel and overbanks (in every
+mode, the hydraulics divide at the bank tops): the channel takes the water's Manning's n, the conveyance is the sum of
+the three parts', and with [Valley_Sections](valley_sections.md) the overbank lines start at the banks and the valley is
+taken over `Valley_Dir_Widths` times their width. The divided-channel method divides at the bank tops, so ARC finds them
+as with `Bathy_Use_Banks`, mask or not, and no higher than the maximum flow's water: on five FIM sites run without
+bathymetry, 9 to 28% of the banks found without that limit were above it, valley walls that would give the floodplain
+below them the water's n and stretch the valley's window. Where the ratio is still falling at that water, the channel
+holds it, and the banks are its edges (with `Bathy_Use_Banks`, the highest level's below it, a bank on the ground), so
+that the hydraulics don't divide it. Water the standard step backs up above it, behind a lake or a confluence, is
+divided there (see [Limitations](limitations.md)). A run that only builds representative cross sections reads no maximum
+flow, so its banks aren't held below it. Before 0.5.0 it took the water mask's edge first, the low water's, partway down
+the bank faces. On the synthetic channels with the DEM showing the bed, those banks were within 0.3 m of the bank tops
+at 19% of them (3% with an exact mask), against 56%. The bank faces above the low water went to the overbanks with the
+land's n, so the water at twice bankfull was more than 0.1 m off at 35% of them, against 13%. And the valley's window
+fell to about 10 channel widths, which turned its direction a median 8° on natural meanders.
 
 The methods the modes use:
 
