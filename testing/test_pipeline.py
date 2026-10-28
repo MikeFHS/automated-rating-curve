@@ -998,7 +998,8 @@ def test_no_bank_is_above_the_water_that_carries_the_maximum_flow(tmp_path: Path
     """The synthetic channel's maximum flows, 15 and 18 m^3/s, stand about a metre deep in it, below its 2 m bank
     tops, which by the maximum flow's reckoning are as much a valley wall as a bank: the banks are never above that
     water. With Bathy_Use_Banks they are the water's edges at the highest stage below it; without bathymetry, its own
-    edges, so that the hydraulics don't divide it, and the rating curve is Manning's for the whole trapezoid."""
+    edges, so that the hydraulics don't divide it, and the rating curve is Manning's for the whole trapezoid. Either
+    way the search found no bank top below that water (max_flow_water)."""
     inputs = write_channel(tmp_path)
     if bathymetry:
         inputs = {**inputs, "BATHY_Out_File": str(tmp_path / "bathy.tif"), "Bathy_Use_Banks": True}
@@ -1008,7 +1009,7 @@ def test_no_bank_is_above_the_water_that_carries_the_maximum_flow(tmp_path: Path
         section = results.sections[k]
         height = min(section.banks.left_elevation, section.banks.right_elevation) - section.dem_low_point
         top = normal_depth(Q_MAX[int(results.cells.comids[k])])
-        assert section.banks.method == "width_to_depth_ratio"
+        assert section.banks.method == "max_flow_water"
         if bathymetry:
             assert 0.5 < height <= top + 0.05
         else:

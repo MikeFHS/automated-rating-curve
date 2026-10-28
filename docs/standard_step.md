@@ -214,8 +214,7 @@ downstream, plus a bank height (see [Smooth the banks](bathymetry.md#2-smooth-th
 wherever the stream rises again after a low point, and then drops in a step, while each channel is still carved for
 its cell's slope. On the 68 FIM sites the friction with full banks came to 1.26 times the banks' fall, and the
 baseflow stood more than 0.1 m over the banks at 55% of cells, and more than 0.5 m over them at 23%. And where a bank
-rises going downstream, as where a reach's end is ramped up to meet a higher reach at a junction, the bed rises with
-it, and holds the water up behind it as a weir does.
+rises going downstream, as where a reach's end is ramped up to meet a higher reach at a junction, or where the banks' height rises along it, the bed rises with it, and holds the water up behind it as a weir does.
 
 ![The baseflow along a reach whose banks are level for 1 km at a time: by the standard step, held and not held](images/baseflow_hold.svg)
 

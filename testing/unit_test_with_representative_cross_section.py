@@ -242,7 +242,6 @@ def run_representative_case(output_root: Path) -> pd.DataFrame:
             "VDT_Database_NumIterations": 2,
         },
         quiet=True,
-        processes=1,
     ).run()
 
     return pd.read_csv(case_paths["representative_output_path"])

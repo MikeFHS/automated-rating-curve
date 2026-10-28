@@ -179,14 +179,15 @@ def test_on_a_dem_showing_the_bed_the_banks_are_the_tops_whatever_the_mask(mask:
 def test_where_the_channel_holds_the_maximum_flow_its_water_s_edges_are_the_banks() -> None:
     """The maximum flow stands 1.7 m deep in the 3 m channel, so no bank is above it in either mode: one there would be
     a valley wall for all the DEM can tell. With Bathy_Use_Banks the banks are the highest stage's below it, 1.5 m up
-    on the ground (16 m out); without bathymetry its own edges, 16.8 m out, so that the hydraulics don't divide it."""
+    on the ground (16 m out); without bathymetry its own edges, 16.8 m out, so that the hydraulics don't divide it.
+    Neither is a bank top (max_flow_water)."""
     z = bed_channel()
     section = XSection(z, np.full(z.size, 0.035), BED_SPACING)
 
     divided = find_banks(section, at="divide", ceiling=1.7)
     capped = find_banks(section, at="tops", ceiling=1.7)
 
-    assert divided.method == capped.method == "width_to_depth_ratio"
+    assert divided.method == capped.method == "max_flow_water"
     assert (divided.left, divided.right) == pytest.approx((16.8, 16.8))
     assert divided.left_elevation == pytest.approx(WATER + 1.7)
     assert (capped.left, capped.right) == pytest.approx((16.0, 16.0), abs=0.01)
@@ -203,7 +204,7 @@ def test_where_the_ratio_never_stops_falling_the_banks_are_the_maximum_flow_s_wa
     banks = find_banks(section, at="divide", ceiling=2.0)
     without = find_banks(section, at="divide")
 
-    assert banks.method == "width_to_depth_ratio"
+    assert banks.method == "max_flow_water"
     assert banks.left_elevation == pytest.approx(WATER + 2.0) and banks.right_elevation == pytest.approx(WATER + 2.0)
     assert without.method == "water_edge" and without.top_width < 0.5 * banks.top_width
 
@@ -216,6 +217,23 @@ def test_no_bank_top_above_the_water_that_carries_the_maximum_flow() -> None:
     z = channel(water_cells=3, bank=3.0, floodplain_slope=0.0, beyond=beyond)
     capped = find_banks(xs(z), at="tops", ceiling=4.0)
     assert min(capped.left_elevation, capped.right_elevation) == pytest.approx(WATER + 3.0, abs=0.15)
+
+
+def test_under_a_ceiling_a_bank_is_on_the_ground_however_steeply_it_rises_above_it() -> None:
+    """Water against a face rising 2 m a cell on the right, and a slope rising 0.3 m a cell on the left, below a
+    ceiling 1 m up: the ratio is still falling at the highest stage below it, 0.9 m up. That stage's right edge is
+    0.45 of the way up the face, 14.5 m out and 0.9 m up, not 10 m out at the water's level, where it was when the
+    ground above the ceiling was made a wall."""
+    z = np.full(81, WATER)
+    offsets = np.arange(81) - 40
+    z[offsets < 0] = WATER + 0.3 * -offsets[offsets < 0]
+    z[offsets >= 2] = WATER + 2.0 * (offsets[offsets >= 2] - 1)
+
+    banks = find_banks(xs(z), at="tops", ceiling=1.0)
+
+    assert banks.method == "max_flow_water"
+    assert (banks.left, banks.right) == pytest.approx((30.0, 14.5))
+    assert banks.left_elevation == pytest.approx(WATER + 0.9) and banks.right_elevation == pytest.approx(WATER + 0.9)
 
 
 def test_the_bank_tops_are_never_inside_the_water() -> None:

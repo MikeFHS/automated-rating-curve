@@ -57,7 +57,9 @@ to the water above or below.
 - **Canyons and levees.** With `Bathy_Use_Banks`, no bank is taken above the water that carries the maximum flow, so a
   canyon's bench above any flood isn't, but one the maximum flow reaches is, as is the rim of a trench burned into a
   conditioned DEM. A levee's crest is missed: the banks stop at the channel's edge, about 0.3 m below it. A compound
-  channel's banks are often its inner terrace, which can be the true bankfull level.
+  channel's banks are often its inner terrace, which can be the true bankfull level. A canyon that holds the maximum
+  flow shows no bank top, and takes the bank height and width of the reach's cross sections that do, or the site's
+  height where none does; but a hill's rim the water spills over, rising slowly towards the canyon, is taken for a bank.
 - **With a maximum flow below bankfull,** the banks are no higher than its water, below the true bank tops: with
   `Bathy_Use_Banks` at the highest level below it, and without bathymetry at its edges. The hydraulics divide any water
   the standard step backs up above it there, behind a lake, a confluence or an outlet's given water: on Chow's channel

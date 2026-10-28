@@ -49,11 +49,17 @@ def manning_flow(depth: float) -> float:
 LOW_FLOW, BANKFULL_FLOW = manning_flow(LOW_DEPTH), manning_flow(BANK)
 
 
-def height(distance: np.ndarray) -> np.ndarray:
-    """The true ground's height above the bed at a distance from the centre line."""
+def height(distance: np.ndarray, hill=0.0) -> np.ndarray:
+    """The true ground's height above the bed at a distance from the centre line, where a hill stands `hill` metres
+    above the bank tops: its walls rise 1:1 from them."""
     distance = np.abs(distance)
-    return (np.clip((distance - BOTTOM / 2) / SIDE, 0.0, BANK)
-            + 0.01 * np.clip(distance - (BOTTOM / 2 + SIDE * BANK), 0.0, None))
+    beyond = np.clip(distance - (BOTTOM / 2 + SIDE * BANK), 0.0, None)
+    return np.clip((distance - BOTTOM / 2) / SIDE, 0.0, BANK) + np.maximum(0.01 * beyond, np.minimum(beyond, hill))
+
+
+def hill_height(cols: np.ndarray) -> np.ndarray:
+    """A hill 20 m above the bank tops from column 150 to 250, rising and falling over 30 columns either side."""
+    return 20.0 * np.clip(np.minimum(cols - 120, 280 - cols) / 30.0, 0.0, 1.0)
 
 
 def true_bed(col) -> float:
@@ -61,12 +67,12 @@ def true_bed(col) -> float:
 
 
 def write_river(folder: Path, flow: float, *, use_banks: bool, mask: bool = False,
-                trapezoid_h: float = BANKS_TRAPEZOID_H) -> dict:
+                trapezoid_h: float = BANKS_TRAPEZOID_H, hill: bool = False) -> dict:
     """The river's inputs, in two reaches along row CENTER_ROW, with Flow_File_BF flow and a maximum flow of three
-    times bankfull."""
+    times bankfull, and with hill, through a canyon in a hill (hill_height)."""
     rows, cols = np.mgrid[0:ROWS, 0:COLS]
     water = np.abs(rows - CENTER_ROW) <= 10
-    ground = true_bed(cols) + height(rows - CENTER_ROW)
+    ground = true_bed(cols) + height(rows - CENTER_ROW, hill_height(cols) if hill else 0.0)
     dem = np.where(water, np.maximum(ground, true_bed(cols) + LOW_DEPTH), ground)
     streams = np.zeros(dem.shape, dtype=np.int32)
     streams[CENTER_ROW, 20:200] = 1
@@ -207,7 +213,8 @@ def run_canyon(folder: Path, flow: float) -> tuple:
 def test_in_a_canyon_no_bank_is_above_the_maximum_flow_s_water(tmp_path: Path) -> None:
     """The bench, 10 m up, is above the water that carries the maximum flow (900 m^3/s, about 5 m up the walls), so
     it isn't taken for the banks, as width-to-depth would take it: the banks are the walls at the highest stage below
-    that water, 4 m above the DEM's water, and the bed is built up 2 to 3 m above the DEM's water rather than 6 m. A
+    that water, 4 m above the DEM's water, and the bed is built up 2 to 3 m above the DEM's water rather than 6 m.
+    They aren't bank tops (max_flow_water), but with none anywhere on the site, they are all there is to go by. A
     hydro-conditioned DEM's channel (a burned line, or a river edited metres below its water) can look the same; where
     its maximum flow tops the trench, its rim is taken and its bed raised."""
     sections, dem, bathymetry = run_canyon(tmp_path, 300.0)
@@ -215,8 +222,27 @@ def test_in_a_canyon_no_bank_is_above_the_maximum_flow_s_water(tmp_path: Path) -
     assert 2.0 < np.nanmax(bathymetry - dem) < 3.0
     for section, _ in sections:
         water = dem[40, section.col]
-        assert section.banks.method == "width_to_depth_ratio"
+        assert section.banks.method == "max_flow_water"
         assert section.bank_elevation == pytest.approx(water + 4.0, abs=0.01)
+
+
+def test_a_canyon_through_a_hill_takes_the_bank_height_and_width_of_the_reach_around_it(tmp_path: Path) -> None:
+    """The river runs through a hill 20 m above its bank tops for 100 m, the canyon's walls rising 1:1 from them. The
+    maximum flow stands below the hill's top in the canyon, where the width-to-depth ratio is still falling: no bank
+    top (max_flow_water). Its bank height and width are those of the bank tops round it, 2.5 m above the bed and 30 m
+    apart, and its channel is carved as theirs is. Taking the highest stage below the maximum flow's water for a bank
+    top instead carved the canyon 38 m wide, and its bed 0.35 m high."""
+    options, flow = CASES["banks, bankfull flow"]
+
+    sections = [section for section, _ in run(tmp_path, flow, hill=True, **options)]
+
+    canyon = [section for section in sections if 150 <= section.col <= 250]
+    open_bed = np.median([carved_bed(section) for section in sections if not 100 <= section.col <= 300])
+    assert canyon and all(section.banks.method == "max_flow_water" for section in canyon)
+    for section in canyon:
+        assert section.bank_elevation - true_bed(section.col) == pytest.approx(BANK, abs=0.01)
+        assert section.carve_banks.top_width == pytest.approx(30.0, abs=0.01)
+        assert carved_bed(section) == pytest.approx(open_bed, abs=0.01)
 
 
 def test_with_bank_elevations_a_water_mask_s_banks_are_the_bank_tops(tmp_path: Path) -> None:

@@ -12,16 +12,21 @@ from arc.bathymetry.smoothing import (
     BANK_HEIGHT_WINDOW,
     JUNCTION_TAPER,
     MIN_BANK_OBSERVATIONS,
+    MIN_BANK_TOPS,
+    OUTLIER_SHARE,
+    OUTLIER_SPREADS,
     ReachSections,
     ReachWidths,
     SmoothedReach,
     below_ceilings,
+    consensus_heights,
     falling_fit,
     filter_reach_widths,
     order_reach,
     reach_bank_levels,
     reach_bank_observations,
     reach_network,
+    reach_widths,
     smooth_bank_elevations,
     taper_junctions,
 )
@@ -92,6 +97,38 @@ def test_banks_where_the_water_ends_are_kept_whatever_their_width() -> None:
     assert widths == ReachWidths(12.5, 20.0, 20.0)
     assert filtered[0] == banks[0]
     assert filtered[5].method == "target_width" and filtered[5].top_width == pytest.approx(20.0)
+
+
+def test_with_three_bank_tops_the_reach_s_widths_are_theirs() -> None:
+    """Bank tops 20, 20, 20, 24 and 40 m wide set the reach's widths. A search still falling at the maximum flow's
+    water, 60 m up a canyon's walls, the water's edge, 8 m, and a cross section without banks are all carved at the
+    tops' median, 20 m, as is the 40 m bank top, outside their 75th percentile. The bank tops within it keep their
+    own."""
+    sections, banks = map(list, zip(*(section_with_banks(w) for w in [20.0, 20.0, 20.0, 24.0, 40.0, 60.0, 8.0])))
+    banks = [b._replace(method=m) for b, m in zip(banks, ["width_to_depth_ratio"] * 5
+                                                    + ["max_flow_water", "water_edge"])]
+    sections.append(flat_section())
+    banks.append(NO_BANKS)
+
+    filtered, widths = filter_reach_widths(sections, banks)
+
+    assert widths == reach_widths(banks) == ReachWidths(20.0, 20.0, 24.0)
+    assert filtered[:4] == banks[:4]
+    assert all(b.method == "target_width" for b in filtered[4:])
+    assert [b.top_width for b in filtered[4:]] == pytest.approx([20.0] * 4)
+
+
+def test_with_fewer_than_three_bank_tops_every_valid_width_counts() -> None:
+    """Two bank tops aren't enough to go by: the widths are all the valid channels', and the water's edge keeps its
+    own."""
+    assert MIN_BANK_TOPS == 3
+    sections, banks = map(list, zip(*(section_with_banks(w) for w in [20.0, 20.0, 8.0, 8.0, 8.0])))
+    banks = [b._replace(method=m) for b, m in zip(banks, ["width_to_depth_ratio"] * 2 + ["water_edge"] * 3)]
+
+    filtered, widths = filter_reach_widths(sections, banks)
+
+    assert widths == reach_widths(banks) == ReachWidths(8.0, 8.0, 20.0)
+    assert filtered == banks
 
 
 def test_a_median_between_one_and_two_spacings_is_rebuilt_as_it_is() -> None:
@@ -208,6 +245,16 @@ def test_a_bank_from_the_dem_above_its_ceiling_is_left_out() -> None:
     np.testing.assert_array_equal(below_ceilings(observations, banks, ceilings),
                                   [np.nan, 103.0, 104.0, 105.0, 101.0])
     np.testing.assert_array_equal(below_ceilings(observations, banks, None), observations)
+
+
+def test_a_search_still_falling_at_its_ceiling_is_no_observation() -> None:
+    """Its banks are only the highest stage below the water that carries the maximum flow, as far up a canyon's walls
+    as that water reaches: not a bank top, ceilings or not."""
+    observations = [102.0, 103.0, 101.0]
+    banks = [banks_at(0.0, 0.0)._replace(method=m) for m in ("width_to_depth_ratio", "max_flow_water", "water_edge")]
+
+    np.testing.assert_array_equal(below_ceilings(observations, banks, None), [102.0, np.nan, 101.0])
+    np.testing.assert_array_equal(below_ceilings(observations, banks, [110.0, 110.0, 110.0]), [102.0, np.nan, 101.0])
 
 
 # --- Ordering a reach's cross sections ----------------------------------------------------------------------------
@@ -392,16 +439,62 @@ def test_a_steady_reach_s_bank_elevation_is_its_water_plus_its_banks_height() ->
 
 
 def test_the_height_comes_from_the_banks_nearby() -> None:
-    """Banks 1 m above the water for the first kilometre and 2 m for the second: at each end, only its own are
+    """Banks 1 m above the water for the first kilometre and 1.2 m for the second: at each end, only its own are
     within 500 m."""
     stations = 10.0 * np.arange(201)
     thalwegs = 103.0 - 0.0015 * stations
-    heights = np.where(stations < 1000.0, 1.0, 2.0)
+    heights = np.where(stations < 1000.0, 1.0, 1.2)
 
     bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, math.nan)
 
     assert bank[0] == pytest.approx(thalwegs[0] + 1.0)
-    assert bank[-1] == pytest.approx(thalwegs[-1] + 2.0)
+    assert bank[-1] == pytest.approx(thalwegs[-1] + 1.2)
+
+
+def test_a_rise_in_the_banks_height_isn_t_pooled_upstream() -> None:
+    """Banks 1 m above the water for 1.5 km, then 1.2 m, on a stream falling 1 mm in 10 m: the bank elevation rises
+    0.2 m where the 500 m windows take only the higher banks, and stays the water plus 1 m upstream. Fitting the bank
+    elevation never to rise, as ARC did, pooled the rise with the banks upstream, and raised them for a kilometre."""
+    stations = 10.0 * np.arange(301)
+    thalwegs = 100.0 - 0.0001 * stations
+    heights = np.where(stations < 1500.0, 1.0, 1.2)
+    window = np.array([np.quantile(heights[np.abs(stations - s) <= 500.0], 0.1) for s in stations])
+
+    bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, math.nan)
+
+    np.testing.assert_allclose(bank, thalwegs + window, atol=1e-9)
+    np.testing.assert_allclose(bank[stations < 1000.0], thalwegs[stations < 1000.0] + 1.0, atol=1e-9)
+    assert np.any(np.diff(bank) > 0.1)
+
+
+def test_heights_far_from_the_reach_s_are_left_out() -> None:
+    """Banks about 1 m up, and ten 0.3 m up together, where the search stopped early at a step in the banks: the 10th
+    percentile within 500 m would have been theirs round them."""
+    stations = 10.0 * np.arange(101)
+    thalwegs = 100.0 - 0.001 * stations
+    heights = 1.0 + 0.05 * np.sin(np.arange(101))
+    heights[45:55] = 0.3
+    kept = np.delete(heights, np.arange(45, 55))
+    kept_stations = np.delete(stations, np.arange(45, 55))
+    window = np.array([np.quantile(kept[np.abs(kept_stations - s) <= 500.0], 0.1) for s in stations])
+
+    bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, math.nan)
+
+    np.testing.assert_allclose(bank, thalwegs + window, atol=1e-9)
+
+
+def test_an_outlier_is_three_robust_spreads_or_a_quarter_of_the_median_from_it() -> None:
+    assert (OUTLIER_SPREADS, OUTLIER_SHARE, MIN_BANK_OBSERVATIONS) == (3.0, 0.25, 5)
+    # A median of 2 m, no spread: a quarter of it, 0.5 m, either way
+    np.testing.assert_array_equal(consensus_heights([2.0] * 6 + [1.6, 2.5, 1.4, 2.6, math.nan]),
+                                  [2.0] * 6 + [1.6, 2.5, np.nan, np.nan, np.nan])
+    # A median of 1 m and a median absolute deviation of 0.5 m: 3 x 1.4826 x 0.5 = 2.22 m either way
+    np.testing.assert_array_equal(consensus_heights([0.5, 0.5, 1.0, 1.0, 1.0, 1.5, 1.5, 3.2, 3.3]),
+                                  [0.5, 0.5, 1.0, 1.0, 1.0, 1.5, 1.5, 3.2, np.nan])
+
+
+def test_with_fewer_than_5_heights_none_is_an_outlier() -> None:
+    np.testing.assert_array_equal(consensus_heights([1.0, 1.0, 1.0, 9.0, math.nan]), [1.0, 1.0, 1.0, 9.0, np.nan])
 
 
 def test_the_height_is_a_low_percentile_of_the_banks() -> None:
@@ -425,7 +518,7 @@ def test_a_reach_that_runs_mild_then_steep_keeps_its_banks_above_the_water() -> 
     np.testing.assert_allclose(bank, thalwegs + 1.5, atol=1e-9)
 
 
-def test_the_bank_elevation_never_rises_downstream_or_goes_below_the_stream_cell() -> None:
+def test_steady_banks_never_rise_downstream_or_go_below_the_stream_cell() -> None:
     """A stream cell 2 m above its neighbours, as a bridge in the DEM: the water surface passes under it, and the
     bank elevation stops at the stream cell."""
     stations = 10.0 * np.arange(50)
@@ -483,7 +576,7 @@ def test_a_window_with_5_or_more_observations_takes_their_10th_percentile_as_bef
 
     bank = reach_bank_levels(thalwegs, thalwegs + heights, stations, math.nan)
 
-    np.testing.assert_allclose(bank, np.maximum(falling_fit(thalwegs + window), thalwegs), atol=1e-9)
+    np.testing.assert_allclose(bank, thalwegs + window, atol=1e-9)
 
 
 def test_a_reach_with_fewer_than_5_observations_takes_their_10th_percentile_everywhere() -> None:

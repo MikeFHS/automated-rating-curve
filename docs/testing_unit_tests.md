@@ -134,10 +134,12 @@ channel exactly to the mode's level at normal depth: the DEM's water surface, or
 its own flow carves the true channel, to a millimetre, with a water mask or without: without `Bathy_Use_Banks` the
 channel is carved between the DEM's water's edges, and with it below the bank tops; the hydraulics divide at the bank
 tops in both. In a canyon whose bench is above the water that carries
-the maximum flow, the bench isn't taken for the banks. `testing/test_bank_modes.py` checks each mode's banks on single
-cross sections: the water level beside a burned stream cell, masks too narrow, too wide or spilling onto the
-floodplain, a valley wall above the maximum flow's water, and noise on the water; and without bathymetry, the bank tops
-on a DEM that shows the bed, whatever the mask, and the edges of the maximum flow's water where the channel holds it.
+the maximum flow, the bench isn't taken for the banks, and in a canyon through a hill on a reach with a floodplain
+either side, the canyon takes the floodplain's bank height and width. `testing/test_bank_modes.py` checks each mode's
+banks on single cross sections: the water level beside a burned stream cell, masks too narrow, too wide or spilling
+onto the floodplain, a valley wall above the maximum flow's water, the edges on the ground below that water, and noise
+on the water; and without bathymetry, the bank tops on a DEM that shows the bed, whatever the mask, and the edges of
+the maximum flow's water where the channel holds it.
 See
 [Bathymetry](bathymetry.md#water-surface-or-banks).
 

@@ -117,9 +117,12 @@ to 8 cm.
 not: the width-to-depth ratio (method 2 below) over the levels above the water level, never stopping inside the DEM's
 water, and never above the water that carries the cross section's maximum flow over the DEM, since a bank higher than
 any flood is a valley wall. If the ratio is still falling at the highest level below that water, that level's water's
-edges are the banks. Where it finds no banks, they are the water's edges (the DEM's, or the mask's). On the synthetic
-channels the bankfull level was within 0.3 m of the truth at 63% of them, against 21% for the mask's edge, and on the
-FIM sites banks above the maximum flow's water fell from 11% of cross sections to 0.4%.
+edges are the banks, but they aren't bank tops (`Bank_Method` `max_flow_water`): the cross section, a canyon that holds
+the maximum flow, shows none below that water, so step 2 takes neither their height nor their width for the channel's.
+
+The maximum flow's water only stops the levels tried: each level's edges are where its water meets the ground. The
+ground above that water was once made a wall instead, so a level's edge between the last point below it and the first
+above snapped back to the last point: on a canyon with one wall rising beside the stream, the bank was 0.5 m low.
 
 **Without bathymetry: the bank tops too.** The banks divide each cross section into its channel and overbanks (in every
 mode, the hydraulics divide at the bank tops): the channel takes the water's Manning's n, the conveyance is the sum of
@@ -223,15 +226,27 @@ A cross section without banks is all channel to the hydraulics, without bathymet
 The stream network (`StrmShp_File`, with `reach_id` and `downstream_reach_id`) puts each reach's cross sections in
 order from upstream to downstream. Then:
 
-- A channel narrower than the reach's 25th percentile width or wider than its 75th, or one without banks, gets the
+- Where a reach has 3 or more bank tops (with `Bathy_Use_Banks`, the width-to-depth ratio's), their widths are the
+  reach's: every other cross section (one still falling at the maximum flow's water, one at the water's edge, or one
+  without banks), and a bank top narrower than their 25th percentile or wider than their 75th, gets their median
+  width. The right bank elevation with the wrong width still carves the wrong bed: a canyon whose banks are the
+  highest level below the maximum flow's water, far up its walls, was carved that wide.
+  Otherwise (without `Bathy_Use_Banks`, where every bank is the DEM's water's edge, or a reach with fewer bank tops), a
+  channel narrower than the reach's 25th percentile width or wider than its 75th, or one without banks, gets the
   reach's median width instead. Banks at the water's edge (the water mask's, the land cover's, or the DEM's without
-  `Bathy_Use_Banks`) are kept as they are: the water shows how wide the channel is, where the DEM's bank tops are only
-  an estimate.
-- The bank elevation follows the stream: it is the stream's elevation, made never to rise downstream, plus a bank
-  height, the 10th percentile of the heights of the banks within 500 m along the reach. So a few low banks can't pull
-  a whole reach down. With `Bathy_Use_Banks`, the channel is rebuilt below this elevation. A bank's height is that of
-  the lower of its cross section's two banks above its stream, and where a reach has four or more, those below the
-  reach's 2nd percentile or above its 97th are left out.
+  `Bathy_Use_Banks`) are then kept as they are: the water shows how wide the channel is, where the DEM's bank tops are
+  only an estimate.
+- The bank elevation follows the stream: it is the water surface, the stream's elevation made never to rise
+  downstream, plus a bank height, the 10th percentile of the banks' heights above that water within 500 m along the
+  reach. So a few low banks can't pull a whole reach down. With `Bathy_Use_Banks`, the channel is rebuilt below this
+  elevation. A bank's height is that of the lower of its cross section's two banks above its stream, and where a reach
+  has four or more, those below the reach's 2nd percentile or above its 97th are left out.
+
+  Where a reach has 5 or more, heights far from its median are left out too: more than 3 robust spreads (1.4826 times
+  the median absolute deviation) or a quarter of the median away, whichever is more. Those are the rim of a low hill,
+  which the width-to-depth ratio takes for a floodplain, or a search stopped early. Only the water surface is made
+  never to rise. Before, the bank elevation was too, which pooled a stretch of higher banks (a hill's rim, a canyon's
+  walls) with the banks upstream, and raised them for up to 2 km.
 
   Where fewer than 5 banks are within 500 m, the height is the 10th percentile of the 5 nearest along the reach, or of
   all the reach's if it has fewer. Of one bank, the 10th percentile is its height, and of two, a tenth of the way from
@@ -246,9 +261,11 @@ order from upstream to downstream. Then:
   that carries the cross section's maximum flow over the DEM's own cross section: no flood reaches it, so it's a
   valley wall. Where a small creek in a V-shaped valley is too narrow
   for the DEM or the water mask to show, those walls are all ARC finds; counting them put a Karnali tributary's bank
-  elevation, and so its 2-year water, 10 m above the stream. A reach left without a bank of its own takes the site's
-  bank height. Only where the maximum flow stays below every bank in the site (deep channels, and no water mask) are
-  the DEM's banks all kept, as the only estimate there is.
+  elevation, and so its 2-year water, 10 m above the stream. Nor does a search still falling at that water
+  (`max_flow_water`): its banks are only as far up the walls as the maximum flow reaches, which set a canyon's bank
+  elevation by its maximum flow, whatever its banks. A reach left without a bank of its own takes the site's bank
+  height. Only where the maximum flow stays below every bank in the site (deep channels, and no water mask) are the
+  DEM's banks all kept, as the only estimate there is.
 
   A cross section whose banks weren't found in step 1 (none, or only a single cell's) has no real bank of its own:
   its bank elevation comes from the banks around it. Where a creek is too narrow for the DEM to show, the ground beside it can lie below that

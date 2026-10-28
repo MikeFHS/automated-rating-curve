@@ -18,13 +18,16 @@ What a bank is depends on what the banks are for (find_banks' `at`, which arc.pi
 - "tops" (bathymetry, Bathy_Use_Banks True): the banks are the bankfull channel's tops, where the water spills out of
   it, mask or not: width-to-depth over the stages above the water level, never stopping inside the DEM's water, and
   never above the water that carries the cross section's maximum flow (`ceiling`): a bank above it is a valley wall,
-  which would carve the valley. Where it finds none, the water's edges, the DEM's or the mask's.
+  which would carve the valley. The ceiling only stops the stages; each stage's edges are still on the ground. Where
+  the ratio is still falling at the ceiling, as in a canyon that holds the maximum flow, there is no bank top below
+  it: the banks are the highest stage's, labelled max_flow_water, which the bank smoothing doesn't take as a bank's
+  height (arc.bathymetry.smoothing). Where it finds none, the water's edges, the DEM's or the mask's.
 - "divide" (no bathymetry): the banks only divide the cross section into channel and overbanks, which the
   divided-channel method does at the bank tops; the mask's edge, the low water's, would leave the bank faces above it
   in the overbanks. So the bank tops as with "tops", no higher than the maximum flow's water: a bank above it is still
   a valley wall, which would give the floodplain below it the water's n. But where the ratio is still falling at that
   water, the channel holds it, and the banks are its edges rather than the highest stage's below it, so that the
-  hydraulics don't divide it.
+  hydraulics don't divide it (max_flow_water too).
 - "any": the mask or the land cover, then width-to-depth, then flat water. find_banks' default, and the search ARC
   ran without bathymetry before 0.5.0.
 
@@ -59,8 +62,9 @@ MIN_STAGE_STEP = 0.1
 # stops it: farther, it is running across a floodplain at the water's level
 MASK_REACH = 2
 
-METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width", "water_edge")
-_NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH, _WATER_EDGE = range(7)
+METHODS = ("none", "single_cell", "land_cover", "width_to_depth_ratio", "flat_water", "target_width", "water_edge",
+           "max_flow_water")
+_NONE, _SINGLE_CELL, _LAND_COVER, _WIDTH_TO_DEPTH, _FLAT_WATER, _TARGET_WIDTH, _WATER_EDGE, _MAX_FLOW_WATER = range(8)
 AT = ("any", "water", "tops", "divide")  # find_banks' `at`
 _ANY, _WATER, _TOPS, _DIVIDE = range(4)
 _NO_LAND_COVER = np.empty(0)
@@ -181,15 +185,16 @@ def _sift_down(heap, i, size):
 
 
 @njit(cache=True, error_model="numpy")
-def _width_to_depth_banks(elevations, spacing, lowest=0.0, keep_last=False):
+def _width_to_depth_banks(elevations, spacing, lowest=0.0, keep_last=False, top=MAX_BANK_HEIGHT):
     """The banks at the stage where the ratio of top width to depth stops falling, and that stage's height above the
     stream cell, or NaNs. The stages tried are the heights of the ordinates above the stream cell (above `lowest`
-    metres above it), lowest first, out on each side to the first more than `MAX_BANK_HEIGHT` above it: as far as water
-    that high could reach, which is as far as any stage's width looks. A stage less than `MIN_STAGE_STEP` above the last
-    one tried is skipped, unless it's the highest (a short or gently rising floodplain may have no ordinate that much
-    above the bank). This handles DEM noise well. The depth in the ratio is always the stage's height above the stream
-    cell. If the ratio never rises, NaNs, or with keep_last, the highest stage's banks (where walls, as below a
-    ceiling, end the stages before the water spills).
+    metres above it), lowest first, out on each side to the first more than `top` (MAX_BANK_HEIGHT, or a ceiling below
+    it) above it: as far as water that high could reach, which is as far as any stage's width looks. A stage less than
+    `MIN_STAGE_STEP` above the last one tried is skipped, unless it's the highest (a short or gently rising floodplain
+    may have no ordinate that much above the bank). This handles DEM noise well. The depth in the ratio is always the
+    stage's height above the stream cell. If the ratio never rises, NaNs, or with keep_last, the highest stage's banks
+    (where `top`, as a ceiling, ends the stages before the water spills). A stage's edges are where its water meets
+    the ground, between ordinates.
 
     The search usually stops a few stages up, so the heights come off a heap as needed rather than all being sorted.
     """
@@ -203,7 +208,7 @@ def _width_to_depth_banks(elevations, spacing, lowest=0.0, keep_last=False):
         while j != end:
             j += step
             height = float(elevations[j]) - thalweg
-            if height > MAX_BANK_HEIGHT:
+            if height > top:
                 break
 
             if height > lowest:
@@ -299,18 +304,6 @@ def _water_edge_banks(elevations, spacing, level):
 
 
 @njit(cache=True, error_model="numpy")
-def _below(elevations, height):
-    """The ordinates, with those more than `height` above the stream cell made walls (no stage reaches past them)."""
-    out = elevations.copy()
-    center = elevations.size // 2
-    for j in range(elevations.size):
-        if elevations[j] - elevations[center] > height:
-            out[j] = OFF_RASTER_ELEVATION
-
-    return out
-
-
-@njit(cache=True, error_model="numpy")
 def _target_width_banks(width, spacing, left_ordinates, right_ordinates):
     """Half the width on each side, as far as each side reaches, with what one side can't hold on the other."""
     left_available = left_ordinates * spacing
@@ -388,8 +381,9 @@ def _search_water(elevations, spacing, land_cover, water):
 def _search_tops(elevations, spacing, land_cover, water, ceiling, keep_last):
     """The bank tops above the water level and below `ceiling` (see the notes above), the method that found them, and
     the distances; the water's edges (the DEM's, or else the mask's) where width-to-depth finds none. Where the ratio is
-    still falling at `ceiling`, the banks are the highest stage's below it with `keep_last` (for the carve, a bank on
-    the ground), and otherwise `ceiling`'s own water's edges (for the hydraulics, which then don't divide that water)."""
+    still falling at `ceiling`, there is no bank top below it, and the method is max_flow_water: the banks are the
+    highest stage's below it with `keep_last` (for the carve, a bank on the ground), and otherwise `ceiling`'s own
+    water's edges (for the hydraulics, which then don't divide that water)."""
     center = elevations.size // 2
     level = _water_level(elevations, land_cover, water)
     edge_left, edge_right = _held(elevations, spacing, *top_widths(elevations, spacing, level + FLAT_WATER_DEPTH))
@@ -398,16 +392,19 @@ def _search_tops(elevations, spacing, land_cover, water, ceiling, keep_last):
         mask_left, mask_right = _land_cover_banks(land_cover, water, spacing)
 
     lowest = max(level - float(elevations[center]), 0.0) + FLAT_WATER_DEPTH
-    stages = elevations if not ceiling >= 0.0 else _below(elevations, ceiling)
-    left, right, _ = _width_to_depth_banks(stages, spacing, lowest, keep_last and ceiling >= 0.0)
-    if not keep_last and not (left >= 0.0 and right >= 0.0) and ceiling > lowest:
-        left, right = top_widths(elevations, spacing, float(elevations[center]) + min(ceiling, MAX_BANK_HEIGHT))
+    top = MAX_BANK_HEIGHT if not ceiling >= 0.0 else min(ceiling, MAX_BANK_HEIGHT)
+    left, right, _ = _width_to_depth_banks(elevations, spacing, lowest, False, top)
+    stalled = ceiling >= 0.0 and not (left >= 0.0 and right >= 0.0)
+    if stalled and keep_last:
+        left, right, _ = _width_to_depth_banks(elevations, spacing, lowest, True, top)
+    elif stalled and ceiling > lowest:
+        left, right = top_widths(elevations, spacing, float(elevations[center]) + top)
 
     left, right = _held(elevations, spacing, left, right)
     # never inside the DEM's water: the water fills its own channel before it spills
     inside = edge_left >= 0.0 and edge_right >= 0.0 and (left < edge_left - spacing or right < edge_right - spacing)
     if _resolved(left, right, spacing) and not inside:
-        return _WIDTH_TO_DEPTH, left, right
+        return (_MAX_FLOW_WATER if stalled else _WIDTH_TO_DEPTH), left, right
     if _resolved(edge_left, edge_right, spacing):
         return _WATER_EDGE, edge_left, edge_right
     if _resolved(mask_left, mask_right, spacing):
