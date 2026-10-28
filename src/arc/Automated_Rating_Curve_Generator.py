@@ -6681,7 +6681,8 @@ def _main(MIF_Name: str, args: dict, quiet: bool = False, processes: int | Liter
     _build_flow_arrays(
         id_flow_dict,
         params['s_flow_file_baseflow'],
-        params['s_flow_file_qmax'],
+        '' if params['b_build_representative_cross_section']
+        else params['s_flow_file_qmax'],
         processes,
         bathymetry_geometry_dict=bathymetry_geometry_dict,
     )
