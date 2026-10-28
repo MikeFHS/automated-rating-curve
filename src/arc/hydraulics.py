@@ -100,7 +100,7 @@ def _conveyance(area, weighted_perimeter):
 @njit(cache=True, error_model="numpy")
 def _scaled_n_15(n0, depth, k_decay, shallow_factor, deep_factor):
     """(n0 scaled for water depth deep over it) ** 1.5."""
-    if shallow_factor == deep_factor and depth == depth:
+    if shallow_factor == deep_factor and depth == depth:  # noqa: PLR0124
         # n doesn't vary with depth: (shallow - deep) / (1 + k * depth) is 0 at any depth but NaN (k > 0 makes the
         # denominator at least 1, or inf), and deep + 0 is deep, so this is the same number without the division
         n = n0 * deep_factor
@@ -318,7 +318,7 @@ def _profile_sides(stations, elevations, n0, center, step, levels, first, bank, 
                 for i in range(split, m):
                     depth_in, depth_out = levels[i] - z_in, levels[i] - z_out
                     n_15 = n_15_fixed if constant_n and depth_in == depth_in else \
-                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)  # noqa: PLR0124
                     out[i, 0] += width * wet * (depth_in + depth_out) / 2
                     out[i, 1] += wet * length
                     out[i, 3] += wet * length * n_15
@@ -327,7 +327,7 @@ def _profile_sides(stations, elevations, n0, center, step, levels, first, bank, 
                 for i in range(split, m):
                     depth_in, depth_out = levels[i] - z_in, levels[i] - z_out
                     n_15 = n_15_fixed if constant_n and depth_in == depth_in else \
-                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)  # noqa: PLR0124
                     out[i, 4] += width * wet * (depth_in + depth_out) / 2
                     out[i, 5] += wet * length
                     out[i, 7] += wet * length * n_15
@@ -336,7 +336,7 @@ def _profile_sides(stations, elevations, n0, center, step, levels, first, bank, 
                 for i in range(split, m):
                     depth_in, depth_out = levels[i] - z_in, levels[i] - z_out
                     n_15 = n_15_fixed if constant_n and depth_in == depth_in else \
-                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)
+                        _scaled_n_15(n0[j], depth_in, k_decay, shallow_factor, deep_factor)  # noqa: PLR0124
                     _add_segment(out, i, in_channel, width, rise, length, wet, depth_in, depth_out, n_15)
 
         first = split

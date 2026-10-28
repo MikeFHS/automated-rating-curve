@@ -112,6 +112,7 @@ TOLERANCE = 1e-6  # metres: how closely each step's water surface is found
 CONTRACTION = 0.1  # loss coefficients on the change in velocity head, where the flow speeds up going downstream...
 EXPANSION = 0.3  # ...and where it slows
 EDDY_LENGTH = 300.0  # metres: the eddy loss is reckoned on the change in velocity head over this far downstream
+OUTLET_REACH = 3.0  # cells: how near an outlet's last cross section a water surface given for it must be
 
 
 @njit(cache=True, error_model="numpy")
@@ -218,7 +219,7 @@ def _critical(levels, alpha, area, q, ordered=False):
             break
 
         energy = levels[i] + _velocity_head(alpha[i], area[i], q)
-        if energy < least or (energy != energy and least == least):
+        if energy < least or (energy != energy and least == least):  # noqa: PLR0124
             best, least = i, energy
 
     return levels[best]
@@ -531,6 +532,7 @@ class StepSummary(NamedTuple):
     steps: int
     critical: int
     held: int = 0
+    given: int = 0  # outlets started from the water surfaces given for them (outlet_wse)
 
 
 def flows_for(max_flow: float, baseflow: float, increments: int) -> np.ndarray:
@@ -554,7 +556,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                         slope_factor: float = 1.0, eddy_length: float = EDDY_LENGTH, stream_cells=None, outlets=None,
                         elevations: np.ndarray | None = None,
                         baseflow_levels: np.ndarray | None = None,
-                        ensure_level: Callable[[int, float], bool] | None = None) -> StepSummary:
+                        ensure_level: Callable[[int, float], bool] | None = None,
+                        outlet_wse: dict | None = None) -> StepSummary:
     """Rewrite the rating curves of the cells that have them (see the notes above), in place.
 
     `rows`, `cols` and `reaches` are each cell's stream cell and reach, and `sections` its cross section (anything with an
@@ -568,6 +571,12 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
     reach's rows and columns), or by the cell where its line ends (`outlets`, each reach's (row, col)), and failing
     both with its higher end upstream, by `elevations` (each cell's stream cell's, NaN for none) or else its cross
     sections' beds (see order_reach).
+
+    `outlet_wse` gives the water surfaces to start some outlets from instead of normal depth, as a neighbouring tile's
+    rating curves do where the reach leaves this one: by reach, a list of points (row, col, flows, wse), each a place
+    on the raster (rows and columns, fractional) and its water surface at increasing flows. An outlet takes the point
+    nearest its last cross section, if one is within OUTLET_REACH cells (_given_wse): its water at the flows within
+    the point's, and beyond them normal depth as far above or below as at the nearest of those.
 
     `ensure_level(k, level)`, if given, makes cell k's cross section reach above the water surface level on both sides
     (a trimmed one, see arc.pipeline), and says whether it changed it. It is asked for each table's top level once the
@@ -596,7 +605,7 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
     upstream_wse: dict[int, np.ndarray] = {}  # each reach's first cell's water surface at each j
     first_cell: dict[int, tuple[int, int]] = {}  # and that cell
     levels_all = np.full(len(sections), math.nan) if baseflow_levels is None else np.asarray(baseflow_levels, dtype=np.float64)
-    steps = critical_steps = held = 0
+    steps = critical_steps = held = given = 0
     for reach in downstream_first:
         ks = np.array(by_reach[reach])
         heights = np.asarray(elevations, dtype=np.float64)[ks] if elevations is not None else \
@@ -622,6 +631,13 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         else:
             start = np.array([_outlet_wse(sections[ks[-1]].xs, tables[-1], flows[-1, j], float(slopes[ks[-1]]),
                                           roughness, slope_factor, cap[j]) for j in range(increments)])
+            if outlet_wse and reach in outlet_wse:
+                wse_given = _given_wse(outlet_wse[reach], float(rows[ks[-1]]), float(cols[ks[-1]]), flows[-1], dx, dy)
+                inside = np.flatnonzero(np.isfinite(wse_given))
+                if inside.size:
+                    # The given water, and beyond its flows, normal depth as far above or below as at the nearest
+                    start = start + np.interp(np.arange(increments), inside, (wse_given - start)[inside])
+                    given += 1
             
         far = _eddy_ends(stations, eddy_length)
         while True:
@@ -647,7 +663,26 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         _rewrite(*packed[4:], *tables[-1].parameters, flows, wse, out)
         curves.increments[ks] = out
 
-    return StepSummary(len(rated), steps, critical_steps, held)
+    return StepSummary(len(rated), steps, critical_steps, held, given)
+
+
+def _given_wse(points: list, row: float, col: float, flows: np.ndarray, dx: float, dy: float) -> np.ndarray:
+    """The water surface at each flow given for an outlet whose last cross section is at (row, col): that of the point
+    nearest it, if one is within OUTLET_REACH cells, interpolated by flow at the flows within the point's, NaN at the
+    others (and at all, without a point near enough)."""
+    nearest, best = None, OUTLET_REACH * max(dx, dy)
+    for point in points:
+        distance = math.hypot((point[0] - row) * dy, (point[1] - col) * dx)
+        if distance <= best:
+            nearest, best = point, distance
+
+    out = np.full(flows.size, math.nan)
+    if nearest is not None:
+        q, w = nearest[2], nearest[3]
+        inside = (flows >= q[0]) & (flows <= q[-1])
+        out[inside] = np.interp(flows[inside], q, w)
+        
+    return out
 
 
 def _table_for(xs: XSection, top: float, roughness: DepthRoughness | None, k: int,

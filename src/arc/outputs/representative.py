@@ -325,7 +325,7 @@ def representative_cross_section_dataframe(samples: Sequence[RepresentativeSampl
 
 
 def _stage_count() -> int:
-    return max(int(round(min(MAX_DEPTH, 25.0) / DEPTH_INCREMENT)), 0)
+    return max(round(min(MAX_DEPTH, 25.0) / DEPTH_INCREMENT), 0)
 
 
 def highest_stage(thalweg: float) -> float:
@@ -344,7 +344,7 @@ def write_representative_cross_sections(df: pd.DataFrame | None, path: os.PathLi
         df = df.copy()
         numeric = [c for c in df.columns if c not in _INTEGER_COLUMNS]
         df[numeric] = df[numeric].round(6)
-        
+
     write_table(df, path)
     LOG.info('Finished writing ' + str(path))
     return df

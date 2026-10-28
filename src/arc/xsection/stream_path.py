@@ -205,10 +205,10 @@ def _stations_from(rows, cols, dx, dy, source, cells):
         best = -1
         for k in range(start[current], start[current + 1]):
             v = neighbours[k]
-            if distances[v] < distances[current] and abs(distances[v] + lengths[k] - distances[current]) <= tolerance:
-                if best < 0 or distances[v] < distances[best] or (distances[v] == distances[best] and (
-                        rows[v] < rows[best] or (rows[v] == rows[best] and cols[v] < cols[best]))):
-                    best = v
+            if distances[v] < distances[current] and abs(distances[v] + lengths[k] - distances[current]) <= tolerance and \
+                 (best < 0 or distances[v] < distances[best] or (distances[v] == distances[best] and (
+                        rows[v] < rows[best] or (rows[v] == rows[best] and cols[v] < cols[best])))):
+                best = v
 
         if best < 0:
             # A gap: back to the cell the path jumped it from

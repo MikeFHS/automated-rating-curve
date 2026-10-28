@@ -25,10 +25,13 @@ _ROUGHNESS = ('Manning_N_Raster1', 'Manning_N_Raster2')
 _PARQUET_SCHEMA = pa.schema([(name, pa.list_(pa.float64()) if name in _PROFILES + _ROUGHNESS
                               else pa.float64() if name == 'Ordinate_Dist' else pa.int64())
                              for name in XS_EXPORT_COLUMNS])
-_PARQUET_OPTIONS = dict(compression='zstd', compression_level=3,
-                        use_byte_stream_split=[f'{name}.list.element' for name in _PROFILES],
-                        use_dictionary=[name for name in XS_EXPORT_COLUMNS if name not in _PROFILES + _ROUGHNESS]
-                        + [f'{name}.list.element' for name in _ROUGHNESS])
+_PARQUET_OPTIONS = {
+    'compression': 'zstd',
+    'compression_level': 3,
+    'use_byte_stream_split': [f'{name}.list.element' for name in _PROFILES],
+    'use_dictionary': [name for name in XS_EXPORT_COLUMNS if name not in _PROFILES + _ROUGHNESS]
+                      + [f'{name}.list.element' for name in _ROUGHNESS]
+}
 
 
 class CrossSectionRecord(NamedTuple):
@@ -73,7 +76,7 @@ def format_array(values: np.ndarray) -> str:
                     or largest / smallest > 1000.0:
                 return _array2string(values)
             
-    texts = ['%.6f' % x for x in values.tolist()]
+    texts = [f'{x:.6f}' for x in values.tolist()]
     whole = max(len(text) - 7 for text, is_finite in zip(texts, finite) if is_finite)  # the part before '.'
     width = whole + 7
     parts = []
@@ -131,6 +134,6 @@ def write_cross_sections(records: list[CrossSectionRecord], path: os.PathLike) -
     else:
         df = cross_section_dataframe(records)
         df.to_csv(path, index=False, sep='\t')
-        
+
     LOG.info('Finished writing ' + str(path))
     return df

@@ -778,40 +778,35 @@ def Run_Main_Curve_to_GEOJSON_Program_Stream_Vector(CurveParam_File, DEM_Raster_
 
     Parameters
     ----------
-    CurveParam_File: str
+    CurveParam_File : str
         The file path and file name of the ARC curve file you are using to estimate water surface elevation and water depth
-    COMID_Q_File: str
-        The file path and file name of the CSV file that contains the streamflow estimates for the streams in your
-        domain. Its columns are taken by position, whatever their names: the first is the stream ID, matched to the
-        curve file's COMID, and the second the flow.
-    comid_q_df: pandas DataFrame, optional
-        The same table, used when COMID_Q_File is None. One of the two is needed.
-    DEM_Raster_File: str
+    DEM_Raster_File : str
         The file path and file name of the DEM raster aligned to the ARC grid.
         The vector workflow uses this raster for row/column georeferencing and
         to infer outlet terminals when a source reach's downstream geometry is
         missing from the local vector network.
-    OutGeoJSON_File: str
+    OutGeoJSON_File : str
         The file path and file name of the output GeoJSON the program will be creating
-    OutProjection: str
+    OutProjection : str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
-    StrmShp: str
+    StrmShp : str
         The file path and file name of the vector shapefile of flowlines
-    Stream_ID_Field: str
+    Stream_ID_Field : str
         The field in the StrmShp that is the streams unique identifier
-    Downstream_ID_Field: str
+    Downstream_ID_Field : str
         The field in the StrmShp that is used to identify the stream downstream of the stream
-    SEED_Output_File: str
+    SEED_Output_File : str
         The file path and file name of the output vector file that contains the
         SEED locations and the unique ID of the stream each represents. When it already exists, its SEED locations
         are used instead of finding them again. See FindClosestSEEDPoints for the stream cells they mark.
-    Thin_Output: bool
+    Thin_Output : bool
         True/False of whether or not to filter the output GeoJSON
-    
-    
-    Returns
-    -------
-    None
+    COMID_Q_File : str, optional
+        The file path and file name of the CSV file that contains the streamflow estimates for the streams in your
+        domain. Its columns are taken by position, whatever their names: the first is the stream ID, matched to the
+        curve file's COMID, and the second the flow.
+    comid_q_df : pandas DataFrame, optional
+        The same table, used when COMID_Q_File is None. One of the two is needed.
     """
 
     if COMID_Q_File is not None:
@@ -914,40 +909,35 @@ def Run_Main_VDT_to_GEOJSON_Program_Stream_Vector(VDTDatabaseFileName, DEM_Raste
 
     Parameters
     ----------
-    VDTDatabaseFileName: str
+    VDTDatabaseFileName : str
         The file path and file name of the ARC VDT database file you are using to estimate water surface elevation and water depth
-    COMID_Q_File: str
-        The file path and file name of the CSV file that contains the streamflow estimates for the streams in your
-        domain. Its columns are taken by position, whatever their names: the first is the stream ID, matched to the VDT
-        database's COMID, and the second the flow.
-    comid_q_df: pandas DataFrame, optional
-        The same table, used when COMID_Q_File is None. One of the two is needed.
-    DEM_Raster_File: str
+    DEM_Raster_File : str
         The file path and file name of the DEM raster aligned to the ARC grid.
         The vector workflow uses this raster for row/column georeferencing and
         to infer outlet terminals when a source reach's downstream geometry is
         missing from the local vector network.
-    OutGeoJSON_File: str
+    OutGeoJSON_File : str
         The file path and file name of the output GeoJSON the program will be creating
-    OutProjection: str
+    OutProjection : str
         A EPSG formatted text descriptor of the output GeoJSON's coordinate system (e.g., "EPSG:4269")
-    StrmShp: str
+    StrmShp : str
         The file path and file name of the vector shapefile of flowlines
-    Stream_ID_Field: str
+    Stream_ID_Field : str
         The field in the StrmShp that is the streams unique identifier
-    Downstream_ID_Field: str
+    Downstream_ID_Field : str
         The field in the StrmShp that is used to identify the stream downstream of the stream
-    SEED_Output_File: str
+    SEED_Output_File : str
         The file path and file name of the output vector file that contains the
         SEED locations and the unique ID of the stream each represents. When it already exists, its SEED locations
         are used instead of finding them again. See FindClosestSEEDPoints for the stream cells they mark.
-    Thin_Output: bool
+    Thin_Output : bool
         True/False of whether or not to filter the output GeoJSON
-    
-    
-    Returns
-    -------
-    None
+    COMID_Q_File : str, optional
+        The file path and file name of the CSV file that contains the streamflow estimates for the streams in your
+        domain. Its columns are taken by position, whatever their names: the first is the stream ID, matched to the VDT
+        database's COMID, and the second the flow.
+    comid_q_df : pandas DataFrame, optional
+        The same table, used when COMID_Q_File is None. One of the two is needed.
     """
 
     if COMID_Q_File is not None:

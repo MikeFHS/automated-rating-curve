@@ -46,11 +46,12 @@ _RETIRED_KEYS = {'x_section_dist': "each cross section reaches as far as its wat
 class Configs:
     """ARC's inputs, checked and typed.
 
-    Make one with from_file (YAML, or text with a key and its value on each line) or from_mapping (a dictionary).
-    Keys are case-insensitive, so DEM_File and dem_file are the same. Keys that curve2flood reads from the same file,
-    and a few older keys ARC no longer uses (_IGNORED_KEYS, and _RETIRED_KEYS with a warning), are allowed and
-    ignored; any other unknown key raises ValueError, naming the closest known key. The fields after
-    compression are worked out from the others, by validate_options.
+    Make one with `from_file` (YAML, or text with a key and its value on each line) or `from_mapping` (a dictionary).
+    Each field is its input-file key in lower case, and keys are case-insensitive, so DEM_File and dem_file are the
+    same. curve2flood's keys are allowed and ignored, so that one file can drive both models, and so are a few older
+    keys ARC no longer uses (with a warning for those it once read). Any other unknown key raises ValueError, naming
+    the closest known key. The fields after compression are worked out from the others (`validate_options`), and
+    can't be set.
     """
     # Inputs files
     dem_file: os.PathLike | None = None
@@ -138,6 +139,12 @@ class Configs:
     # where the raster ends, and the overlapping rasters of neighbouring tiles give the same cell different water
     drop_edge_sections: bool = False
     edge_margin: float = 0.0
+    # Where reaches leave the raster, the water surface the standard step starts them from instead of normal depth: a
+    # table (CSV or Parquet) of reach_id, x and y (a point in the DEM's coordinates) and the water surface there (wse)
+    # at each of several flows (flow), such as a neighbouring tile's rating curves where its raster overlaps this one.
+    # An outlet takes its reach's point nearest its last cross section, if one is within OUTLET_REACH cells
+    # (arc.standard_step), and beyond the point's flows, normal depth as far above or below as at the nearest of them.
+    outlet_wse_file: os.PathLike | None = None
 
     # Output files
     print_vdt_database: os.PathLike | None = None
@@ -180,14 +187,15 @@ class Configs:
 
     @classmethod
     def from_yaml(cls, yaml_name: os.PathLike):
+        """The inputs from a YAML input file."""
         with open(yaml_name, 'r') as o_input_file:
             params = yaml.load(o_input_file, Loader=yaml.CSafeLoader)
         return cls.from_mapping(params or {})
 
     @classmethod
     def from_text_file(cls, mif_name: os.PathLike):
-        """The inputs from a text file with a key, a space or tab, and its value on each line. Blank lines and lines
-        starting with # are skipped."""
+        """The inputs from a text file with a key, spaces or a tab, and its value on each line. A value may contain
+        spaces. Blank lines, lines starting with # and keys without a value are skipped."""
         with open(mif_name, 'r') as o_input_file:
             params = {}
             for line in o_input_file:
@@ -348,8 +356,7 @@ class Configs:
                 'exponent_depth) were provided, so there is no depth to carve; disabling bathymetry estimation.'
             )
             object.__setattr__(self, 'bathy_out_file', None)
-        if self.bathy_out_file:
-            if not self.reach_id or not self.downstream_reach_id:
+        if self.bathy_out_file and (not self.reach_id or not self.downstream_reach_id):
                 raise ValueError(
                     'Bathymetry output requires both reach_id and downstream_reach_id '
                     'to be provided in the input file.'
@@ -381,6 +388,9 @@ class Configs:
             raise ValueError('Valley_Dir_Widths must be finite and 0 or more.')
         if not (np.isfinite(self.edge_margin) and self.edge_margin >= 0.0):
             raise ValueError('Edge_Margin must be finite and 0 or more.')
+        if self.outlet_wse_file and not self.standard_step:
+            raise ValueError('Outlet_WSE_File gives the water the standard step starts outlets from, so it needs '
+                             'Standard_Step.')
         if not np.isfinite(self.shallow_factor) or self.shallow_factor < 1.0:
             raise ValueError('shallow_factor must be finite and >= 1.')
         if not np.isfinite(self.deep_factor) or not 0.0 < self.deep_factor <= 1.0:

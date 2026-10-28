@@ -265,7 +265,7 @@ def ray_reach(raster, x0, y0, cos, sin, spacing, dx, dy, level):
 def _steps_off(start, step, size):
     """How many steps of `step` from `start` it takes to leave [0, size - 1]."""
     room = (size - 1 - start) / step if step > 0.0 else start / -step
-    return max(int(math.floor(room)) + 1, 1)
+    return max(math.floor(room) + 1, 1)
 
 
 @njit(cache=True, error_model="numpy")

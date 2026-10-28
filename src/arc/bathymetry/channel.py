@@ -46,7 +46,7 @@ def _channel_elevation(offset, left, right, reference, bed, depth, slope_width, 
 @njit(cache=True, error_model="numpy")
 def _n_at(mannings_n, center, spacing, offset, tolerance):
     """The Manning's n of the segment between ordinates that offset falls in, which is its inner ordinate's."""
-    k = int(math.floor((abs(offset) + tolerance) / spacing))
+    k = math.floor((abs(offset) + tolerance) / spacing)
     index = center + k if offset > 0.0 else center - k
     return mannings_n[min(max(index, 0), mannings_n.size - 1)]
 
@@ -61,8 +61,8 @@ def _ordinate_range(size, spacing, left, right):
     """The first and last ordinates between the banks, the banks included, and the tolerance for being at one."""
     center = size // 2
     tolerance = 1e-9 * spacing
-    first = max(center - int(math.floor((left + tolerance) / spacing)), 0)
-    last = min(center + int(math.floor((right + tolerance) / spacing)), size - 1)
+    first = max(center - math.floor((left + tolerance) / spacing), 0)
+    last = min(center + math.floor((right + tolerance) / spacing), size - 1)
     return first, last, tolerance
 
 

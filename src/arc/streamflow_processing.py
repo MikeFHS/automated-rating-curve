@@ -166,16 +166,16 @@ def Create_ARC_Streamflow_Input(NetCDF_RecurrenceInterval_File_Path, NetCDF_Hist
 
     Parameters
     ----------
-    NetCDF_RecurrenceInterval_File_Path: str
+    NetCDF_RecurrenceInterval_File_Path : str
         The file path and file name of a NetCDF of recurrence interval streamflow file from the GEOGLOWS ECMWF Streamflow Service
-    NetCDF_Historical_Folder: str
+    NetCDF_Historical_Folder : str
         The file path to a directory containing yearly retrospective GEOGLOWS ECMWF Streamflow Service NetCDF files
-    Outfile_file_path: str
+    Outfile_file_path : str
         The file path and file name of the file that will store the resulting streamflow inputs for ARC
     
     Returns
     -------
-    combined_df: Pandas dataframe
+    combined_df : Pandas dataframe
         A Pandas dataframe of the columns written to Outfile_file_path: the mean and median streamflow values from the
         retrospective files, and the maximum, 2-year recurrence interval, 5-year recurrence interval, 10-year recurrence
         interval, 25-year recurrence interval, 50-year recurrence interval, and 100-year recurrence interval streamflow

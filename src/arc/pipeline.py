@@ -275,7 +275,34 @@ class Section:
 @dataclass
 class Results:
     """What a run made. The per-cell arrays and sections are in the order of cells, a section None where its
-    centre had no data."""
+    centre had no data.
+
+    Attributes
+    ----------
+    configs : Configs
+        The run's inputs.
+    cells : Cells
+        The stream cells the run worked on: their rows and columns, flow-file IDs (comids) and reaches.
+    slopes : numpy.ndarray
+        Each cell's stream slope, in m/m.
+    baseflow, max_flow : numpy.ndarray
+        Each cell's baseflow and maximum flow from the flow file, in m³/s (0 without them).
+    sections : list
+        Each cell's cross section (Section), or None.
+    curves : RatingCurves or None
+        The rating curves, from which the VDT database, curve file and AP database are written: ``output_array()``
+        gives a row per cell, in the columns ``columns()`` names. None for a run that makes none.
+    vdt : pandas.DataFrame or None
+        The VDT database, as written to Print_VDT_Database.
+    cross_sections : list
+        The cross-section file's rows, with XS_Out_File.
+    representative : pandas.DataFrame or None
+        The representative cross sections, with Build_Representative_Cross_Section.
+    bathymetry : numpy.ndarray or None
+        The bathymetry raster, with BATHY_Out_File.
+    seconds : float
+        How long the run took.
+    """
     configs: Configs
     cells: Cells
     slopes: np.ndarray
@@ -431,6 +458,30 @@ def line_outlets(configs: Configs, grid: Grid, gdf: gpd.GeoDataFrame | None, rea
         outlets[int(reach)] = (math.floor((y - y0) / height), math.floor((x - x0) / width))
 
     return outlets
+
+
+
+def outlet_levels(configs: Configs, grid: Grid) -> dict | None:
+    """The water surfaces Outlet_WSE_File gives to start outlets from, by reach: each point's row and column on the
+    raster (fractional, from its x and y in the DEM's coordinates) and its water surface at each of its flows, in
+    increasing order (see apply_standard_step). None without the file."""
+    if not configs.outlet_wse_file:
+        return None
+    
+    path = str(configs.outlet_wse_file)
+    table = pd.read_parquet(path) if path.lower().endswith(".parquet") else pd.read_csv(path)
+    missing = sorted({"reach_id", "x", "y", "flow", "wse"} - set(table.columns))
+    if missing:
+        raise ValueError(f"Outlet_WSE_File {path} has no column {', '.join(missing)}: it needs reach_id, x, y, flow and wse.")
+    
+    table = table.dropna(subset=["reach_id", "x", "y", "flow", "wse"]).sort_values(["reach_id", "x", "y", "flow"])
+    x0, width, _, y0, _, height = grid.reference.geotransform
+    levels: dict[int, list] = {}
+    for (reach, x, y), point in table.groupby(["reach_id", "x", "y"], sort=False):
+        levels.setdefault(int(reach), []).append(((y - y0) / height - 0.5, (x - x0) / width - 0.5,
+                                                  point["flow"].to_numpy(np.float64), point["wse"].to_numpy(np.float64)))
+        
+    return levels
 
 
 
@@ -957,7 +1008,7 @@ def reaches_its_banks(along: np.ndarray | None, water_value) -> bool:
         return True
     
     center = along.size // 2
-    if not along[center] == water_value:
+    if along[center] != water_value:
         return True
     
     return bool((along[:center] != water_value).any() and (along[center + 1:] != water_value).any())
@@ -1073,7 +1124,7 @@ def _ordinates_to(elevations: np.ndarray, step: int, level: float) -> int:
 def _ordinates_for(distance: float, spacing: float) -> int:
     """Ordinates enough either side for a bank or a channel this far from the centre, with one to spare (0 for
     none)."""
-    return int(math.ceil(distance / spacing)) + 2 if math.isfinite(distance) and distance > 0.0 else 0
+    return math.ceil(distance / spacing) + 2 if math.isfinite(distance) and distance > 0.0 else 0
 
 
 def trim_section(section: Section, level: float, widths=()) -> None:
@@ -1720,7 +1771,26 @@ def write_rasters(configs: Configs, grid: Grid, results: Results) -> None:
 
 
 def run(configs: Configs, *, quiet: bool = False, write: bool = True, trim: bool = True) -> Results:
-    """Run ARC for a configuration, write the outputs it names (unless write is False), and return what it made."""
+    """Run ARC for a configuration, write the outputs it names, and return what it made.
+
+    Parameters
+    ----------
+    configs : Configs
+        The inputs.
+    quiet : bool
+        Hide the progress bars.
+    write : bool
+        Write the outputs the inputs name. With False, the run only returns them.
+    trim : bool
+        Fit each cross section to the water the later steps are expected to work at, and extend it when a step needs
+        it longer (see the module's notes on cross section lengths). With False, every cross section reaches the
+        raster's edge on both sides: the results are the same, bit for bit, but slower.
+
+    Returns
+    -------
+    Results
+        What the run made.
+    """
     started = time.perf_counter()
     flows = read_flows(configs)
     grid = read_grid(configs)
@@ -1838,9 +1908,11 @@ def run(configs: Configs, *, quiet: bool = False, write: bool = True, trim: bool
                                                                                np.nan, elevations),
                                           baseflow_levels=levels,
                                           ensure_level=None if resampler is None else
-                                          lambda k, level, sampler=resampler: sampler.reach_above(sections[k], level))
+                                          lambda k, level, sampler=resampler: sampler.reach_above(sections[k], level),
+                                          outlet_wse=outlet_levels(configs, grid))
             LOG.info(f"Standard step: {summary.cells} rating curves linked, {summary.critical} of {summary.steps} "
-                     f"steps at critical depth, {summary.held} water surfaces held at the baseflow level")
+                     f"steps at critical depth, {summary.held} water surfaces held at the baseflow level"
+                     + (f", {summary.given} outlets started from Outlet_WSE_File" if configs.outlet_wse_file else ""))
             if configs.drop_edge_sections:
                 # The step's water can spread wider than the normal depths'
                 dropped += drop_edge_curves(configs, grid, sections, results.curves, resampler)

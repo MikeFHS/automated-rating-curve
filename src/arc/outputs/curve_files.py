@@ -149,10 +149,10 @@ def reach_average_curve_file_dataframe(curves: RatingCurves, vdt_df: pd.DataFram
             tw_a, tw_b, _ = fit_power_law(q, t, TOP_WIDTH_GUESS)
             vel_a, vel_b, _ = fit_power_law(q, v, VELOCITY_GUESS)
             depth_a, depth_b, _ = fit_power_law(q, depth, DEPTH_GUESS)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             LOG.warning(f"Regression failed for COMID {comid}: {e}")
             tw_a = tw_b = vel_a = vel_b = depth_a = depth_b = np.nan
-            
+
         fits['COMID'].append(comid)
         for name, value in (('depth_a', depth_a), ('depth_b', depth_b), ('tw_a', tw_a), ('tw_b', tw_b),
                             ('vel_a', vel_a), ('vel_b', vel_b)):

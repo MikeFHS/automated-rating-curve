@@ -595,47 +595,42 @@ def Process_ARC_Geospatial_Data(
 
     Parameters
     ----------
-    Main_Directory: str
+    Main_Directory : str
         Path to the directory where ARC inputs are stored and outputs will be written.
-    id_field: str
+    id_field : str
         Name of the unique identifier field in the stream shapefile (e.g., LINKNO
         for the GEOGLOWS streams). It is burned into the stream raster and
         written to the input file as both ``reach_id`` and ``Flow_File_ID``, so
         the flow file needs a column of the same name holding the same IDs.
-    max_flow_field: str
+    max_flow_field : str
         Name of the maximum-flow field/column (must exist in the flow file).
-    baseflow_field: str
+    baseflow_field : str
         Name of the baseflow/bankfull field/column (must exist in the flow
         file), or ``""`` to leave ``Flow_File_BF`` out: the bathymetry's depth
         then comes from the depth power law, and without that there is no
         bathymetry.
-    flow_file_path: str
+    flow_file_path : str
         Path to the flow file (CSV) used to populate the ARC run.
-    bathy_use_banks: bool
+    bathy_use_banks : bool
         Whether bathymetry estimation should use bank elevations (``True``) vs.
         a WSE-derived approach (``False``).
-    use_land_cover_to_find_banks: bool
+    use_land_cover_to_find_banks : bool
         Whether bank finding should look first where the land cover's water
         ends (``True``), or use the DEM alone (``False``): its width-to-depth
         ratio, then its flat water.
-    drainage_area_field: str, optional
+    drainage_area_field : str, optional
         Name of the drainage-area field in the stream shapefile to use when the
         optional bathymetry power-law mode is desired.
-    coefficient_depth, exponent_depth, coefficient_width, exponent_width: float, optional
+    coefficient_depth, exponent_depth, coefficient_width, exponent_width : float, optional
         Power-law parameters used to estimate bathymetry depth and fallback
         width from the drainage area field. The depth law's depth takes the
         place of the baseflow's wherever it is valid.
-    downstream_id_field: str, optional
+    downstream_id_field : str, optional
         Name of the field in the stream shapefile holding the ID of the reach
         downstream of each reach (e.g., DSLINKNO). The input file always asks
         for bathymetry, which ARC makes whenever there is a ``baseflow_field``
         or a depth power law, and the bathymetry needs this field: without it ARC
         stops with an error.
-
-    Returns
-    -------
-    None
-    
     """
     # we won't worry about using DEM cleaner files in this version
     DEM_Cleaner_File = False

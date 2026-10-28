@@ -17,23 +17,19 @@ class Arc:
     Give it an input file or a dictionary of the same keys, then call `run`. See the Model Input File page of
     the documentation for the keys.
     """
-    _mifn: str = ""
-    _args: dict = {}
-
     def __init__(self, mifn: str = "", args: dict | None = None, quiet: bool = False, processes: int | Literal["auto"] = 1) -> None:
-        """Initialize an `Arc` instance.
-
+        """
         Parameters
         ----------
         mifn : str, optional
             Path to an ARC model input file (MIF): YAML, or text with a key and its value on each line.
-        args : dict or None, optional
-            The input file's keys and values, used only if `mifn` isn't given.
-        quiet : bool, optional
-            If True, hide the progress bars and every log message but errors.
-        processes : int or {"auto"}, optional
-            Kept so that older scripts still run. ARC runs in one process, so any value but 1 or "auto" is ignored
-            with a warning.
+        args : dict, optional
+            The input file's keys and values, used only if ``mifn`` isn't given.
+        quiet : bool
+            Hide the progress bars and every log message but errors.
+        processes : int or str
+            Kept so that older scripts still run. ARC runs in one process, so any value but 1 or ``"auto"`` is
+            ignored with a warning.
         """
         self._mifn = mifn
         self._args = args or {}
@@ -70,8 +66,8 @@ class Arc:
 
         Parameters
         ----------
-        log_level : {"debug", "info", "warn", "error"}
-            Desired log level.
+        log_level : str
+            ``"debug"``, ``"info"``, ``"warn"`` or ``"error"``. Anything else sets ``"warn"``, with a warning.
 
         Returns
         -------

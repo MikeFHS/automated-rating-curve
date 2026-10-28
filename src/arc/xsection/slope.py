@@ -130,7 +130,7 @@ def _round_significant(x, digits):
     if not np.isfinite(x):
         return x
     
-    factor = 10.0 ** (digits - 1 - int(math.floor(math.log10(abs(x)))))
+    factor = 10.0 ** (digits - 1 - math.floor(math.log10(abs(x))))
     return math.floor(x * factor + 0.5) / factor
 
 
@@ -384,7 +384,7 @@ def end_point_slope(line, length: float, dem: np.ndarray, geotransform) -> float
 def _first_elevation_along(line, dem, geotransform, step=0.02) -> tuple[float, float]:
     """The DEM at the first point with data along the line from its start, and how far along it is as a share of
     the line's length."""
-    for i in range(int(round(1 / step)) + 1):
+    for i in range(round(1 / step) + 1):
         fraction = i * step
         point = line.interpolate(fraction, normalized=True)
         z = _elevation_at(point.x, point.y, dem, geotransform)

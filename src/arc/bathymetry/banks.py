@@ -123,9 +123,9 @@ def _side_land_cover_bank(land_cover, center, step, water):
 
 
 @njit(cache=True, error_model="numpy")
-def _land_cover_banks(land_cover, water, spacing):
+def _land_cover_banks(land_cover: np.ndarray, water, spacing):
     center = land_cover.size // 2
-    if not land_cover[center] == water:
+    if land_cover[center] != water:
         return np.nan, np.nan
     
     return (spacing * _side_land_cover_bank(land_cover, center, -1, water),
