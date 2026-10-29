@@ -9,7 +9,7 @@ Entry points
 - arc.Arc, or the ``arc`` command: run ARC from an input file or a dictionary (arc.pipeline.run).
 - arc.streamflow_processing.Create_ARC_Streamflow_Input: make ARC's flow file from GEOGLOWS data.
 - arc.process_geospatial_data.Process_ARC_Geospatial_Data: make ARC's input rasters and input file.
-- arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector: turn ARC's curve file into GeoJSON for flood
+- arc.create_geojson.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector: turn ARC's curve file into GeoJSON for flood
   mapping.
 
 The entry points are imported when first used, so that a run doesn't import the flow file tools' s3fs and xarray.
@@ -18,7 +18,7 @@ import importlib
 
 from ._log import LOG
 
-_ENTRY_POINTS = {'Arc': '.arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector': '.Create_GeoJSON',
+_ENTRY_POINTS = {'Arc': '.arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector': '.create_geojson',
                  'Create_ARC_Streamflow_Input': '.streamflow_processing',
                  'Process_ARC_Geospatial_Data': '.process_geospatial_data'}
 

@@ -35,8 +35,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
 import numpy as np
-from scipy.optimize import linprog
-from scipy.sparse import coo_matrix
 
 from arc.hydraulics import uniform_profile
 from arc.xsection.sampling import OFF_RASTER_ELEVATION
@@ -106,6 +104,10 @@ def _l1_trends(windows: list[np.ndarray], spacings: list[float]) -> list[np.ndar
     in total, each between the lowest and the highest of its own cell's and its neighbours' means; None if the
     solver fails. One program: the points x of every window, then the slope changes' bounds t, with -t <= the change
     in slope <= t at each interior point of each window, minimising the sum of t."""
+    # Imported here, as only Subcell_Channels needs them: scipy.optimize takes a run a fifth of a second to import
+    from scipy.optimize import linprog
+    from scipy.sparse import coo_matrix
+
     cells = np.array([z.size for z in windows])
     points = cells * FINE
     x_start = np.concatenate([[0], np.cumsum(points)])

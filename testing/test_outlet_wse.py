@@ -6,15 +6,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import test_pipeline as channel
 from osgeo import gdal
+from test_pipeline import write_channel
+from test_standard_step import normal_wse
 
 from arc import pipeline
 from arc.config import Configs
-from arc.outputs.rating_curves import Q, WSE
+from arc.outputs.rating_curves import WSE, Q
 from arc.standard_step import OUTLET_REACH, _given_wse
-import test_pipeline as channel
-from test_pipeline import write_channel
-from test_standard_step import normal_wse
 
 RAISED = 0.5  # metres the given water stands above reach 12's normal depth
 

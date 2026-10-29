@@ -99,8 +99,9 @@ def pick_cells(valley: dict, results) -> dict:
     return {"crossing": crossing, "bend": bend}
 
 
-def flow_figure(valley: dict, flows: dict, results) -> dict:
-    """The 2D model's water at SHOWN_FLOW, the way it moves over the floodplain, and two cells' cross sections."""
+def flow_figure(valley: dict, flows: dict, results, plain) -> dict:
+    """The 2D model's water at SHOWN_FLOW, the way it moves over the floodplain, and two cells' cross sections: their
+    own from plain, the run without Valley_Sections, as a run with them keeps only their channels."""
     flow = flows[SHOWN_FLOW]
     x, y = valley["x"], valley["y"]
     lo, hi = synthetic_valley.ENTRY + valley["wavelength"], synthetic_valley.ENTRY + 3 * valley["wavelength"]
@@ -123,8 +124,9 @@ def flow_figure(valley: dict, flows: dict, results) -> dict:
     ax.quiver(xx[shown], yy[shown], (ux / speed)[shown], (uy / speed)[shown], color=SECONDARY, scale=70, width=0.0016,
               headwidth=3.5, alpha=0.7)
     for name, section in cells.items():
+        own = plain.sections[next(k for k, s in enumerate(results.sections) if s is section)]
         for (px, py), colour, style, label in (
-                (xy(valley, section.rows, section.cols), INK, (0, (4, 2)), "the cell's own cross section"),
+                (xy(valley, own.rows, own.cols), INK, (0, (4, 2)), "the cell's own cross section"),
                 (kinked(valley, section), ORANGE, "-",
                  "with Valley_Sections: the channel, and from each bank a line square to the valley")):
             inside = (np.abs(py) <= 520) & (px >= lo - 100) & (px <= hi + 100)
@@ -333,7 +335,7 @@ if __name__ == "__main__":
                 stored = synthetic_valley.reference()
                 print("2D water surfaces against the stored reference: largest difference",
                       round(float(np.abs(stored["wse"] - ref["wse"]).max()), 4), "m")
-                cells = flow_figure(valley, flows, results[False, DEFAULT])
+                cells = flow_figure(valley, flows, results[False, DEFAULT], results[False, None])
                 by_cell = {tuple(c): w for c, w in zip(ref["path"], ref["wse"])}
                 section_figure(valley, by_cell, results[False, None], results[False, DEFAULT], cells)
                 errors_figure(valley, ref, results)

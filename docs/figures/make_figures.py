@@ -35,7 +35,15 @@ from arc.outputs.curve_files import (
 )
 from arc.outputs.rating_curves import WSE, Q, T, V
 from arc.rating_curve import rating_curve
-from arc.standard_step import EDDY_LENGTH, G, HydraulicTable, _eddy_ends, _march, _packed, step_up
+from arc.standard_step import (
+    EDDY_LENGTH,
+    G,
+    HydraulicTable,
+    _eddy_ends,
+    _march,
+    _packed,
+    step_up,
+)
 from arc.xsection.xsection import XSection
 
 IMAGES = Path(__file__).resolve().parent.parent / "images"
@@ -347,7 +355,7 @@ def baseflow_hold_figure() -> None:
     linked = {}
     for held in (False, True):
         wse, *_ = _march(*_packed(tables), *tables[-1].parameters, flows, normal[-1:], np.full(flows.shape, held),
-                         banks, np.diff(stations), _eddy_ends(stations, EDDY_LENGTH), 1.0)
+                         banks, np.diff(stations), _eddy_ends(stations, EDDY_LENGTH), 1.0, np.empty((*flows.shape, 5)))
         linked[held] = wse[:, 0]
 
     km = stations / 1000.0
@@ -436,7 +444,7 @@ def slope_change_reach(slopes: tuple[float, float], lengths: tuple[float, float]
     tables = [HydraulicTable(xs, float(bed) + 3.5) for xs, bed in zip(sections, beds)]
     flows = np.full((stations.size, 1), flow)
     wse, *_ = _march(*_packed(tables), *tables[-1].parameters, flows, normal[-1:], np.zeros(flows.shape, dtype=bool),
-                     beds, np.diff(stations), _eddy_ends(stations, EDDY_LENGTH), 1.0)
+                     beds, np.diff(stations), _eddy_ends(stations, EDDY_LENGTH), 1.0, np.empty((*flows.shape, 5)))
     return stations, beds, normal, wse[:, 0]
 
 

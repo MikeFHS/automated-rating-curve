@@ -339,6 +339,27 @@ def stream_raster_cells(streams: np.ndarray) -> tuple[np.ndarray, np.ndarray, np
     return rows, cols, streams.ravel()[flat]
 
 
+def stream_row_starts(rows: np.ndarray, nrows: int) -> np.ndarray:
+    """Where each row's cells start among stream cells listed row by row (stream_raster_cells' rows), and after the
+    last, how many there are: nrows + 1 of them, for is_stream_cell."""
+    return np.searchsorted(rows, np.arange(nrows + 1))
+
+
+@njit(cache=True, error_model="numpy")
+def is_stream_cell(starts, stream_cols, row, col):
+    """Whether a cell on the raster is one of the stream cells listed row by row, whose columns are stream_cols
+    (ascending in each row), each row's from starts[row] (stream_row_starts)."""
+    lo, hi = starts[row], starts[row + 1]
+    while lo < hi:
+        middle = (lo + hi) // 2
+        if stream_cols[middle] < col:
+            lo = middle + 1
+        else:
+            hi = middle
+
+    return lo < starts[row + 1] and stream_cols[lo] == col
+
+
 def stream_cells_by_reach(streams: np.ndarray | None = None, *, cells=None) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """The rows and columns of each reach's cells in a stream raster, whose cells above 0 hold their reach's ID, or
     in its cells as stream_raster_cells gives them."""

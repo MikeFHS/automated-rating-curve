@@ -43,5 +43,6 @@ class XSection:
     carved_banks: tuple[float, float] | None = field(init=False, default=None)
     subcell: bool = field(init=False, default=False)
     # The last spliced profile and what it was spliced from (arc.hydraulics.hydraulic_profile), which it knows by
-    # identity: arrays changed in place after a splice aren't seen, so replace them instead
+    # identity: arrays changed in place after a splice aren't seen, so replace them instead. Only the most recent
+    # splices are kept (arc.hydraulics.KEPT_SPLICES)
     _spliced: tuple | None = field(init=False, default=None)

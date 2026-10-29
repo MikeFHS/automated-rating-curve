@@ -588,11 +588,22 @@ def bank_control_elevation(banks: Banks, thalweg: float) -> float:
 def in_bank(xs: XSection, banks: Banks) -> np.ndarray:
     """Which ordinates are between valid banks, the banks included. None are for banks that aren't valid."""
     n = xs.elevations.size
-    offsets = (np.arange(n) - n // 2) * float(xs.ordinate_distance)
     if not banks.valid:
         return np.zeros(n, dtype=bool)
     tolerance = 1e-9 * float(xs.ordinate_distance)
-    return (offsets >= -banks.left - tolerance) & (offsets <= banks.right + tolerance)
+    return _between(n, float(xs.ordinate_distance), -banks.left - tolerance, banks.right + tolerance)
+
+
+@njit(cache=True, error_model="numpy")
+def _between(n, spacing, low, high):
+    """Which of n ordinates spacing apart, the centre's at 0, are from low to high metres out (negative to the
+    left)."""
+    out = np.empty(n, np.bool_)
+    for i in range(n):
+        offset = (i - n // 2) * spacing
+        out[i] = offset >= low and offset <= high
+
+    return out
 
 
 def set_in_bank_roughness(xs: XSection, banks: Banks, mannings_n: float) -> None:

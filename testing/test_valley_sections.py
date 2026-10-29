@@ -51,9 +51,7 @@ def trapezoid(half: int = 60) -> XSection:
 def lines(left: np.ndarray, right: np.ndarray, ratio: float = 1.0, n: float = N) -> Valley:
     """Overbanks whose lines from the banks have this ground, out from the bank, ordinates SPACING apart."""
     elevations = np.r_[np.asarray(left, float)[::-1], 0.0, right]
-    empty = np.zeros(0, np.int64)
-    return Valley(0.3, ratio, ratio, elevations, np.full(elevations.size, n), SPACING, elevations.size // 2, empty,
-                  empty)
+    return Valley(0.3, ratio, ratio, elevations, np.full(elevations.size, n), SPACING, elevations.size // 2)
 
 
 def conveyance(*parts) -> float:
@@ -266,9 +264,9 @@ def test_the_left_line_is_on_the_section_s_left(meander_errors, standard_step: b
     split = [s for s in results.sections if s is not None and s.xs.valley is not None]
     assert len(split) > 0.75 * len(results.sections)  # not the straight channel above and below the meanders
     for section in split:
-        valley = section.xs.valley
+        rows, cols = pipeline.valley_cells(section, 10.0, 10.0)
         own = np.array([section.rows[0] - section.row, section.cols[0] - section.col], float)
-        theirs = np.array([valley.rows[0] - section.row, valley.cols[0] - section.col], float)
+        theirs = np.array([rows[0] - section.row, cols[0] - section.col], float)
         assert own @ theirs > 0.0
 
 
@@ -278,11 +276,12 @@ def test_the_lines_start_at_the_banks(meander_errors) -> None:
     results = meander_errors[False, "results"]
     for section in (s for s in results.sections if s is not None and s.xs.valley is not None):
         valley, xs = section.xs.valley, section.xs
+        rows, cols = pipeline.valley_cells(section, 10.0, 10.0)
         own, h = section.direction - math.pi / 2, valley.elevations.size // 2
         for side, bank, k in ((-1, xs.left_bank_distance, h - 1), (1, xs.right_bank_distance, h + 1)):
             bank_row = section.row + side * math.sin(own) * bank / 10.0
             bank_col = section.col + side * math.cos(own) * bank / 10.0
-            gap = math.hypot(valley.rows[k] - bank_row, valley.cols[k] - bank_col) * 10.0
+            gap = math.hypot(rows[k] - bank_row, cols[k] - bank_col) * 10.0
             assert gap <= valley.ordinate_distance + 10.0 * math.sqrt(0.5)  # a spacing, and rounding to a cell
 
 

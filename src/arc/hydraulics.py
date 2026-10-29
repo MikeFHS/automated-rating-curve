@@ -28,6 +28,8 @@ water. Each segment takes the depth over its inner end. Factors of 1 leave n as 
 from __future__ import annotations
 
 import math
+import weakref
+from collections import deque
 from typing import NamedTuple
 
 import numpy as np
@@ -151,7 +153,18 @@ def top_widths(elevations, spacing, wse):
 def uniform_profile(elevations: np.ndarray, mannings_n: np.ndarray, spacing: float) -> Profile:
     """The profile of ordinates a spacing apart, with the stream cell in the middle."""
     center = elevations.size // 2
-    return Profile((np.arange(elevations.size) - center) * float(spacing), elevations, mannings_n, center)
+    stations = np.arange(-center, elevations.size - center, dtype=np.float64)  # (k - center) * spacing, in one array
+    stations *= float(spacing)
+    return Profile(stations, elevations, mannings_n, center)
+
+
+# How many cross sections keep their last splice (hydraulic_profile): the most recent, so that the steps that work
+# a cross section out again and again in a row, or a reach's at a time, find it, but a run doesn't hold one for every
+# cross section at once, as much memory as their valleys
+KEPT_SPLICES = 512
+# The kept splices, oldest first: each a weak reference to its cross section and the splice's id, which hold none of
+# their memory once the cross sections go
+_kept_splices: deque = deque()
 
 
 def hydraulic_profile(xs: XSection) -> Profile:
@@ -162,17 +175,25 @@ def hydraulic_profile(xs: XSection) -> Profile:
         if xs.profile is not None:
             return xs.profile
         return uniform_profile(xs.elevations, xs.mannings_n, xs.ordinate_distance)
-    
+
     # Spliced once for the same valley, ground and banks: the cache holds them, so none is a new object in their place
     sources = (valley, xs.profile, xs.elevations, xs.mannings_n, xs.left_bank_distance, xs.right_bank_distance)
     cached = xs._spliced
     if cached is not None and all(a is b or (isinstance(a, float) and a == b) for a, b in zip(cached[0], sources)):
         return cached[1]
-    
+
     profile = xs.profile if xs.profile is not None else uniform_profile(xs.elevations, xs.mannings_n,
                                                                           xs.ordinate_distance)
     spliced = splice(profile, float(xs.left_bank_distance), float(xs.right_bank_distance), valley)
-    xs._spliced = (sources, spliced)
+    xs._spliced = cached = (sources, spliced)
+    _kept_splices.append((weakref.ref(xs), id(cached)))
+    if len(_kept_splices) > KEPT_SPLICES:
+        # The oldest kept goes, unless its cross section has spliced again since
+        oldest, entry = _kept_splices.popleft()
+        oldest = oldest()
+        if oldest is not None and id(oldest._spliced) == entry:
+            oldest._spliced = None
+
     return spliced
 
 
@@ -479,10 +500,12 @@ def wse_for_profile_conveyance(stations, elevations, mannings_n, center, left_ba
     level = float(elevations[center])
     if target <= 0.0:
         return level
-    
+
     left = right = center
+    k_top = np.nan  # the conveyance at the top of the last interval, which is this level
     while True:
         # Once the water is above this level, each side's edge moves past any ground no higher than it
+        old_left, old_right = left, right
         while right < n - 1 and elevations[right + 1] <= level:
             right += 1
         while left > 0 and elevations[left - 1] <= level:
@@ -490,9 +513,15 @@ def wse_for_profile_conveyance(stations, elevations, mannings_n, center, left_ba
 
         if level > max_wse:
             return np.nan
-        
-        k_start = _profile_interval_conveyance(stations, elevations, mannings_n, center, left_bank, right_bank, level,
-                                               left, right, k_decay, shallow_factor, deep_factor)
+
+        if k_top == k_top and right - old_right <= 1 and old_left - left <= 1:  # noqa: PLR0124
+            # Each edge moved past the vertex at this level at most, onto ground above it: the water is the last
+            # interval's at its top, and so is its conveyance, bit for bit
+            k_start = k_top
+        else:
+            k_start = _profile_interval_conveyance(stations, elevations, mannings_n, center, left_bank, right_bank,
+                                                   level, left, right, k_decay, shallow_factor, deep_factor)
+            
         if k_start >= target:
             return level
         

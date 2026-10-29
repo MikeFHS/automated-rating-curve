@@ -11,7 +11,7 @@ from test_pipeline import ROWS, flip_to_south_up, write_channel
 from arc import pipeline
 from arc import process_geospatial_data as geospatial
 from arc.config import Configs
-from arc.Create_GeoJSON import (
+from arc.create_geojson import (
     Cell_Center_Coordinates,
     Write_SEED_Data_To_File_Using_Stream_Raster,
 )

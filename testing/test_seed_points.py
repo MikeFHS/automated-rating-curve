@@ -10,7 +10,7 @@ import pytest
 from osgeo import gdal, osr
 from shapely.geometry import LineString, Point
 
-from arc.Create_GeoJSON import FindClosestSEEDPoints, Read_Or_Find_SEED_Locations
+from arc.create_geojson import FindClosestSEEDPoints, Read_Or_Find_SEED_Locations
 
 CRS = "EPSG:32615"
 # Two headwater streams, 1 and 2, join and flow into stream 3

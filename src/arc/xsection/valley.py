@@ -34,7 +34,7 @@ import numpy as np
 from numba import njit
 
 from arc.xsection.sampling import _interpolate, _interpolate_classes
-from arc.xsection.stream_path import along_stream_stations
+from arc.xsection.stream_path import along_stream_stations, is_stream_cell
 from arc.xsection.xsection import Profile
 
 MAX_SINUOSITY = 3.0  # the valley's slope at most three times the channel's
@@ -49,7 +49,8 @@ class Valley:
     slope over the channel's `slope_ratio`, and the ground and Manning's n at the ordinates of the two lines out from
     the cross section's banks, as one array: the left line's from its far end in, the stream cell's, and the right
     line's from the bank out, `ordinate_distance` apart (and as far from the banks). `full_half` is how many ordinates
-    the longer line would have out to the raster's edge; rows and cols are the ordinates' cells."""
+    the longer line would have out to the raster's edge. The ordinates' cells aren't kept, as nothing needs them:
+    arc.pipeline.valley_cells works them out."""
     direction: float
     sinuosity: float
     slope_ratio: float
@@ -57,8 +58,6 @@ class Valley:
     mannings_n: np.ndarray
     ordinate_distance: float
     full_half: int
-    rows: np.ndarray
-    cols: np.ndarray
 
 
 def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
@@ -240,9 +239,46 @@ def ray_classes(classes, water, lookup, water_value, x0, y0, cos, sin, spacing, 
 
 
 @njit(cache=True, error_model="numpy")
+def valley_lines(dem, classes, water, lookup, water_n, lines, spacing, half, dx, dy, centre, centre_n, stream_starts,
+                 stream_cols, water_mask, known):
+    """The overbanks' ground and Manning's n as Valley holds them, from the two lines out from a cross section's
+    banks, each `half` ordinates long: lines[0] the left and lines[1] the right, each (x0, y0, cos, sin) as ray_values
+    takes them. The ground is ray_values' with the water the lines cross filled (fill_other_water) and the n
+    ray_classes', with the stream cell's ground centre and n centre_n in the middle. The water is where the cell
+    nearest an ordinate is a stream cell (is_stream_cell, from stream_starts and stream_cols) or the water mask's
+    above 0, without a water mask (None) a stream cell alone. `known` holds each line's ground sampled already, from
+    its first ordinate out (ray_reach's), which isn't sampled again."""
+    size = 2 * half + 1
+    z, n = np.empty(size), np.empty(size)
+    wet = np.zeros(size, np.bool_)
+    nrows, ncols = dem.shape
+    z[half], n[half] = centre, centre_n
+    for side in range(2):
+        x0, y0, cos, sin = lines[side]
+        step = 1 if side else -1
+        ground = known[side]
+        for k in range(1, half + 1):
+            distance = spacing * k
+            x, y = x0 + cos * distance / dx, y0 + sin * distance / dy
+            i = half + step * k
+            z[i] = ground[k - 1] if k <= ground.size else _interpolate(dem, x, y)
+            n[i] = _interpolate_classes(classes, water, lookup, water_n, x, y)
+            r, c = np.rint(y), np.rint(x)
+            if 0 <= r < nrows and 0 <= c < ncols:
+                wet[i] = is_stream_cell(stream_starts, stream_cols, int(r), int(c))
+                if water_mask is not None:
+                    wet[i] = wet[i] or water_mask[int(r), int(c)] > 0
+
+    _fill_side(z, wet, -1)
+    _fill_side(z, wet, 1)
+    return z, n
+
+
+@njit(cache=True, error_model="numpy")
 def ray_reach(raster, x0, y0, cos, sin, spacing, dx, dy, level):
     """How many ordinates along the line (as ray_values) it takes to reach one above level, or off the raster (the
-    first off it counted), and how many to leave the raster."""
+    first off it counted), and how many to leave the raster; and the values at the ordinates it looked at on the way
+    (as ray_values', from the first)."""
     rows, cols = raster.shape
     edge = _steps_off(x0, cos * spacing / dx, cols) if cos * spacing / dx != 0.0 else 1 << 62
     edge = min(edge, _steps_off(y0, sin * spacing / dy, rows) if sin * spacing / dy != 0.0 else 1 << 62)
@@ -253,12 +289,14 @@ def ray_reach(raster, x0, y0, cos, sin, spacing, dx, dy, level):
     while _on_raster(x0, y0, cos, sin, spacing, edge, dx, dy, rows, cols):
         edge += 1
 
+    values = np.empty(max(edge - 1, 0))
     for k in range(1, edge):
         distance = spacing * k
-        if _interpolate(raster, x0 + cos * distance / dx, y0 + sin * distance / dy) > level:
-            return k, edge
-        
-    return edge, edge
+        values[k - 1] = _interpolate(raster, x0 + cos * distance / dx, y0 + sin * distance / dy)
+        if values[k - 1] > level:
+            return k, edge, values[:k]
+
+    return edge, edge, values
 
 
 @njit(cache=True, error_model="numpy")

@@ -54,7 +54,7 @@ def GetMeanFlowValues(NetCDF_Directory):
             mean_Qout_all_rivids = qout_ds['Qout'].mean(dim='time')
 
             # Trigger the computation if using Dask (although not necessary here since the dataset is 335MB)
-            mean_Qout_all_rivids_values = mean_Qout_all_rivids.compute()
+            mean_Qout_all_rivids.compute()
 
             # Convert the xarray DataArray to a pandas DataFrame
             mean_Qout_df = mean_Qout_all_rivids.to_dataframe(name='qout_mean').reset_index()
@@ -102,7 +102,7 @@ def GetMedianFlowValues(NetCDF_Directory):
             median_Qout_all_rivids = qout_ds['Qout'].median(dim='time')
 
             # Trigger the computation if using Dask (although not necessary here since the dataset is 335MB)
-            median_Qout_all_rivids_values = median_Qout_all_rivids.compute()
+            median_Qout_all_rivids.compute()
 
             # Convert the xarray DataArray to a pandas DataFrame
             median_Qout_df = median_Qout_all_rivids.to_dataframe(name='qout_median').reset_index()
@@ -260,7 +260,7 @@ def Process_and_Write_Retrospective_Data_for_DEM_Tile(StrmShp_gdf, rivid_field, 
 
     # Set up the S3 connection
     ODP_S3_BUCKET_REGION = 'us-west-2'
-    s3 = s3fs.S3FileSystem(anon=True, client_kwargs=dict(region_name=ODP_S3_BUCKET_REGION))
+    s3 = s3fs.S3FileSystem(anon=True, client_kwargs={"region_name": ODP_S3_BUCKET_REGION})
 
     # Open the flow duration curve (FDC) data on S3, for the median (p_exceed 50) and maximum (p_exceed 0) flows
     fdc_s3_uri = 's3://geoglows-v2-retrospective/fdc.zarr'

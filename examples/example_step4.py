@@ -1,5 +1,5 @@
 # local imports
-from arc.Create_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
+from arc.create_geojson import Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
 
 if __name__ == "__main__":
 

@@ -31,8 +31,8 @@ GAP_NEIGHBOURS = 4  # a gap is filled if at least this many of the eight cells a
 def ordinate_cells(row: int, col: int, stream_direction: float, cross_section_length: float, dx: float, dy: float
                    ) -> tuple[np.ndarray, np.ndarray]:
     """The row and column of the cell nearest each ordinate of the cross section that sample_cross_section takes
-    with these arguments. Ordinates off the raster get cells off it too. The cells _compute_dem_coordinates gives,
-    worked out the same way, compiled."""
+    with these arguments, as int32. Ordinates off the raster get cells off it too. The cells _compute_dem_coordinates
+    gives, worked out the same way, compiled."""
     xs_direction = stream_direction - np.pi / 2
     cos, sin = np.cos(xs_direction), np.sin(xs_direction)
     spacing = 1 / max(abs(cos) / dx, abs(sin) / dy)
@@ -42,12 +42,12 @@ def ordinate_cells(row: int, col: int, stream_direction: float, cross_section_le
 
 @njit(cache=True, error_model="numpy")
 def _ordinate_cells(row, col, cos, sin, spacing, half, dx, dy):
-    rows = np.empty(2 * half + 1, np.intp)
-    cols = np.empty(2 * half + 1, np.intp)
+    rows = np.empty(2 * half + 1, np.int32)
+    cols = np.empty(2 * half + 1, np.int32)
     for k in range(-half, half + 1):
         x = spacing * k
-        cols[k + half] = np.intp(np.rint(col + cos * x / dx))
-        rows[k + half] = np.intp(np.rint(row + sin * x / dy))
+        cols[k + half] = np.int32(np.rint(col + cos * x / dx))
+        rows[k + half] = np.int32(np.rint(row + sin * x / dy))
 
     return rows, cols
 

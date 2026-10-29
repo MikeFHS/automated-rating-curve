@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import fields
 from pathlib import Path
 
 import pytest

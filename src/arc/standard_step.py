@@ -108,6 +108,7 @@ from arc.xsection.xsection import XSection
 
 G = 9.81 # m/s^2: the acceleration of gravity, for the velocity head
 LEVELS = 240  # water surfaces in each cross section's table
+_LEVEL_STEPS = np.arange(LEVELS, dtype=np.float64)
 TOLERANCE = 1e-6  # metres: how closely each step's water surface is found
 CONTRACTION = 0.1  # loss coefficients on the change in velocity head, where the flow speeds up going downstream...
 EXPANSION = 0.3  # ...and where it slows
@@ -131,21 +132,21 @@ def _alpha(area, conveyance, channel_area, channel_conveyance):
 
 
 @njit(cache=True, error_model="numpy")
-def _state(stations, elevations, mannings_n, center, left_bank, right_bank, wse, k_decay, shallow_factor,
-           deep_factor):
-    """The area, conveyance and velocity-head coefficient at a water surface, exactly."""
-    a, _, _, k, a_channel, k_channel = section_hydraulics(stations, elevations, mannings_n, center, left_bank,
+def _hydraulics(stations, elevations, mannings_n, center, left_bank, right_bank, wse, k_decay, shallow_factor,
+                deep_factor):
+    """The area (at least 1e-9), conveyance and velocity-head coefficient at a water surface, exactly, then the
+    wetted perimeter and top width."""
+    a, p, t, k, a_channel, k_channel = section_hydraulics(stations, elevations, mannings_n, center, left_bank,
                                                           right_bank, wse, k_decay, shallow_factor, deep_factor)
-    return max(a, 1e-9), k, _alpha(a, k, a_channel, k_channel)
+    return max(a, 1e-9), k, _alpha(a, k, a_channel, k_channel), p, t
 
 
 @njit(cache=True, error_model="numpy")
-def _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
-            wse, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length, slope_factor, extra):
-    """The energy at a water surface of the upstream cross section, less what the energy equation needs there: with
-    the expansion loss where the water slows going downstream, and extra, the contraction loss (see _step_up)."""
-    area, conveyance, alpha = _state(stations, elevations, mannings_n, center, left_bank, right_bank, wse, k_decay,
-                                     shallow_factor, deep_factor)
+def _excess(wse, area, conveyance, alpha, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
+            slope_factor, extra):
+    """The energy at a water surface of the upstream cross section, whose area, conveyance and alpha are these, less
+    what the energy equation needs there: with the expansion loss where the water slows going downstream, and extra,
+    the contraction loss (see _step_up)."""
     head = alpha * (q_up / area) ** 2 / (2.0 * G)
     friction = (flow_sum / max((conveyance_down + conveyance) * slope_factor, 1e-9)) ** 2
     return wse + head - (energy_down + length * friction + EXPANSION * max(head - eddy_head, 0.0) / eddy_steps
@@ -154,50 +155,46 @@ def _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_d
 
 @njit(cache=True, error_model="numpy")
 def _root(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
-          low, high, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length, slope_factor,
-          extra):
+          low, high, f_low, f_high, state_low, state_high, q_up, energy_down, eddy_head, eddy_steps, conveyance_down,
+          flow_sum, length, slope_factor, extra):
     """The water surface between low (energy short) and high (enough) where the energy equation holds, by the
-    Illinois variant of the false position method, to TOLERANCE."""
-    f_low = _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor,
-                    deep_factor, low, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
-                    slope_factor, extra)
-    f_high = _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor,
-                     deep_factor, high, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
-                     slope_factor, extra)
+    Illinois variant of the false position method, to TOLERANCE, given the excess (_excess) and the state (_hydraulics)
+    at both; and the state at the water surface."""
     if f_low >= 0.0:
-        return low
-    
+        return low, state_low
+
     if f_high <= 0.0:
-        return high
-    
+        return high, state_high
+
     wse = high
     side = 0
     for _ in range(100):
         wse = (low * f_high - high * f_low) / (f_high - f_low)
-        f = _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor,
-                    deep_factor, wse, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
-                    slope_factor, extra)
+        state = _hydraulics(stations, elevations, mannings_n, center, left_bank, right_bank, wse, k_decay,
+                            shallow_factor, deep_factor)
+        f = _excess(wse, state[0], state[1], state[2], q_up, energy_down, eddy_head, eddy_steps, conveyance_down,
+                    flow_sum, length, slope_factor, extra)
         if f > 0.0:
-            high, f_high = wse, f
+            high, f_high, state_high = wse, f, state
             if side == -1:
                 f_low *= 0.5
             side = -1
         else:
-            low, f_low = wse, f
+            low, f_low, state_low = wse, f, state
             if side == 1:
                 f_high *= 0.5
             side = 1
 
         if abs(f) < 1e-12:
-            return wse
-        
+            return wse, state
+
         if high - low < TOLERANCE:
             break
 
     # The side with energy enough: where the energy jumps across what's needed, as where the water tops a high point
     # of the cross section and the low ground beyond joins it, the bracket closes on the jump, and the side its last
     # guess fell on would decide the hydraulics the next step up takes from it
-    return high
+    return high, state_high
 
 
 @njit(cache=True, error_model="numpy")
@@ -207,10 +204,11 @@ def _velocity_head(alpha, area, q):
 
 
 @njit(cache=True, error_model="numpy")
-def _critical(levels, alpha, area, q, ordered=False):
-    """The level of a table whose water surface plus velocity head is least, carrying q: critical depth. The first
-    such level, or the first whose energy is NaN, as np.argmin picks. ordered says the table is (_ordered), so that
-    the search can stop at the first level at or above the least energy so far: no energy is NaN or below its level."""
+def _critical_index(levels, alpha, area, q, ordered=False):
+    """The index of the level of a table whose water surface plus velocity head is least, carrying q: critical depth.
+    The first such level, or the first whose energy is NaN, as np.argmin picks. ordered says the table is (_ordered),
+    so that the search can stop at the first level at or above the least energy so far: no energy is NaN or below its
+    level."""
     best = 0
     least = levels[0] + _velocity_head(alpha[0], area[0], q)
     stop = ordered and abs(q) < 1e100  # and so is every velocity head finite
@@ -222,7 +220,13 @@ def _critical(levels, alpha, area, q, ordered=False):
         if energy < least or (energy != energy and least == least):  # noqa: PLR0124
             best, least = i, energy
 
-    return levels[best]
+    return best
+
+
+@njit(cache=True, error_model="numpy")
+def _critical(levels, alpha, area, q, ordered=False):
+    """The level of least energy carrying q (_critical_index)."""
+    return levels[_critical_index(levels, alpha, area, q, ordered)]
 
 
 @njit(cache=True, error_model="numpy")
@@ -231,24 +235,27 @@ def _ordered(levels, alpha, area):
     for i in range(levels.size):
         if not (np.isfinite(levels[i]) and np.isfinite(alpha[i]) and alpha[i] >= 0.0 and np.isfinite(area[i])):
             return False
-        
+
         if i > 0 and not levels[i] > levels[i - 1]:
             return False
-        
+
     return True
 
 
 @njit(cache=True, error_model="numpy")
 def _lowest_root(levels, alpha, area, conveyance, stations, elevations, mannings_n, center, left_bank, right_bank,
-                 k_decay, shallow_factor, deep_factor, q_up, length, slope_factor, lowest, energy_down, flow_sum,
-                 conveyance_down, eddy_head, eddy_steps, extra, ordered):
+                 k_decay, shallow_factor, deep_factor, q_up, length, slope_factor, lowest, lowest_state, energy_down,
+                 flow_sum, conveyance_down, eddy_head, eddy_steps, extra, ordered):
     """The lowest water surface at or above lowest where the energy is enough (_excess, with extra), and whether
-    that is lowest itself, and the highest water surface the search worked the hydraulics out at."""
-    if _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
-               lowest, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length, slope_factor,
-               extra) >= 0.0:
-        return lowest, True, lowest
-    
+    that is lowest itself, and the highest water surface the search worked the hydraulics out at; and the state at the
+    water surface, given lowest's (lowest_state). The table's levels are where the hydraulics are known already: at
+    each, its row is what _hydraulics gives there."""
+    nan = math.nan
+    f_lowest = _excess(lowest, lowest_state[0], lowest_state[1], lowest_state[2], q_up, energy_down, eddy_head,
+                       eddy_steps, conveyance_down, flow_sum, length, slope_factor, extra)
+    if f_lowest >= 0.0:
+        return lowest, True, lowest, lowest_state
+
     # The first level above lowest with energy enough, by the table, brackets the root with the level below it
     first = -1
     start = 0
@@ -262,90 +269,132 @@ def _lowest_root(levels, alpha, area, conveyance, stations, elevations, mannings
             else:
                 start = middle + 1
 
+    f_first = f_before = 0.0
+    before = -2  # the last level whose excess the search worked out, short of enough
     for i in range(start, levels.size):
         if levels[i] > lowest:
             head = _velocity_head(alpha[i], area[i], q_up)
             loss = EXPANSION * max(head - eddy_head, 0.0) / eddy_steps
             friction = (flow_sum / max((conveyance_down + conveyance[i]) * slope_factor, 1e-9)) ** 2
-            if levels[i] + head - (energy_down + length * friction + loss + extra) >= 0.0:
-                first = i
+            f = levels[i] + head - (energy_down + length * friction + loss + extra)
+            if f >= 0.0:
+                first, f_first = i, f
                 break
+
+            before, f_before = i, f
 
     if first >= 0:
         low, high = max(levels[first - 1], lowest), levels[first]
+        state_high, f_high = (area[first], conveyance[first], alpha[first], nan, nan), f_first
+        if low == lowest:
+            state_low, f_low = lowest_state, f_lowest
+        else:
+            i = first - 1 if first > 0 else levels.size - 1
+            state_low = (area[i], conveyance[i], alpha[i], nan, nan)
+            f_low = f_before if before == i else _excess(low, state_low[0], state_low[1], state_low[2], q_up,
+                                                         energy_down, eddy_head, eddy_steps, conveyance_down,
+                                                         flow_sum, length, slope_factor, extra)
     else:
         # The water below stands higher than the table reaches, backing water up beyond it: look higher
         low = max(levels[levels.size - 1], lowest)
+        if low == lowest:
+            state_low, f_low = lowest_state, f_lowest
+        else:
+            i = levels.size - 1
+            state_low = (area[i], conveyance[i], alpha[i], nan, nan)
+            f_low = _excess(low, state_low[0], state_low[1], state_low[2], q_up, energy_down, eddy_head, eddy_steps,
+                            conveyance_down, flow_sum, length, slope_factor, extra)
+            
         rise = max(energy_down - low, 0.0) + 0.5
         high = low + rise
         enough = False
+        f_high = 0.0
+        state_high = lowest_state
         for _ in range(60):
-            if _excess(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor,
-                       deep_factor, high, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
-                       slope_factor, extra) >= 0.0:
+            state_high = _hydraulics(stations, elevations, mannings_n, center, left_bank, right_bank, high,
+                                     k_decay, shallow_factor, deep_factor)
+            f_high = _excess(high, state_high[0], state_high[1], state_high[2], q_up, energy_down, eddy_head,
+                             eddy_steps, conveyance_down, flow_sum, length, slope_factor, extra)
+            if f_high >= 0.0:
                 enough = True
                 break
 
-            low, rise = high, 2.0 * rise
+            low, rise, state_low, f_low = high, 2.0 * rise, state_high, f_high
             high = low + rise
 
         if not enough:
-            return lowest, True, high
-        
-    return _root(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
-                 low, high, q_up, energy_down, eddy_head, eddy_steps, conveyance_down, flow_sum, length,
-                 slope_factor, extra), False, high
+            return lowest, True, high, lowest_state
+
+    wse, state = _root(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor,
+                       deep_factor, low, high, f_low, f_high, state_low, state_high, q_up, energy_down, eddy_head,
+                       eddy_steps, conveyance_down, flow_sum, length, slope_factor, extra)
+    return wse, False, high, state
 
 
 @njit(cache=True, error_model="numpy")
 def _step_up(levels, alpha, area, conveyance, stations, elevations, mannings_n, center, left_bank, right_bank, k_decay,
-             shallow_factor, deep_factor, q_up, length, slope_factor, floor, wse_down, q_down, critical_down,
-             conveyance_down, head_down, eddy_head, eddy_steps, ordered=False):
+             shallow_factor, deep_factor, q_up, length, slope_factor, floor, floor_state, wse_down, q_down,
+             critical_down, conveyance_down, head_down, eddy_head, eddy_steps, ordered=False):
     """step_up, given the upstream cross section's table and profile, and the downstream one's water surface, its
     critical depth, and its conveyance and velocity head there. Also returns the upstream critical depth, which the
-    next step up takes as its critical_down, and the highest water surface it worked out the upstream cross section's
-    hydraulics at, beyond its table's levels. ordered is whether the table is (_ordered).
+    next step up takes as its critical_down, the highest water surface it worked out the upstream cross section's
+    hydraulics at, beyond its table's levels, and the state (_hydraulics) at the water surface, the wetted perimeter
+    and top width NaN where they weren't worked out. floor_state is the state at floor, if its area isn't NaN.
+    ordered is whether the table is (_ordered).
 
     The water surface is the lowest root with the expansion loss alone (which is the root with the eddy loss where the
     water slows going downstream); where the water there speeds up going downstream instead, the contraction loss is
     reckoned at its velocity head, and the water raised from there to make it up (see the notes above)."""
-    critical = _critical(levels, alpha, area, q_up, ordered)
+    index = _critical_index(levels, alpha, area, q_up, ordered)
+    critical = levels[index]
+    nan = math.nan
     if wse_down < critical_down:
         # The water below is supercritical, and no subcritical water surface steps up from it
-        return max(critical, floor), True, critical, max(critical, floor)
-    
+        return max(critical, floor), True, critical, max(critical, floor), (nan, nan, nan, nan, nan)
+
     energy_down = wse_down + head_down
     flow_sum = q_up + q_down
     lowest = max(critical, floor)
-    wse, at_lowest, top = _lowest_root(levels, alpha, area, conveyance, stations, elevations, mannings_n, center,
-                                       left_bank, right_bank, k_decay, shallow_factor, deep_factor, q_up, length,
-                                       slope_factor, lowest, energy_down, flow_sum, conveyance_down, eddy_head,
-                                       eddy_steps, 0.0, ordered)
-    water_area, _, water_alpha = _state(stations, elevations, mannings_n, center, left_bank, right_bank, wse, k_decay,
-                                        shallow_factor, deep_factor)
-    head = _velocity_head(water_alpha, water_area, q_up)
+    if lowest == critical:
+        lowest_state = (area[index], conveyance[index], alpha[index], nan, nan)
+    elif lowest == floor and floor_state[0] == floor_state[0]:
+        lowest_state = floor_state
+    else:
+        lowest_state = _hydraulics(stations, elevations, mannings_n, center, left_bank, right_bank, lowest,
+                                   k_decay, shallow_factor, deep_factor)
+        
+    wse, at_lowest, top, state = _lowest_root(levels, alpha, area, conveyance, stations, elevations, mannings_n,
+                                              center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
+                                              q_up, length, slope_factor, lowest, lowest_state, energy_down, flow_sum,
+                                              conveyance_down, eddy_head, eddy_steps, 0.0, ordered)
+    head = _velocity_head(state[2], state[0], q_up)
     if eddy_head > head:
         # The water speeds up going downstream: the contraction loss at this velocity head, made up from here
         contraction = CONTRACTION * (eddy_head - head) / eddy_steps
-        wse, raised_none, raised_top = _lowest_root(levels, alpha, area, conveyance, stations, elevations, mannings_n,
-                                                    center, left_bank, right_bank, k_decay, shallow_factor,
-                                                    deep_factor, q_up, length, slope_factor, wse, energy_down,
-                                                    flow_sum, conveyance_down, eddy_head, eddy_steps, contraction,
-                                                    ordered)
+        wse, raised_none, raised_top, state = _lowest_root(levels, alpha, area, conveyance, stations, elevations,
+                                                           mannings_n, center, left_bank, right_bank, k_decay,
+                                                           shallow_factor, deep_factor, q_up, length, slope_factor,
+                                                           wse, state, energy_down, flow_sum, conveyance_down,
+                                                           eddy_head, eddy_steps, contraction, ordered)
         at_lowest, top = at_lowest and raised_none, max(top, raised_top)
 
-    return wse, at_lowest and wse == critical, critical, top
+    return wse, at_lowest and wse == critical, critical, top, state
 
 
 @njit(cache=True, error_model="numpy")
 def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, starts, centers, left_banks, right_banks,
-           k_decay, shallow_factor, deep_factor, flows, start_wse, holds, hold_levels, lengths, far, slope_factor):
+           k_decay, shallow_factor, deep_factor, flows, start_wse, holds, hold_levels, lengths, far, slope_factor, out):
     """A reach's water surfaces at each of its flows (see apply_standard_step), its cross sections in order downstream:
     each one's table (levels, alpha, area and conveyance, a row each) and profile (cross section m's from starts[m] to
     starts[m + 1]), the last one's water surface at each flow before the checks (start_wse), the flows each one holds
     its water at most at its hold level, the lengths from each to the next and its eddy loss's far end (far). Also the
     number of steps, and for each cross section how many of its water surfaces are at critical depth and how many are
-    held, and the highest water surface its hydraulics were worked out at."""
+    held, and the highest water surface its hydraulics were worked out at. Each increment, its own cross section's
+    hydraulics at its water surface, goes in out (cross sections by flows by Q, V, T, WSE and P).
+
+    The hydraulics a step has worked out already are taken as they are, not worked out again: the table's at its
+    levels, the water surface's for the step above and the increment, and each cross section's at its water at the
+    flow before, the next flow's floor."""
     size, increments = flows.shape
     wse = np.empty((size, increments))
     heads = np.empty((size, increments))
@@ -358,6 +407,7 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
     for m in range(size):
         ordered[m] = _ordered(levels[m], alpha[m], area[m])
 
+    states = np.full((size, 5), np.nan)  # each cross section's state at its water at the flow before (NaN for none)
     for j in range(increments):
         # No cross section's water falls as the flow rises
         floor = wse[last, j - 1] if j > 0 else -np.inf
@@ -370,51 +420,46 @@ def _march(levels, alpha, area, conveyance, stations, elevations, mannings_n, st
         wse[last, j] = w
         highest[last] = max(highest[last], w)
         a, b = starts[last], starts[last + 1]
-        area_down, conveyance_down, alpha_down = _state(stations[a:b], elevations[a:b], mannings_n[a:b], centers[last],
-                                                        left_banks[last], right_banks[last], w, k_decay,
-                                                        shallow_factor, deep_factor)
-        heads[last, j] = _velocity_head(alpha_down, area_down, flows[last, j])
+        state = _hydraulics(stations[a:b], elevations[a:b], mannings_n[a:b], centers[last], left_banks[last],
+                            right_banks[last], w, k_decay, shallow_factor, deep_factor)
+        conveyance_down = state[1]
+        q = flows[last, j]
+        heads[last, j] = _velocity_head(state[2], state[0], q)
+        out[last, j, Q], out[last, j, V], out[last, j, T], out[last, j, WSE], out[last, j, P] = \
+            q, q / state[0], state[4], w, state[3]
         for m in range(size - 2, -1, -1):
             floor = wse[m, j - 1] if j > 0 else -np.inf
             end = far[m]
             a, b = starts[m], starts[m + 1]
-            w, at_critical, critical, top = _step_up(levels[m], alpha[m], area[m], conveyance[m], stations[a:b],
-                                                elevations[a:b], mannings_n[a:b], centers[m], left_banks[m],
-                                                right_banks[m], k_decay, shallow_factor, deep_factor, flows[m, j],
-                                                lengths[m], slope_factor, floor, wse[m + 1, j], flows[m + 1, j],
-                                                critical, conveyance_down, heads[m + 1, j], heads[end, j],
-                                                float(end - m), ordered[m])
-            if holds[m, j] and w > hold_levels[m]:
+            w, at_critical, critical, top, state = _step_up(
+                levels[m], alpha[m], area[m], conveyance[m], stations[a:b], elevations[a:b], mannings_n[a:b],
+                centers[m], left_banks[m], right_banks[m], k_decay, shallow_factor, deep_factor, flows[m, j],
+                lengths[m], slope_factor, floor, (states[m, 0], states[m, 1], states[m, 2], states[m, 3], states[m, 4]),
+                wse[m + 1, j], flows[m + 1, j], critical, conveyance_down, heads[m + 1, j], heads[end, j],
+                float(end - m), ordered[m])
+            held = holds[m, j] and w > hold_levels[m]
+            if held:
                 # The baseflow stays in its channel: the energy over its level is lost here
                 w, at_critical = max(hold_levels[m], floor), False
                 held_at[m] += 1
 
             wse[m, j] = w
             highest[m] = max(highest[m], top, w)
-            area_down, conveyance_down, alpha_down = _state(stations[a:b], elevations[a:b], mannings_n[a:b],
-                                                            centers[m], left_banks[m], right_banks[m], w, k_decay,
-                                                            shallow_factor, deep_factor)
-            heads[m, j] = _velocity_head(alpha_down, area_down, flows[m, j])
+            if held or state[3] != state[3]:
+                # Not the root's, or the table's, without the wetted perimeter and top width
+                state = _hydraulics(stations[a:b], elevations[a:b], mannings_n[a:b], centers[m], left_banks[m],
+                                    right_banks[m], w, k_decay, shallow_factor, deep_factor)
+
+            conveyance_down = state[1]
+            states[m, 0], states[m, 1], states[m, 2], states[m, 3], states[m, 4] = state
+            q = flows[m, j]
+            heads[m, j] = _velocity_head(state[2], state[0], q)
+            out[m, j, Q], out[m, j, V], out[m, j, T], out[m, j, WSE], out[m, j, P] = \
+                q, q / state[0], state[4], w, state[3]
             steps += 1
             critical_at[m] += int(at_critical)
 
     return wse, steps, critical_at, held_at, highest
-
-
-@njit(cache=True, error_model="numpy")
-def _rewrite(stations, elevations, mannings_n, starts, centers, left_banks, right_banks, k_decay, shallow_factor,
-             deep_factor, flows, wse, out):
-    """A reach's increments at its flows and water surfaces, each with its own cross section's hydraulics there (the
-    profiles as _march takes them)."""
-    for m in range(flows.shape[0]):
-        a, b = starts[m], starts[m + 1]
-        for j in range(flows.shape[1]):
-            q, w = flows[m, j], wse[m, j]
-            area, perimeter, top_width, _, _, _ = section_hydraulics(stations[a:b], elevations[a:b], mannings_n[a:b],
-                                                                     centers[m], left_banks[m], right_banks[m], w,
-                                                                     k_decay, shallow_factor, deep_factor)
-            out[m, j, Q], out[m, j, V], out[m, j, T], out[m, j, WSE], out[m, j, P] = \
-                q, q / max(area, 1e-9), top_width, w, perimeter
 
 
 @njit(cache=True, error_model="numpy")
@@ -463,13 +508,18 @@ class HydraulicTable:
         self.parameters = _parameters(roughness)
         self.bed = float(profile.elevations[profile.center])
         span = max(top - self.bed, 0.5)
-        self.levels = self.bed + np.linspace(0.005, span + max(3.0, 0.5 * span), LEVELS)
+        stop = span + max(3.0, 0.5 * span)
+        # same as np.linspace(0.005, stop, LEVELS), without its overhead
+        heights = _LEVEL_STEPS * ((stop - 0.005) / (LEVELS - 1))
+        heights += 0.005
+        heights[-1] = stop
+        self.levels = self.bed + heights
         area, self.perimeter, self.width, self.conveyance, self.alpha = _table(*self.section, self.levels, *self.parameters)
         self.area = np.maximum(area, 1e-9)
 
     def state(self, wse: float) -> tuple[float, float, float]:
         """The area, conveyance and velocity-head coefficient at a water surface, worked out exactly."""
-        return _state(*self.section, float(wse), *self.parameters)
+        return _hydraulics(*self.section, float(wse), *self.parameters)[:3]
 
     def normal(self, q: float, slope: float, slope_factor: float = 1.0) -> float:
         """The lowest water surface carrying q by Manning's equation, or the top level if none does."""
@@ -520,10 +570,11 @@ def step_up(down: HydraulicTable, wse_down: float, q_down: float, up: HydraulicT
     if eddy_head is None:
         eddy_head, eddy_steps = head_d, 1
 
-    wse, critical, _, _ = _step_up(up.levels, up.alpha, up.area, up.conveyance, *up.section, *up.parameters, float(q_up),
-                                float(length), float(slope_factor), float(floor), float(wse_down), float(q_down),
-                                down.critical(q_down), conveyance_d, head_d, float(eddy_head),
-                                float(max(int(eddy_steps), 1)))
+    unknown = (math.nan,) * 5
+    wse, critical, _, _, _ = _step_up(up.levels, up.alpha, up.area, up.conveyance, *up.section, *up.parameters,
+                                      float(q_up), float(length), float(slope_factor), float(floor), unknown,
+                                      float(wse_down), float(q_down), down.critical(q_down), conveyance_d, head_d,
+                                      float(eddy_head), float(max(int(eddy_steps), 1)))
     return float(wse), bool(critical)
 
 
@@ -618,7 +669,7 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
             np.array([float(sections[k].xs.elevations[sections[k].xs.elevations.size // 2]) for k in ks])
         order, stations = order_reach(network, reach, *cells[reach], dx, dy, cells, heights, stream_cells=stream_cells, outlets=outlets)
         ks, stations = ks[order], np.asarray(stations, dtype=np.float64)
-        tops = [float(np.nanmax(curves.increments[k, :, WSE])) for k in ks]
+        tops = np.nanmax(curves.increments[ks, :, WSE], axis=1).tolist()
         tables = [_table_for(sections[k].xs, top, roughness, k, ensure_level) for k, top in zip(ks, tops)]
         flows = np.array([flows_for(float(max_flow[k]), float(baseflow[k]), increments) for k in ks])
         # Each cell's level and the flows it holds the water at most at it: those up to its baseflow
@@ -646,11 +697,11 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                     given += 1
             
         far = _eddy_ends(stations, eddy_length)
+        out = curves.increments[ks]
         while True:
-            packed = _packed(tables)
             wse, reach_steps, reach_critical, reach_held, highest = _march(
-                *packed, *tables[-1].parameters, flows, start, holds, levels, np.abs(np.diff(stations)), far,
-                slope_factor)
+                *_packed(tables), *tables[-1].parameters, flows, start, holds, levels, np.abs(np.diff(stations)), far,
+                slope_factor, out)
             if ensure_level is None:
                 break
 
@@ -666,8 +717,6 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         critical_at[ks], held_at[ks] = reach_critical, reach_held
         upstream_wse[reach] = wse[0]
         first_cell[reach] = (int(rows[ks[0]]), int(cols[ks[0]]))
-        out = curves.increments[ks]
-        _rewrite(*packed[4:], *tables[-1].parameters, flows, wse, out)
         curves.increments[ks] = out
 
     return StepSummary(len(rated), steps, int(critical_at.sum()), int(held_at.sum()), given, critical_at, held_at)

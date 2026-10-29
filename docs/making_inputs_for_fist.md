@@ -1,7 +1,7 @@
 # Making Inputs for FIST
 
 FIST maps flood inundation from ARC's rating curves. It needs the water surface elevation at each stream cell for the
-flows you want to map, and SEED points, which mark the upstream ends of the stream network. `arc.Create_GeoJSON` makes
+flows you want to map, and SEED points, which mark the upstream ends of the stream network. `arc.create_geojson` makes
 both from the curve file (or the VDT database), a table of flows, the DEM and the stream lines.
 
 You'll need a CSV flow table with one flow for each reach: for example, the mean of the latest
@@ -16,7 +16,7 @@ power laws at the reach's flow, and writes them as points in a GeoJSON file. Run
 [example_step4.py](https://github.com/MikeFHS/automated-rating-curve/blob/main/examples/example_step4.py) does, or from
 the command line with `curve-to-geojson-stream-vector` (add `-h` for its options).
 
-::: arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
+::: arc.create_geojson.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
     options:
       show_root_heading: true
 
@@ -50,7 +50,7 @@ water surface elevation linearly between its flows, and extrapolating beyond the
 then drops the cells whose water surface elevation is more than two standard deviations from their reach's mean, and
 the cell of a reach with only one. Its thinning skips the depth check.
 
-::: arc.Create_GeoJSON.Run_Main_VDT_to_GEOJSON_Program_Stream_Vector
+::: arc.create_geojson.Run_Main_VDT_to_GEOJSON_Program_Stream_Vector
     options:
       show_root_heading: true
 

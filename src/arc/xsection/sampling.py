@@ -162,6 +162,37 @@ def ordinates_above(raster, row, col, stream_direction, cross_section_length, dx
 
 
 @njit(cache=True, error_model="numpy")
+def sample_above(raster, row, col, stream_direction, cross_section_length, dx, dy, height, like=None):
+    """sample_elevations of the cross section cut to the ordinates either side ordinates_above says it needs (at least
+    one): the same elevations and spacing, with each ordinate sampled once."""
+    cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
+    room = max(half, 1)
+    values = np.empty(2 * room + 1, _values_like(raster, like).dtype)
+    values[room] = _interpolate(raster, col + cos * (spacing * 0) / dx, row + sin * (spacing * 0) / dy)
+    sampled = np.zeros(2, np.int64)  # out to where on each side
+    for side in range(2):
+        step = 2 * side - 1
+        k = 0
+        while k < half:
+            k += 1
+            distance = spacing * (step * k)
+            values[room + step * k] = _interpolate(raster, col + cos * distance / dx, row + sin * distance / dy)
+            if values[room + step * k] - values[room] > height:
+                break
+
+        sampled[side] = k
+
+    needed = max(sampled[0], sampled[1], 1)
+    for side in range(2):
+        step = 2 * side - 1
+        for k in range(sampled[side] + 1, needed + 1):
+            distance = spacing * (step * k)
+            values[room + step * k] = _interpolate(raster, col + cos * distance / dx, row + sin * distance / dy)
+
+    return values[room - needed:room + needed + 1].copy(), spacing
+
+
+@njit(cache=True, error_model="numpy")
 def ordinate_value(raster, row, col, cos, sin, spacing, k, dx, dy, stored):
     """Ordinate k (negative to the left) of the cross section with this direction (cos, sin) and spacing, as
     sample_elevations samples and stores it: stored is a one-element array of the stored type, which it goes

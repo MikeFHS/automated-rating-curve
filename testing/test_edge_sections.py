@@ -57,8 +57,7 @@ def test_beyond_a_bank_the_water_runs_out_square_to_the_valley():
     section = v_section()
     section.xs.left_bank_distance = section.xs.right_bank_distance = 20.0
     # The valley runs along the row, so the lines out from the banks run down the column
-    section.xs.valley = Valley(math.pi, 1.0, 1.0, np.zeros(3), np.zeros(3), CELL, 1, np.zeros(3, np.intp),
-                               np.zeros(3, np.intp))
+    section.xs.valley = Valley(math.pi, 1.0, 1.0, np.zeros(3), np.zeros(3), CELL, 1)
     assert pipeline._station_position(section, 10.0, CELL, CELL) == (11.0, 25.0)
     assert np.allclose(pipeline._station_position(section, 50.0, CELL, CELL), (12.0, 28.0))
     assert np.allclose(pipeline._station_position(section, -50.0, CELL, CELL), (8.0, 22.0))

@@ -86,4 +86,4 @@ Manning's n table and a starter input file from a DEM, land cover and stream lin
 `Run_Main_Curve_to_GEOJSON_Program_Stream_Vector` turns the curve file into the water surface at each stream cell, and
 the SEED points, for FIST (see [Making Inputs for FIST](making_inputs_for_fist.md)).
 
-::: arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
+::: arc.create_geojson.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector

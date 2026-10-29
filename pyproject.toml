@@ -66,5 +66,12 @@ version = { attr = "arc.__version__" }
 
 [project.scripts]
 arc = "arc.arc:_main"
-curve-to-geojson-stream-vector = "arc.Create_GeoJSON:main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector"
-write-seed-stream-raster = "arc.Create_GeoJSON:main_write_seed"
+curve-to-geojson-stream-vector = "arc.create_geojson:main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector"
+write-seed-stream-raster = "arc.create_geojson:main_write_seed"
+
+[tool.ruff]
+extend-exclude = [
+    "testing/*.py",
+    "docs",
+    "benchmarks"
+]
