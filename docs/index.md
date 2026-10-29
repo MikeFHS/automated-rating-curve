@@ -31,9 +31,7 @@ flowchart LR
 ```
 
 The Examples pages walk through each step with a test case. Read the pages in the order of the sidebar: install ARC,
-run it, then look up the inputs and outputs as you need them. For a new run, start from the
-[recommended settings](model_input_file.md#recommended-settings), and read the [limitations](limitations.md): what
-ARC can't do, or does with a known bias, and the one setting that most often goes wrong.
+run it, then look up the inputs and outputs as you need them.
 
 ## Authors and acknowledgment
 Mike Follum has been the lead for this project since the code was in its AutoRoute days. Other contributors include Ahmad Tavakoly, Alan Snow, Joseph Gutenson, Drew Loney, and Ricky Rosas.

@@ -53,34 +53,6 @@ can't go unnoticed. Leave an output out to skip it.
 | `end_points` slopes | `StrmShp_File`, with a field named as `Flow_File_ID` is (or as `reach_id` is, in a run that builds only representative cross sections) holding each line's reach ID. |
 | `Standard_Step` | `StrmShp_File` with `reach_id` and `downstream_reach_id`. |
 
-## Recommended settings
-
-The defaults keep older input files running as they always have, and some of them aren't what we'd choose for a new
-run. For a new run, with a stream network and a flow file, we recommend the settings below. The flood-map numbers
-come from 68 sites where the USGS mapped real floods (406 maps), scored by the Matthews correlation coefficient (MCC),
-a higher MCC being a better map: differences of a few thousandths are within the noise between sites.
-
-| Setting | Recommended | Why |
-| --- | --- | --- |
-| `StrmShp_File`, `reach_id`, `downstream_reach_id` | Give them | The bathymetry and `Standard_Step` need the stream network, and with it a reach whose slope can't be measured takes its neighbours'. |
-| `Standard_Step` | True | It ties each cross section's water to the water below it, as a river's is, instead of putting each at its own normal depth. The water surface's swings from one cell to the next fell from 0.28 m to 0.05 m, and the flood maps' mean MCC rose by 0.01 to 0.02. See [Standard Step](standard_step.md). |
-| `Standard_Step_Eddy_Length` | 300 (the default) | 0 charges every step the change in velocity head from the cross section below, which on cross sections a cell apart adds tenths of a metre of water for nothing (0.46 m on a river whose width varies by a fifth from cell to cell). 0 did raise the flood maps' mean MCC by 0.006, but by raising the water everywhere, which maps that were mostly too small reward whatever raises it. |
-| `BathyWaterMask` | Give one if you have it | Its flat water gives the water level beside a stream cell burned below it, and its edge stops the DEM's water running across a floodplain at the water's level. See [Find the banks](bathymetry.md#1-find-the-banks). |
-| `FindBanksBasedOnLandCover` | True, without a water mask | Its water does the water mask's job; its widths were a median 1.00 times the water mask's. |
-| `Bathy_Use_Banks` with `Flow_File_BF` | **Match the flow to the level** | `Flow_File_BF` must be the flow that fills the channel to the level `Bathy_Use_Banks` names: a low flow for the DEM's water surface (False), the flow at the bank tops for the bank elevation (True), with a water mask or without. A mismatched pair carves the bed metres too deep or too shallow. See [Water surface or banks](bathymetry.md#water-surface-or-banks). |
-| `drainage_area_field`, `coefficient_width`, `exponent_width` | A width power law, such as nencarta's: 2.44 and 0.34, with drainage areas in km² | It sets the width of the channels too narrow for the water mask, the land cover or the DEM to show, which would otherwise take a few spurious wide banks' median: a creek in Salt Lake City was carved 262 m wide without it. The flood maps' mean MCC rose by 0.007. |
-| `Bathy_Smooth_Banks` | True (the default) | Turned off, the flood maps' mean MCC fell by 0.043. |
-| `Stream_Slope_Method` | `local_average_corrected` (the default), or `local_fit` | See [Which method to use](stream_slope_methods.md#which-method-to-use). |
-| `Slope_Low_Percentile`, `Slope_High_Percentile` | 5 and 95 (the defaults) | The old defaults, 25 and 75, cap a reach's slopes at its upper quartile; with the standard step, any upper percentile of 75 or less lowered the flood maps' mean MCC by about 0.006, while 0 and 100, 1 and 99, 5 and 95 or 10 and 90 all scored within 0.001 of each other. |
-| `Gen_Slope_Dist` | 5 to 10 | 30 and 100 cells scored 0.001 and 0.002 lower than 5. |
-| `Gen_Dir_Dist` | 10 (the default) | On a 30 m DEM, 10 rated the most cells (96.6%) and turned the cross sections steadily from cell to cell; 2 made 7% of neighbouring cross sections cross each other, and above about 40 they turned off the channel at bends (15° at 122) and, along a canal, ran down it. |
-| `Degree_Manip`, `Degree_Interval` | No search (`Degree_Manip` under twice `Degree_Interval`, as the defaults are) | Turning each cross section to where the valley is narrowest made neighbouring cross sections cross more than twice as often (41% against 19%) and left the flood maps within 0.003. |
-| `Low_Spot_Range` | 0 if the stream raster follows the DEM's channel; 1 or 2 if it sits beside it | Moving a cross section onto lower ground beside the stream cell helps only where the stream lines miss the channel. |
-| `Depth_Varying_N` | False (the default), unless you calibrate it | Measured n changes with depth both ways: of 53 USGS gauges, it fell as the water deepened at 20, rose at 22 and was unclear at 11, and ARC's form can only fall. Pooled, its default factors fitted the gauges slightly worse than a constant n. The bathymetry carves each channel for the n the rating curves use, so with it channels are carved about a tenth deeper. If you do use it, keep `deep_factor` 1 (it only scales n, as `slope_adjustment_factor` does) and tune `shallow_factor` and `k_decay` together: what matters is (`shallow_factor` − 1) / `k_decay`, a depth in metres around which n changes, about the stream's own depth. |
-| `VDT_Database_NumIterations` | 30 | Twice the default's detail in each rating curve, for 5 to 13% more run time. |
-| `Subcell_Channels` | False (the default), or True where the narrowest channels are a few cells across and their water level matters | On a synthetic constriction it cut the backwater's error from 0.30 m to 0.004 m on 10 m cells and from 1.05 m to 0.07 m on 20 m. On the 65 FIM sites (30 m DEMs) it changed the flood maps' mean MCC by +0.0016, within the noise between sites, and it costs about half a millisecond for each narrow cross section. See [Limitations](limitations.md#narrow-channels-and-the-dems-cells). |
-| `Valley_Sections` | True for meandering rivers with wide floodplains, otherwise False | On synthetic meanders it cut ARC's error over the floodplain from 0.15 m to 0.012 m. On the 68 sites it changed the flood maps' mean MCC by nothing to speak of, and it adds about a quarter to the run time. See [Valley Cross Sections](valley_sections.md). |
-
 ## Input files
 
 | Key | Description |

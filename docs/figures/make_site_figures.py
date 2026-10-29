@@ -2,20 +2,19 @@
 
     python docs/figures/make_site_figures.py
 
-Unlike make_figures.py, this needs data that isn't in the repository: three FIM sites' ARC inputs, as nencarta makes
-them (FIM_SITES_NENCARTA, each site's ARC_InputFiles/GEOGLOWS_ARC_Input_fabdem_Bathy.yaml), and the USGS flood flows
-(FIM_SITES, each site's flow_files/stage=*.csv). It runs ARC on each site with Standard_Step off and on, and draws the
-water surface along one reach at one of the USGS flows. For the bank methods, it needs nencarta's inputs for the
-Karnali (KARNALI) and the N40W112 tile (N40W112), and draws cross sections where the methods find different banks.
+The rivers are in docs/figures/data (see its README.md), extracted from their full inputs by extract_site_data.py. For
+the standard step, it runs ARC on three FIM sites' inputs, clipped to the water of a flood the USGS mapped, with
+Standard_Step off and on, and draws the water surface along one reach at that flood's flow. For the bank methods, it
+finds the banks of cross sections of the Karnali and of the N40W112 tile where the methods find different ones.
 """
 from __future__ import annotations
 
 import dataclasses
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 from make_figures import (
     BLUE,
     IMAGES,
@@ -31,37 +30,37 @@ from arc import pipeline
 from arc.bathymetry.smoothing import order_reach
 from arc.config import Configs
 from arc.outputs.rating_curves import WSE, Q
+from arc.xsection.xsection import XSection
 
-FIM_SITES_NENCARTA = Path(os.environ.get("FIM_SITES_NENCARTA", r"C:\Users\lrr43\Documents\masters\fim_sites_nencarta"))
-FIM_SITES = Path(os.environ.get("FIM_SITES", r"C:\Users\lrr43\Documents\masters\fim_sites"))
-KARNALI = Path(os.environ.get("KARNALI", r"C:\Users\lrr43\Downloads\karnali_newest\ARC_InputFiles"
-                              r"\GEOGLOWS_ARC_Input_dem_80.94070_28.32125_81.38632_28.72232_buffered_Bathy.yaml"))
-N40W112 = Path(os.environ.get("N40W112", r"C:\Users\lrr43\Downloads\n40w112\ARC_InputFiles"
-                              r"\GEOGLOWS_ARC_Input_N40W112_FABDEM_V1-2_Bathy.yaml"))
+DATA = Path(__file__).resolve().parent / "data"
 
 # The tile, the cross section's stream cell (row, col), and what it shows
 BANK_PANELS = [
-    (KARNALI, (857, 142), "Karnali: the water mask stops on the channel's flat bed on the left"),
-    (KARNALI, (1169, 455), "Karnali: the mask stops short on the left, the land cover runs onto the floodplain"),
-    (KARNALI, (1639, 1036), "Karnali: a braidplain 2.6 km wide, all water in the mask"),
-    (N40W112, (2236, 328), "Salt Lake City (N40W112): the mask and the land cover either side of the DEM's channel"),
+    ("karnali", (1574, 934), "Karnali: the water mask stops on the channel's flat bed on the left"),
+    ("karnali", (1458, 523), "Karnali: the land cover runs out over the floodplain on both sides"),
+    ("karnali", (1548, 882), "Karnali: a braidplain 1.6 km wide, all water in the mask"),
+    ("n40w112", (1046, 274), "Salt Lake City (N40W112): the mask stops inside the DEM's channel, the land cover past it"),
 ]
 
-# The site, the reach, the USGS stage whose flow is drawn, and the panel's title
+# The site's folder in DATA, the reach, and the panel's title, given the length of the reach drawn
 PANELS = [
-    ("Wabash_River_at_New_Harmony_(2016)", 760686524, "18",
-     "Wabash River at New Harmony, Indiana: 6.9 km of the main stem"),
-    ("Flatrock_River_at_Columbus_(2012)", 760663139, "624_7",
-     "Flatrock River at Columbus, Indiana: 5.5 km of the main stem"),
-    ("Leaf_River_at_Hattiesburg_(2013)", 750243718, "3",
-     "Hattiesburg, Mississippi: 4.2 km of the smaller of two rivers, up from where they meet"),
+    ("wabash", 760686524, "Wabash River at New Harmony, Indiana: {km:.1f} km of the main stem"),
+    ("flatrock", 760663139, "Flatrock River at Columbus, Indiana: {km:.1f} km of the main stem"),
+    ("leaf", 750243718, "Hattiesburg, Mississippi: {km:.1f} km of the smaller of two rivers, up from where they meet"),
 ]
 
 
-def profiles(site: str, reach: int, stage: str) -> dict:
-    """The reach's bed and water surfaces at the stage's flow, without and with the standard step, from upstream to
-    downstream."""
-    configs = Configs.from_file(FIM_SITES_NENCARTA / site / "ARC_InputFiles" / "GEOGLOWS_ARC_Input_fabdem_Bathy.yaml")
+def site_configs(name: str) -> Configs:
+    """A site's inputs in DATA, its paths joined to its folder."""
+    folder = DATA / name
+    inputs = yaml.safe_load((folder / "inputs.yaml").read_text(encoding="utf-8"))
+    return Configs.from_mapping({key: str(folder / value) if isinstance(value, str) and (folder / value).is_file()
+                                 else value for key, value in inputs.items()})
+
+
+def profile(configs: Configs, reach: int, flood: pd.Series | None = None) -> dict:
+    """The reach's bed and water surfaces at the flood's flow (by flow-file ID; the flow file's flood column if not
+    given), without and with the standard step, from upstream to downstream."""
     runs = {flag: pipeline.run(dataclasses.replace(configs, standard_step=flag), quiet=True, write=False)
             for flag in (False, True)}
     results = runs[False]
@@ -79,8 +78,9 @@ def profiles(site: str, reach: int, stage: str) -> dict:
                      for k in ks])
     order, stations = order_reach(network, reach, *cells[reach], grid.dx, grid.dy, cells, beds)
     ks, beds = ks[order], beds[order]
-    flows = pd.read_csv(FIM_SITES / site / "flow_files" / f"stage={stage}.csv").set_index("COMID")["cms"]
-    flow = float(flows[int(results.cells.comids[ks[0]])])
+    if flood is None:
+        flood = pd.read_csv(configs.flow_file).set_index(configs.flow_file_id)["flood"]
+    flow = float(flood[int(results.cells.comids[ks[0]])])
 
     def water(run) -> np.ndarray:
         out = []
@@ -91,18 +91,19 @@ def profiles(site: str, reach: int, stage: str) -> dict:
             out.append(np.interp(flow, q, w) if q.size > 1 and q[0] <= flow <= q[-1] else np.nan)
         return np.array(out)
 
-    return {"km": np.asarray(stations) / 1000.0, "bed": beds, "flow": flow, "default": water(runs[False]),
+    return {"rows": results.cells.rows[ks], "cols": results.cells.cols[ks], "km": np.asarray(stations) / 1000.0,
+            "bed": beds, "flow": flow, "default": water(runs[False]),
             "linked": water(runs[True])}
 
 
 def main() -> None:
     fig, axes = plt.subplots(len(PANELS), 1, figsize=(9.0, 3.0 * len(PANELS)))
-    for ax, (site, reach, stage, title) in zip(axes, PANELS):
-        p = profiles(site, reach, stage)
+    for ax, (site, reach, title) in zip(axes, PANELS):
+        p = profile(site_configs(site), reach)
         ax.plot(p["km"], p["bed"], color=MUTED, lw=1, label="the rating curves' bed (Elev)")
         ax.plot(p["km"], p["default"], color=ORANGE, lw=1.6, label="each cross section on its own (the default)")
         ax.plot(p["km"], p["linked"], color=BLUE, lw=2, label="standard step (Standard_Step)")
-        ax.set_title(f"{title}, at {p['flow']:,.0f} m³/s", loc="left", color=INK, fontsize=10)
+        ax.set_title(f"{title.format(km=p['km'][-1])}, at {p['flow']:,.0f} m³/s", loc="left", color=INK, fontsize=10)
         ax.set_xlim(0, p["km"][-1])
         top = np.nanmax([p["default"], p["linked"]])
         bottom = np.nanmin(p["bed"])
@@ -117,35 +118,19 @@ def main() -> None:
     plt.close(fig)
 
 
-def tile_sections(config: Path) -> dict:
-    """A tile's cross sections as its Bathy input file samples them (without carving), by stream cell, each with the
-    water mask and the land cover at its ordinates (the stream cells water in both)."""
-    import dataclasses
+def section_from(ordinates: pd.DataFrame) -> tuple[XSection, dict]:
+    """A cross section from its rows of DATA/bank_sections.csv, and whether the water mask and the land cover have
+    water at its ordinates (NaN off the raster)."""
+    distance = ordinates["distance"].to_numpy()
+    elevations = ordinates["elevation"].to_numpy(np.float64)
+    xs = XSection(elevations, np.zeros_like(elevations), (distance[-1] - distance[0]) / (distance.size - 1))
+    return xs, {"mask": ordinates["water_mask"].to_numpy(), "land": ordinates["land_cover_water"].to_numpy()}
 
-    from osgeo import gdal
 
-    previous = os.getcwd()
-    os.chdir(config.parent.parent)  # the input file's relative paths are from the tile's folder
-    try:
-        configs = dataclasses.replace(Configs.from_file(config), bathy_out_file=None, standard_step=False,
-                                      print_vdt_database=None, print_curve_file=None)
-        results = pipeline.run(configs, quiet=True, write=False)
-        mask = (np.nan_to_num(gdal.Open(str(configs.bathywatermask)).ReadAsArray()) != 0).astype(float)
-        land = gdal.Open(str(configs.lu_raster_sameres)).ReadAsArray().astype(float)
-    finally:
-        os.chdir(previous)
-    mask[results.cells.rows, results.cells.cols] = 1.0
-    land[results.cells.rows, results.cells.cols] = configs.lc_water_value
-    out = {}
-    for s in results.sections:
-        if s is not None:
-            on = (s.rows >= 0) & (s.rows < mask.shape[0]) & (s.cols >= 0) & (s.cols < mask.shape[1])
-            along = {}
-            for name, raster in (("mask", mask), ("land", land)):
-                along[name] = np.full(s.rows.size, np.nan)
-                along[name][on] = raster[s.rows[on], s.cols[on]]
-            out[(s.row, s.col)] = (s.xs, along, configs.lc_water_value)
-    return out
+def bank_sections() -> dict:
+    """The cross sections in DATA/bank_sections.csv (section_from), by tile and stream cell."""
+    return {(tile, (row, col)): section_from(ordinates)
+            for (tile, row, col), ordinates in pd.read_csv(DATA / "bank_sections.csv").groupby(["tile", "row", "col"])}
 
 
 def banks_figure() -> None:
@@ -157,16 +142,14 @@ def banks_figure() -> None:
         banks_by_width_to_depth_ratio,
     )
 
-    tiles = {}
+    sections = bank_sections()
     fig, axes = plt.subplots(2, 2, figsize=(12.0, 7.0))
     methods = [("mask", BLUE, "v", "water mask"), ("land", "#2a9d8f", "D", "land cover"),
                ("wd", ORANGE, "^", "width-to-depth ratio"), ("flat", SECONDARY, "o", "flat water")]
-    for ax, (config, cell, title) in zip(axes.ravel(), BANK_PANELS):
-        if config not in tiles:
-            tiles[config] = tile_sections(config)
-        xs, along, water = tiles[config][cell]
+    for ax, (tile, cell, title) in zip(axes.ravel(), BANK_PANELS):
+        xs, along = sections[tile, cell]
         found = {"mask": banks_by_land_cover(xs, along["mask"], 1.0),
-                 "land": banks_by_land_cover(xs, along["land"], water),
+                 "land": banks_by_land_cover(xs, along["land"], 1.0),
                  "wd": banks_by_width_to_depth_ratio(xs), "flat": banks_by_flat_water(xs)}
         spacing = float(xs.ordinate_distance)
         x = (np.arange(xs.elevations.size) - xs.elevations.size // 2) * spacing

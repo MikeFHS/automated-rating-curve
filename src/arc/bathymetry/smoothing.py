@@ -12,8 +12,8 @@ carve_channel). smooth_bank_elevations does it all, a reach at a time:
 2. Observations: each cross section's lower bank above its stream cell, as found, is an observation of the bank
    elevation. With four or more in a reach, those below its 2nd percentile or above its 97th are left out
    (reach_bank_observations). The banks the width filter gave a cross section aren't observations: they are the ground
-   wherever the reach's median width puts them, which in a gorge whose reach widens downstream is far up its walls
-   (35-38 m up, at the head of a Karnali reach whose median width is the plain's). Nor is a bank the water didn't
+   wherever the reach's median width puts them, which in a gorge whose reach widens downstream is far up its walls.
+   Nor is a bank the water didn't
    show (from the DEM, width-to-depth or flat water, or a single cell's) that is above its cross section's ceiling,
    the water surface that carries its largest flow over the DEM's own cross section (below_ceilings): no flood
    reaches it, so it is a valley wall. Where the DEM can't resolve a creek in a V-shaped valley, those are all ARC

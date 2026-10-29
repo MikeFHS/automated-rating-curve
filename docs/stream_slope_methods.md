@@ -76,25 +76,5 @@ through all its cells with `local_fit`.
 
 ## Which method to use
 
-We recommend `local_fit` or the default, `local_average_corrected`, with `Gen_Slope_Dist` of 5 to 10 and the
+We recommend `local_fit` or the default, `local_average_corrected`, with `Gen_Slope_Dist` of 1 to 10 and the
 percentiles at 5 and 95.
-
-- **`local_fit`** gives the DEM's drop best. Over 316 reaches at 68 sites, with `Gen_Slope_Dist` 5, the drop its
-  slopes add up to along each reach was 1.00 times the DEM's drop, against 1.28 times with `local_average_corrected`
-  (percentiles 1 and 99) and 1.14 with `local_average`. The methods that average the slopes between pairs of cells
-  (`local_average`, `local_average_corrected` and `reach_average`) count every rise along the stream as a fall, so a
-  noisy DEM makes them steep: 2 cm of noise along a test channel made their slopes two to three times the bed's. A
-  line fitted through the cells lets a rise offset a fall.
-- **`local_average_corrected`** is the default, and the flood maps don't tell the two apart: on the 68 sites where
-  the USGS mapped real floods, `local_fit` lowered the flood maps' mean MCC (Matthews correlation coefficient) by
-  0.005 with `Standard_Step` and raised it by 0.007 without, both within the noise between sites.
-- **The percentiles.** 5 and 95, the defaults, trim only the extremes. At 25 and 75 (the defaults before 2026-10-25),
-  a reach's slopes are capped at its upper quartile of the slopes between pairs of cells. With `Standard_Step`, any
-  upper percentile of 75 or less lowered the flood maps' mean MCC by about 0.006, while 0 and 100, 1 and 99, 5 and 95
-  or 10 and 90 all scored within 0.001 of each other. Don't tune them
-  as a slope knob: they act mostly through the bathymetry's depth. To make slopes steeper or gentler on purpose, use
-  `slope_adjustment_factor`.
-- **`Gen_Slope_Dist`.** 30 and 100 cells scored 0.001 and 0.002 lower than 5.
-- **`reach_average`** gives every cell of a reach one slope, the median of its pairs', which came out 0.86 times the
-  DEM's drop. **`end_points`** gets each reach's drop exactly, but from two points only, so a reach's slope can be far
-  from its local slope, and it lowered the flood maps' mean MCC by 0.005.

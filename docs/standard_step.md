@@ -5,13 +5,7 @@ for that cross section's shape and slope, whatever the cross sections around it 
 cross sections along the stream network by the standard-step method, as a one-dimensional hydraulic model such as
 HEC-RAS does (Chow, 1959): working upstream from the network's outlets, it puts each cross section's water where its
 energy is what the water below needs, plus what the water loses between them. It is off by default, and needs the
-stream network (`StrmShp_File`, with `reach_id` and `downstream_reach_id`).
-
-!!! tip "When to use it"
-    Turn it on whenever you have a stream network. On the 68 sites where the USGS mapped real floods, the water
-    surface's swings from one cell to the next fell from 0.28 m to 0.05 m, and the flood maps' mean MCC rose by 0.01
-    to 0.02. Its water stands about a tenth of the depth higher than normal depth, so calibrate Manning's n and
-    `slope_adjustment_factor` with it on (see [How it changes the rest of ARC](#how-it-changes-the-rest-of-arc)).
+stream network (`StrmShp_File`, with `reach_id` and `downstream_reach_id`). We recommend using it whenever you have a stream network.
 
 ## Why link the cross sections
 
@@ -28,12 +22,14 @@ On real rivers it looks like this, at the flow of a flood the USGS mapped:
 
 ![The water surface along three real reaches at a flood flow, each cross section on its own and by the standard step](images/standard_step_sites.svg)
 
-- On the Wabash, each cross section on its own puts the water up to a metre above or below its neighbours', as their
-  shapes and beds change from one to the next. Linked, the water falls smoothly through the middle of them.
+- On the Wabash, each cross section on its own puts the water as much as 4 m above its neighbours', as their shapes
+  and beds change from one to the next. Linked, the water falls smoothly, 2 m over the reach, under the peaks: half
+  the cross sections on their own put it more than 0.4 m higher, and a tenth more than 2 m higher.
 - On the Flatrock, the linked water falls more evenly, and near the end of the reach it stays up over a drop in the
   bed, held there by the reach below.
-- At Hattiesburg, the river this one joins backs its water up for all 4.2 km, close to 2 m above where each cross
-  section on its own would put it.
+- At Hattiesburg, the river this one joins backs its water up for all 3.9 km, about 4 m above where each cross
+  section on its own would put it (1.6 to 6.2 m at four in five of them). It's all but level: it falls half a metre
+  while the bed falls 3 m.
 
 ## How it works
 
@@ -95,8 +91,7 @@ sections have.
 4. **Each step up.** The water surface is the lowest at which the energy is enough, at or above critical depth, and at
    or above the cross section's own water at the flow before, so that a cross section's water never falls as the flow
    rises. Where the energy balances at more than one level, as it can where water spreads onto a floodplain, the
-   lowest root can otherwise drop as the flow rises: it did on a third of Salt Creek's rating curves and half of the
-   Blue River's, by up to 0.46 m. Where no water surface balances the energy, as where the water below is
+   lowest root can otherwise drop as the flow rises. Where no water surface balances the energy, as where the water below is
    supercritical, or the cross section needs more energy than the water below has even at critical depth, the water
    is at critical depth.
 5. **The hold.** At the flows up to its baseflow, a cross section whose channel the bathymetry carved for its
@@ -122,11 +117,7 @@ Where the water tops a high point of a cross section, the low ground beyond join
 conveyance with them. A wide flat just below the high point, joining an overbank already wet, can raise the velocity
 head by a quarter and lower the conveyance, as the overbank's hydraulic radius falls. The energy then jumps across
 what the water below needs, and over a range of water below the step puts the water at the high point's level: ARC
-takes it on the side with energy enough, so that the step above always gets the same hydraulics from it. Before, the
-side came from where the search's last guess fell, and a meaningless change sent the difference upstream and on to
-every higher flow: finding each water surface to 3 × 10⁻⁷ m rather than 10⁻⁶ m moved 3.9% of the 65 FIM sites' water
-surfaces by more than 1 cm, by up to 4.7 m. Now it moves none by more than 1 mm. Taking the side with energy enough
-changed the maps' MCC by +0.0001 (95% CI 0.0000 to +0.0001).
+takes it on the side with energy enough, so that the step above always gets the same hydraulics from it.
 
 ### The eddy loss
 
@@ -146,11 +137,7 @@ the drawdown; further up, 300 m leaves it 0.002 m above normal depth, and 1 km 0
 Where the water speeds up going downstream, the contraction loss is reckoned at the velocity head the water would have
 without it, and the water raised from there to make it up. Reckoned at the water's own velocity head, the loss grows
 faster than the water's energy as it rises near critical depth (above a Froude number of about 0.95, charged step by
-step), and the energy then balances only far above where it would without the loss: uniform flow at a Froude number
-of 0.986 stood 0.02 m above normal depth. Reckoned this way, the loss in a steady drawdown is
-$C (1 - Fr^2) / (1 - (1 - C) Fr^2)$ of the gain in velocity head: $C$ where the water is slow, falling to nothing at
-critical depth, so that the water draws down to critical depth as it would without the loss. On the 65 FIM sites
-this changed the maps' MCC by +0.0001 (95% CI −0.0000 to +0.0003).
+step), and the energy then balances only far above where it would without the loss.
 
 ## Where the slope changes
 
@@ -195,8 +182,7 @@ high just above it.
 
 So the step finds the water wherever it is subcritical. Where it is supercritical, the step puts it at critical
 depth, as HEC-RAS does in its subcritical regime. That is higher than the supercritical water, by 0.19 m here, so the
-error is on the side of a wider flood. When the step was first tested on the FIM sites, 1.7% of its steps went to
-critical depth.
+error is on the side of a wider flood.
 
 ## Keeping the baseflow in its banks
 
@@ -212,8 +198,7 @@ faster than they do, so going upstream it rises over them.
 ARC's bank elevations often do fall more gently. A bank elevation is the stream's elevation, made never to rise
 downstream, plus a bank height (see [Smooth the banks](bathymetry.md#2-smooth-the-banks-along-each-reach)): it is level
 wherever the stream rises again after a low point, and then drops in a step, while each channel is still carved for
-its cell's slope. On the 68 FIM sites the friction with full banks came to 1.26 times the banks' fall, and the
-baseflow stood more than 0.1 m over the banks at 55% of cells, and more than 0.5 m over them at 23%. And where a bank
+its cell's slope. And where a bank
 rises going downstream, as where a reach's end is ramped up to meet a higher reach at a junction, or where the banks' height rises along it, the bed rises with it, and holds the water up behind it as a weir does.
 
 ![The baseflow along a reach whose banks are level for 1 km at a time: by the standard step, held and not held](images/baseflow_hold.svg)
@@ -241,45 +226,12 @@ level.
 
 The hold works on the flows the step works out. If the baseflow fell between two of them, Curve2Flood would read its
 water as a line from the held water at the flow below it to the step's water at the flow above, over the banks. So the
-first flow at or above the baseflow is set 0.001 m³/s below it, and the baseflow's water is the held water. Tried
-without that, the hold left a tenth of cells with their baseflow more than 0.5 m over their banks.
+first flow at or above the baseflow is set 0.001 m³/s below it, and the baseflow's water is the held water. 
 
 ### Why a hold, and not other banks
 
-When the hold was added, it changed the flood maps' mean MCC on the 68 FIM sites by −0.0009, within the noise between
-sites. Fixing the banks instead did worse:
-
-| Rule | Mean MCC, against the step without a hold |
-| --- | --- |
-| The hold | −0.0009 (within the noise) |
-| Banks fitted along each main stem by least squares, never rising | −0.0032 |
-| The same, and the hold | −0.0041 |
-| Banks at the lowest bank so far going downstream, never rising, even across the junctions on a main stem | −0.0108 |
-| The same, and the hold | −0.0119 |
-
-Banks that never rise across junctions let one low reach hold the whole main stem below it down: on Peachtree Creek
-the beds fell 1.1 m, and the flood's water 1.9 m. Lowering the water where these maps already flood too little lowers
-their scores, so a change to the banks would need Manning's n tuned again with it. The hold leaves the banks and beds
-as the bathymetry makes them, and changes only the water at the flows up to the baseflow.
-
-## How it changes the rest of ARC
-
-| Part of ARC | With `Standard_Step` |
-| --- | --- |
-| The rating curves (VDT database, curve file) | The flows are the same along each reach (see [The water at each step](#the-water-at-each-step)), with the baseflow one of them. The water surfaces are the step's, and the velocities and top widths each cross section's own at them. `Elev` is unchanged. The curve file fits its power laws to these. See [Outputs](outputs.md#linking-the-cross-sections). |
-| How high the water stands | Usually higher than normal depth: about a tenth of the depth on the FIM sites, as the narrowest cross sections hold it up. Calibrate Manning's n and `slope_adjustment_factor` with the step on. |
-| Slopes | The step doesn't use the cells' slopes. They still set each channel's carved depth, and so the beds the step marches over; the outlets' normal depth; the rise allowed past reaches without rating curves; and each cross section's normal-depth rating curve, whose top sets how high its table reaches. So the slope settings act mostly through the bathymetry: with the step, any upper percentile (`Slope_High_Percentile`) of 75 or less lowered the maps' mean MCC by about 0.006, and `local_fit` lowered it by 0.005 (it raised it by 0.007 without the step). See [Stream Slope Methods](stream_slope_methods.md#which-method-to-use). |
-| Bathymetry | `Bathy_Smooth_Bed` is off unless the input file gives it. A smoothed bed is partly its neighbours': a narrow channel's is too shallow, a wide one's too deep, and the step, which can't follow the dips that leaves, carries the water above them. On the Karnali's main stem, that put the 2-year flow 1.7 m above the banks rather than 0.8 m (see [Smooth the bed](bathymetry.md#4-smooth-the-bed-along-each-reach)). With or without the step, the bank elevations of the reaches on a main stem are ramped to meet at each junction (unless `Bathy_Smooth_Banks` is off): the linked water would otherwise drop over a jump in the bed there in a cell or two. |
-| Cross section lengths | Each cross section is trimmed to reach higher: above the top of its table, over a bed 8 m below its stream cell. Where the march takes the water higher still, it is extended (see [Finding each water surface](#finding-each-water-surface)). The cross-section file's cross sections reach that far. |
-| `Drop_Edge_Sections` | The rating curves whose water reaches the raster's edge are dropped before the step, which would otherwise march the water through them, and again after it, as its water can spread wider than normal depth's. |
-| `Valley_Sections` | The step takes the profile with the overbanks square to the valley. On synthetic meanders, against a 2D model, ARC's water over the floodplain was out by 0.15 m on average at normal depth and 0.06 m with the step; with `Valley_Sections`, by 0.012 m and 0.010 m (see [Valley Cross Sections](valley_sections.md)). |
-| Neighbouring tiles | Normal depth at an outlet is often metres off, and the step backs that error up tens of kilometres; where two tiles' maps meet, it shows as a seam. `Outlet_WSE_File`, which needs the step, starts the outlets from the water a neighbouring tile's rating curves give. |
-| Representative cross sections | Made from the same cross sections. Each cross section with a rating curve carries the step's flows at the step's water surfaces, at the friction slope that puts them there, rather than normal depth's discharge. Above the maximum flow, the friction slope at the top of its rating curve holds. `Mean_Friction_Slope` gives the average at each stage (see [Outputs](outputs.md#representative-cross-sections)). |
-| Curve2Flood | Reads the VDT database or the curve file as always. Where the bathymetry carved the channels for the baseflow, a map of the baseflow stays in them. |
-
-Each run logs what the step did: how many rating curves it linked, how many of its steps went to critical depth, and
-how many water surfaces (a cross section at a flow) it held at the baseflow level. When the step was first tested on
-the FIM sites, 1.7% of the steps went to critical depth.
+Banks that never rise across junctions let one low reach hold the whole main stem below it down. The hold leaves the 
+banks and beds as the bathymetry makes them, and changes only the water at the flows up to the baseflow.
 
 ## Limits
 
@@ -313,7 +265,7 @@ the FIM sites, 1.7% of the steps went to critical depth.
 | `Outlet_WSE_File` | None | The water surface to start reaches that leave the raster from, instead of normal depth (see [Model Input File](model_input_file.md)). Needs `Standard_Step`. |
 | `VDT_Database_NumIterations` | 15 | How many flows, the shares of each maximum flow the step works out. |
 | `Flow_File_BF` | None | The baseflow: one of the flows, and with bathymetry, the flow up to which the water is held (see [Keeping the baseflow in its banks](#keeping-the-baseflow-in-its-banks)). |
-| `Bathy_Smooth_Bed` | False with `Standard_Step` or `Bathy_Use_Banks` | Whether to smooth each reach's channel bed. Off, each channel carries its baseflow at its own banks (see [How it changes the rest of ARC](#how-it-changes-the-rest-of-arc)). |
+| `Bathy_Smooth_Bed` | False with `Standard_Step` or `Bathy_Use_Banks` | Whether to smooth each reach's channel bed. Off, each channel carries its baseflow at its own banks. |
 
 ## Tests
 

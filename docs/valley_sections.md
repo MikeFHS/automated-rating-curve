@@ -6,12 +6,6 @@ floodplain of a meandering river it isn't: a flood runs straight down the valley
 `Valley_Sections`, each cross section keeps its channel, and takes each overbank from a line out from that bank square
 to the valley, at the valley's slope. It is off by default.
 
-!!! tip "When to use it"
-    Turn it on for meandering rivers with wide floodplains, where a flood runs down the valley across the channel's
-    loops: on synthetic meanders it cut ARC's error over the floodplain from 0.15 m to 0.012 m. On straight or
-    confined streams it changes nothing worth its cost, about a quarter more run time, and on 68 real sites the flood
-    maps came out the same with it as without (see [On real rivers](#on-real-rivers)).
-
 ## Why the direction matters
 
 The figure shows a 2D model of the flow through a synthetic valley: a channel 40 m wide and 2 m deep winding 200 m
@@ -140,26 +134,6 @@ normal depth, and within 6 mm with the standard step, and finds the valley's dir
 the channel 80 m wide, 40 cells scores best, but by chance: its valley runs up to 42° off and its sinuosity is 15% low,
 where 16 widths finds both. Its error there is mostly at 150 m³/s, about that channel's bankfull flow (see the limit
 below).
-
-On a 30 m DEM, ARC can't see a channel narrower than about two cells, so a small stream's width comes out at about
-55 m, and its window at about 30 cells (0.9 km). On a 1° tile of the Colorado River's basin (N39W109), half the
-reaches' windows are 33 cells or fewer, and the Colorado's own, 160 m between its banks, is 94 cells (2.6 km).
-
-## On real rivers
-
-On 68 sites with observed flood maps (406 maps, scored by the Matthews correlation coefficient), `Valley_Sections`
-changes the maps by nothing to speak of: −0.0002 with the standard step (a 95% interval of −0.0024 to +0.0018), and
-−0.0006 without it (−0.0027 to +0.0015); at the 23 most meandering sites, −0.0013 with the standard step (−0.0063 to
-+0.0028). The maps are drawn from each reach's water at its median stage, and the changes to the water surfaces go both
-ways. Where a channel winds tightly, the cell's own cross section can run down the valley floor, through the river's
-other bends, and the lines square to the valley raise its water by up to a metre. But they also reach ground the cell's
-own cross section doesn't, such as a low flat beside the river, and with the standard step a change at a reach's outlet
-carries up the reach. On a 1° tile (43,000 cross sections) it adds about a quarter to ARC's run time (12.9 to 16.0 s, with the
-standard step and 30 increments).
-
-Near bankfull, as the water first spreads over the floodplain, it still follows the channel, and `Valley_Sections`
-takes it down the valley from the start: on the synthetic meander, ARC's water at bankfull stands 6 cm above the 2D
-model's with `Valley_Sections`, against 1 cm without.
 
 ## References
 

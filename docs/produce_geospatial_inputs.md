@@ -30,8 +30,7 @@ The starter input file asks for bathymetry when you give a baseflow field or the
 bathymetry follows the stream network, so also give `downstream_id_field`, the stream lines' field holding the ID of
 the reach downstream of each reach (`DSLINKNO` in the GEOGLOWS streams). Check the input file before running ARC, and
 see [Model Input File](model_input_file.md) for its keys. Besides your files and fields, it sets `Low_Spot_Range` to 10,
-and `Degree_Manip` to 6.1 with `Degree_Interval` 1.5, which turns on the angle search; the
-[recommended settings](model_input_file.md#recommended-settings) are 0 to 2 and no search.
+and `Degree_Manip` to 6.1 with `Degree_Interval` 1.5, which turns on the angle search.
 
 ## Try it
 

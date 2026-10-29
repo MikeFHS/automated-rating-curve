@@ -15,8 +15,7 @@ each cross section. Give `BATHY_Out_File` to turn this on.
 !!! tip "Recommended"
     Give a water mask (`BathyWaterMask`) if you have one, and otherwise set `FindBanksBasedOnLandCover: True`. Give a
     width power law (`drainage_area_field`, `coefficient_width`, `exponent_width`) for the channels too narrow to see.
-    Pick `Flow_File_BF` to go with `Bathy_Use_Banks`, as below, and keep `Bathy_Smooth_Banks` on. See
-    [Recommended settings](model_input_file.md#recommended-settings) for why.
+    Pick `Flow_File_BF` to go with `Bathy_Use_Banks`, as below, and keep `Bathy_Smooth_Banks` on.
 
 ## Water surface or banks
 
@@ -41,10 +40,8 @@ rating curve carries `Flow_File_BF` at normal depth exactly at the level. Depth-
 so with it a channel is carved about a tenth deeper than with a constant n (the default). The standard step holds the
 water only at cross sections whose depth came from `Flow_File_BF`, not from the drainage-area depth law (see [Keeping the baseflow in its banks](standard_step.md#keeping-the-baseflow-in-its-banks)).
 
-The figures show a river whose channel is known, which `testing/test_bathymetry_modes.py` runs ARC on: a trapezoid
-18 m wide at the bed, with banks 2.5 m high and 30 m apart, and a DEM made at a flow of 8.9 m³/s, which shows the
-water flat 0.63 m above the bed. Given the flow that goes with its level, each mode carves the true channel, with a
-water mask or without:
+The figures show a river whose channel is known, which `testing/test_bathymetry_modes.py` runs ARC. Given the flow that 
+goes with its level, each mode carves the true channel, with a water mask or without:
 
 ![Each mode, given its own flow, carves the true channel](images/bathy_use_banks.svg)
 
@@ -52,27 +49,16 @@ Given the other mode's flow, each carves the wrong channel, by metres:
 
 ![A flow that doesn't go with the level carves the wrong channel](images/bathy_use_banks_wrong_flow.svg)
 
-- The bankfull flow below the water's surface carves the bed 2.2 m too deep.
-- The low flow below the banks fills the channel in: its bed is 1.9 m above the true one, and 1.3 m above the water
-  the DEM shows. The banks then hold only the low flow, and bigger floods spill over them.
+- The bankfull flow below the water's surface carves the bed too deep.
+- The low flow below the banks fills the channel in. The banks then hold only the low flow, and bigger floods spill over them.
+
 The mask doesn't change the level. Without `Bathy_Use_Banks` the banks are the DEM's water's edge, mask or not, so
 the carve never reaches the bank faces above the water, and with it they are the bank tops, mask or not, so a bankfull
-`Flow_File_BF` fills the true channel. (Before 2026-10-28 a mask's banks were the water's edge in both modes, so with
-`Bathy_Use_Banks` and a bankfull flow the bed came out 2.4 m too deep, and without a mask the water-surface mode
-carved as wide as the bank tops below the water.)
+`Flow_File_BF` fills the true channel.
 
 In a canyon, with `Bathy_Use_Banks`, the banks the DEM shows (a bench in its walls, or its rim) can be far above the
 bankfull water, and carving the flow to fill the channel to them would build the bed up metres above the DEM's water.
-So no bank is taken above the water that carries the cross section's maximum flow over the DEM (step 1): in the test
-canyon, whose bench is 10 m up and whose maximum flow stands about 5 m up the walls, the banks are the walls 4 m up and
-the bed is raised 2 to 3 m rather than 6 m. A hydro-conditioned DEM's channel can look the same: the Flint River at
-Albany is a trench 8 m deep in FABDEM, its water 7 m below the USGS lidar's, and the Karnali's gorge is a burned line
-one or two cells wide where the raw DEM shows no gorge at all. There raising the bed is right, and where the maximum
-flow tops the trench, its rim is taken and the bed raised.
-
-A trapezoid can match the true channel only where it has the same shape. `Bathy_Trap_H` is the share of the top
-width each sloping side takes: 0.2 (the default) matches this river below its banks, and 0.07 matches it below its
-water, which has a narrower top over the same bed. The figures use each mode's own share.
+So no bank is taken above the water that carries the cross section's maximum flow over the DEM (step 1).
 
 Either way, a drainage-area power law can set the depth instead of the flow:
 depth = `coefficient_depth` × drainage area ^ `exponent_depth`.
@@ -103,15 +89,10 @@ cell above it, so that n cells of water make a channel n cells wide, and the fir
 channel and keeps its elevation. The width-to-depth ratio isn't used: it finds the bank tops, and carving below the
 water as wide as them lowers the bank faces. A water mask only stops the DEM's water running more than two cells past
 the mask's edge, as it does across a floodplain at the water's level; a mask wider than the DEM's water doesn't widen
-the channel. On 2,688 synthetic channels with exact, narrow, wide, shifted and spilling masks, the carve lowered land
-above the water at 4% of them, against 29% with an exact mask and 94% with a wrong one for the order below; on the 68
-FIM sites, at none of the cross sections, against 48%. The carve stops at the water's edge, but the channel doesn't: the
+the channel. The carve stops at the water's edge, but the channel doesn't: the
 hydraulics divide the carved cross section at its bank tops, found as without bathymetry (below), and give the water's n
 out to them, so that the bank faces above the water carry the channel's water at higher flows rather than the
-floodplain's. On the synthetic channels whose carve resolved, dividing at the water's edge left the water at twice
-bankfull more than 0.1 m off the same carve divided at the true bank tops at 20% of them, against 3% at the bank tops;
-on six real sites it moved the division at 30 to 57% of the cells, and lowered the water at the maximum flow a median 0
-to 8 cm.
+floodplain's.
 
 **With `Bathy_Use_Banks`: the bank tops.** The banks are where the water spills from the bankfull channel, mask or
 not: the width-to-depth ratio (method 2 below) over the levels above the water level, never stopping inside the DEM's
@@ -122,23 +103,17 @@ the maximum flow, shows none below that water, so step 2 takes neither their hei
 
 The maximum flow's water only stops the levels tried: each level's edges are where its water meets the ground. The
 ground above that water was once made a wall instead, so a level's edge between the last point below it and the first
-above snapped back to the last point: on a canyon with one wall rising beside the stream, the bank was 0.5 m low.
+above snapped back to the last point.
 
 **Without bathymetry: the bank tops too.** The banks divide each cross section into its channel and overbanks (in every
 mode, the hydraulics divide at the bank tops): the channel takes the water's Manning's n, the conveyance is the sum of
 the three parts', and with [Valley_Sections](valley_sections.md) the overbank lines start at the banks and the valley is
 taken over `Valley_Dir_Widths` times their width. The divided-channel method divides at the bank tops, so ARC finds them
-as with `Bathy_Use_Banks`, mask or not, and no higher than the maximum flow's water: on five FIM sites run without
-bathymetry, 9 to 28% of the banks found without that limit were above it, valley walls that would give the floodplain
-below them the water's n and stretch the valley's window. Where the ratio is still falling at that water, the channel
+as with `Bathy_Use_Banks`, mask or not, and no higher than the maximum flow's water. Where the ratio is still falling at that water, the channel
 holds it, and the banks are its edges (with `Bathy_Use_Banks`, the highest level's below it, a bank on the ground), so
 that the hydraulics don't divide it. Water the standard step backs up above it, behind a lake or a confluence, is
 divided there (see [Limitations](limitations.md)). A run that only builds representative cross sections reads no maximum
-flow, so its banks aren't held below it. Before 0.5.0 it took the water mask's edge first, the low water's, partway down
-the bank faces. On the synthetic channels with the DEM showing the bed, those banks were within 0.3 m of the bank tops
-at 19% of them (3% with an exact mask), against 56%. The bank faces above the low water went to the overbanks with the
-land's n, so the water at twice bankfull was more than 0.1 m off at 35% of them, against 13%. And the valley's window
-fell to about 10 channel widths, which turned its direction a median 8° on natural meanders.
+flow, so its banks aren't held below it.
 
 The methods the modes use:
 
@@ -160,8 +135,7 @@ The methods the modes use:
    out on each side to the first point more than 25 m above the stream, and each at least 0.1 m above the last one
    tried (the highest is always tried). On a DEM whose water or bed has a few centimetres of noise, trying every level,
    the water spilled from one dip of the noise into the next in its first centimetres, the ratio rose, and the search
-   stopped with banks a few metres apart inside the channel: on the 68 FIM test sites a tenth of these banks were
-   inside the water mask's water, and on the Karnali a fifth. With the levels 0.1 m apart, 1% and 5%.
+   stopped with banks a few metres apart inside the channel.
 
     ![The width-to-depth ratio is lowest at bankfull](https://github.com/user-attachments/assets/857afd82-7aca-4e25-a85f-4a52740d52fb)
 
@@ -184,33 +158,7 @@ If none of them finds a channel:
    narrower than a cell.
 
 Otherwise the channel takes its reach's median width (step 2), or failing that, the width power law's width, or one
-cell.
-
-The width power law comes last so that it doesn't override the banks the water and the DEM show. Before them, on the
-68 FIM test sites with nencarta's power law (2.44 × drainage area in km² ^ 0.34) on every reach, it made 79% of the
-stream cells single cells whatever their water mask showed, and the flood maps' mean MCC went from 0.5589 to 0.5593;
-after them, to 0.5659. After them, a creek too narrow for the DEM to show, where the methods find banks at only a few
-of its cross sections (the odd rise on a flat valley floor, hundreds of metres apart), is a single cell along most of
-its reach, so its reach's median width is a single cell's too, and the few wide banks are rebuilt at that width
-(step 2). Without the power law, such a creek in Salt Lake City (N40W112) took the median of those few banks, and was
-carved 262 m wide.
-
-The limit is one cell at any resolution. Legacy ARC allowed two below 15 m, which on a 10 m DEM let the power law
-override channels the DEM does show. On three FIM sites' 10 m USGS DEMs:
-
-| Site | Single cells with two (of all cross sections) | Mean MCC, two → one | Water at the middle flows |
-| --- | --- | --- | --- |
-| Salt Creek at Wood Dale | 300 of 519 | 0.428 → 0.392 | 2.3 to 3.4 m lower |
-| Big Creek near Alpharetta | 1,407 of 2,406 | 0.776 → 0.756 | 0.3 to 0.4 m lower |
-| Saluda River near Greenville | 7 of 1,778 | 0.866 → 0.866 | the same |
-
-On the two creeks the single cells took the power law's 14 to 15 m, and with more than half the cross sections they
-set their reaches' median width, so that step 2 rebuilt the banks the DEM did show at that width: Big Creek's,
-32 m apart by the width-to-depth ratio, were carved 15 m wide. With one cell they keep their width, and the cross
-sections without banks take the reach's median, 23 to 32 m. The wider channels are shallower (Big Creek's, 3.6 m
-deep below the bank elevation, became 2.0 to 2.4 m; Salt Creek's, on a slope of 4.5 × 10⁻⁶, 16.8 m became 10 m) and
-carry their flows lower, which their maps, flooding too little already at their lower stages, scored worse for.
-FABDEM's points are 25 m or more apart, so it was already one cell there.
+cell. The width power law comes last so that it doesn't override the banks the water and the DEM show. The limit is one cell at any resolution.
 
 The methods find different things. A water mask, the land cover and the DEM's water find the water's edge; the
 width-to-depth ratio finds the top of the banks, where the water would spill out. And they don't always agree on real
@@ -250,18 +198,15 @@ order from upstream to downstream. Then:
 
   Where fewer than 5 banks are within 500 m, the height is the 10th percentile of the 5 nearest along the reach, or of
   all the reach's if it has fewer. Of one bank, the 10th percentile is its height, and of two, a tenth of the way from
-  the lower to the higher, however high they are.
-  Where a creek is too narrow for the DEM to show its banks, ARC finds only the odd rim of the floodplain: one, 0.92 m
-  up, set the bank height for a whole kilometre of a creek in N39W109, and the bed there came out 0.96 m above the
-  DEM. With the 5 nearest it is at most 0.17 m above it.
+  the lower to the higher, however high they are. Where a creek is too narrow for the DEM to show its banks, ARC finds 
+  only the odd rim of the floodplain.
 
   The heights are those of the banks as found in step 1, not of the median-width banks the step above gives: those
   are just the ground wherever the median width puts them, and in a gorge they land far up its walls. Nor does a bank
   from the DEM (or a single cell's, which is the ground beside the stream cell) count if it is higher than the water
   that carries the cross section's maximum flow over the DEM's own cross section: no flood reaches it, so it's a
   valley wall. Where a small creek in a V-shaped valley is too narrow
-  for the DEM or the water mask to show, those walls are all ARC finds; counting them put a Karnali tributary's bank
-  elevation, and so its 2-year water, 10 m above the stream. Nor does a search still falling at that water
+  for the DEM or the water mask to show, those walls are all ARC finds. Nor does a search still falling at that water
   (`max_flow_water`): its banks are only as far up the walls as the maximum flow reaches, which set a canyon's bank
   elevation by its maximum flow, whatever its banks. A reach left without a bank of its own takes the site's bank
   height. Only where the maximum flow stays below every bank in the site (deep channels, and no water mask) are the
@@ -271,10 +216,7 @@ order from upstream to downstream. Then:
   its bank elevation comes from the banks around it. Where a creek is too narrow for the DEM to show, the ground beside it can lie below that
   level, on a street or down the side of a fan, and the flood map then spreads the baseflow away from the creek. So
   with `Bathy_Use_Banks`, such a cross section on a baseflow below `Bathy_Bankless_Max_Baseflow` (20 m³/s by default)
-  carries its baseflow at its stream's level instead. Beside one creek in Salt Lake City (N40W112) the 2-year flood
-  covered 2,226 cells outside its channel, and 290 with this. Below 20 m³/s, 56 of the 68 US test sites stay as they
-  were and their mean MCC stays the same (0.5609 against 0.5617); for every bank-less cross section, whatever its
-  flow, the maps flood too little and it falls to 0.5523.
+  carries its baseflow at its stream's level instead.
 - Where a reach flows into the next on its main stem, their bank elevations meet. Each reach's is its own, so at a
   junction they can differ by metres, and with the standard step the water surface would drop over the step in the
   bed in a cell or two. So the last 500 m of the reach above and the first 500 m of the reach below are ramped to
@@ -294,8 +236,7 @@ varying with depth as `Depth_Varying_N` says, and `slope_adjustment_factor`. Wit
 below the channel's slopes stays (the carve only lowers the ground), and its share of the flow counts. A power-law
 depth is used as it is instead. The channel takes the water's n between these banks, wherever step 2 put them, so that
 its rating curve carries the flow at its banks as the depth was worked out for.
-(Step 1 gave it only between the banks as found; inside median-width banks rebuilt wider, the land cover's n, 0.2 for
-grass, once halved what a Karnali channel carried at its banks.)
+(Step 1 gave it only between the banks as found.)
 
 ### 4. Smooth the bed along each reach
 
@@ -307,12 +248,7 @@ more than 0.5 m per metre along the stream.
 With `Standard_Step` or `Bathy_Use_Banks`, `Bathy_Smooth_Bed` is False unless the input file gives it. A smoothed bed
 is partly its neighbours': a channel narrower than them gets a bed too shallow to carry the flow below its banks, and
 one wider gets a bed deeper than it needs. Each cross section's own normal depth then dips and rises along the reach,
-and the [standard step](standard_step.md), which can't follow the dips, carries the water above them. On the Karnali's main stem that put
-the 2-year flow 1.7 m above the banks rather than 0.8 m, and the flood maps of the 68 test sites score the same either
-way. Without the standard step, each rating curve is its own cross section's, so the dips and rises are the water's:
-with bank elevations and the 2-year flow as the baseflow, a 54 m wide channel between 210 m wide ones had its 2-year
-water 14 m above its banks, a wide one 8 m below its banks and 5 m below the DEM, and 465 of the Karnali's 17,536 cells
-had their water below the DEM.
+and the [standard step](standard_step.md), which can't follow the dips, carries the water above them. Without the standard step, each rating curve is its own cross section's, so the dips and rises are the water's own.
 
 ### 5. Carve the channel
 

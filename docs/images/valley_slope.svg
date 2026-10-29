@@ -2253,14 +2253,14 @@ L 765.869205 422.415389
    </g>
    <g id="line2d_137">
     <path d="M 459.253295 257.634255 
-L 535.907273 304.365533 
+L 535.907273 304.325629 
 L 612.56125 295.508735 
 L 689.215227 281.822584 
 L 765.869205 262.161004 
 " clip-path="url(#pb05aae6bc8)" style="fill: none; stroke: #52514e; stroke-width: 1.4; stroke-linecap: square"/>
     <g clip-path="url(#pb05aae6bc8)">
      <use xlink:href="#m5cc12eb8f1" x="459.253295" y="257.634255" style="fill: #52514e; stroke: #52514e"/>
-     <use xlink:href="#m5cc12eb8f1" x="535.907273" y="304.365533" style="fill: #52514e; stroke: #52514e"/>
+     <use xlink:href="#m5cc12eb8f1" x="535.907273" y="304.325629" style="fill: #52514e; stroke: #52514e"/>
      <use xlink:href="#m5cc12eb8f1" x="612.56125" y="295.508735" style="fill: #52514e; stroke: #52514e"/>
      <use xlink:href="#m5cc12eb8f1" x="689.215227" y="281.822584" style="fill: #52514e; stroke: #52514e"/>
      <use xlink:href="#m5cc12eb8f1" x="765.869205" y="262.161004" style="fill: #52514e; stroke: #52514e"/>
@@ -2271,14 +2271,14 @@ L 765.869205 262.161004
 L 535.907273 309.254617 
 L 612.56125 306.381776 
 L 689.215227 306.501805 
-L 765.869205 306.214342 
+L 765.869205 306.201064 
 " clip-path="url(#pb05aae6bc8)" style="fill: none; stroke: #eb6834; stroke-width: 1.4; stroke-linecap: square"/>
     <g clip-path="url(#pb05aae6bc8)">
      <use xlink:href="#me8c0099056" x="459.253295" y="257.65631" style="fill: #eb6834; stroke: #eb6834"/>
      <use xlink:href="#me8c0099056" x="535.907273" y="309.254617" style="fill: #eb6834; stroke: #eb6834"/>
      <use xlink:href="#me8c0099056" x="612.56125" y="306.381776" style="fill: #eb6834; stroke: #eb6834"/>
      <use xlink:href="#me8c0099056" x="689.215227" y="306.501805" style="fill: #eb6834; stroke: #eb6834"/>
-     <use xlink:href="#me8c0099056" x="765.869205" y="306.214342" style="fill: #eb6834; stroke: #eb6834"/>
+     <use xlink:href="#me8c0099056" x="765.869205" y="306.201064" style="fill: #eb6834; stroke: #eb6834"/>
     </g>
    </g>
    <g id="line2d_139">
