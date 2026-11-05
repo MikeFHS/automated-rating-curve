@@ -19,11 +19,40 @@ each cross section. Give `BATHY_Out_File` to turn this on.
 
 ## Water surface or banks
 
+<<<<<<< HEAD
 A DEM shows each river full to some level. Most DEMs show the water's surface at whatever flow the river carried when
 they were made, usually a low one. `Bathy_Use_Banks` says which level ARC takes the channel to be full to, and
 `Flow_File_BF` has to be the flow that fills it to that level. Either way ARC carves the same trapezoid between the
 banks, just deep enough that `Flow_File_BF` fills it exactly to that level by Manning's equation, so the flow is what
 sets the depth, and the mode and the flow have to go together.
+=======
+1. Sample every stream-cell cross section from the DEM or the manual cross-section table.
+2. If `Low_Spot_Range` is greater than `0`, shift each section to the lowest nearby sampled point and resample it.
+3. If angle testing is enabled, rotate and resample each section to the narrowest trial orientation.
+    - During that angle search, ARC now also screens candidate orientations for sampled stream cells away from the thalweg center and prefers angles that avoid following the stream network.
+4. After all stream cells have a sampled section, compute the reach-scale INFLECT curves and evaluate the bank-finding hierarchy for every cached section.
+    - ARC now first checks whether a one-cell triangular channel is explicitly supported by the sampled geometry. That one-cell path is only accepted when the first sampled cell on both sides of the thalweg is above the thalweg and the drainage-area width prior indicates an expected bankfull width no greater than three raster cells.
+5. Within each reach, order the sampled sections from upstream to downstream using the stream-direction information and evaluate the locally detected bank-to-bank top width at each sampled stream cell.
+    - If a sampled top width falls outside the 25th-75th percentile band for that reach, ARC replaces its bank indices with bank locations that match the reach-median top width as closely as the sampled cross-section spacing allows.
+    - If a sampled section still does not have a valid local bank result after the local bank-search hierarchy runs, ARC now also uses that same reach-median top width to assign replacement bank indices on the sampled profile.
+6. After the width screen, ARC orders the original bank elevations upstream to downstream and builds a downstream reach network from `StrmShp_File` using `reach_id` and `downstream_reach_id`.
+    - ARC applies a centered moving mean to each finite bank elevation, using up to five neighboring cells by default. Invalid elevations remain unset for the downstream profile interpolation.
+    - The first cell on a connected reach cannot exceed the lowest incoming profile outlet.
+    - When a downstream bank rises or has no valid floating-point elevation, ARC finds the next valid averaged bank lower than the current profile, calculates the slope over their along-reach distance, and replaces the intervening higher or invalid cells by interpolation. Slopes are capped at `MAX_SLOPE` (`0.5`).
+    - When no lower averaged bank remains, the profile continues at `MIN_SLOPE` (`1e-4`). Equal banks remain level. The thalweg is not used as a bank-elevation constraint.
+    - An invalid first bank uses an incoming reach outlet when available. A headwater with no finite first bank stops with an error that identifies the cell.
+    - Local bank indices and top widths remain the horizontal geometry; the monotone profile provides the vertical bathymetry control.
+7. Only after those filtered and smoothed bank controls are known does ARC estimate and burn bathymetry.
+    - `CrossSection.extract_scalar_hydraulic_geometry()` reduces each staged section to a triangle or trapezoid and uses `smoothed_bank_elevation` as its vertical energy reference. If that elevation is unavailable, the sampled center ordinate is used. The scalar record also contains the cell baseflow and a fixed bathymetry Manning roughness of `0.03`.
+    - For baseflow-driven bathymetry, ARC marches through the reach graph from downstream to upstream. At an interior node, it calculates the raw energy gradient as `(smoothed_bank_elevation - downstream_energy_head) / connection_length`; connection lengths shorter than `1` m are treated as `1` m. The effective slope is the larger of that energy gradient and the node's slope control. A missing slope defaults to `0.001`, and the slope control cannot be less than `1e-4`.
+    - Trial depth determines cross-sectional area, velocity, hydraulic radius, Manning friction slope, and the velocity-head gradient. Brent's method searches from `0.001` to `25` m for the depth where `friction_slope - velocity_head_gradient` equals the effective slope.
+    - A positive-flow outlet is initialized with Manning normal depth using its slope control. A node whose baseflow is zero or negative receives the fixed `0.5` m depth. Outlet velocity remains `0.0`, its initialized friction slope is `1e-4`, and its WSE equals the smoothed bank elevation unless a scalar `default_tailwater_wse` is explicitly supplied by a caller.
+    - If an interior friction-slope solve cannot bracket a root, ARC solves Manning normal depth using the effective slope. If that normal-depth solve also cannot bracket a root between `0.001` and `25` m, the final fallback is `0.5` m.
+    - A valid drainage-area power-law depth takes precedence over the network result for that stream cell.
+    - ARC then groups every staged depth that is marked for application, finite, positive, and below `25` m by source reach. It retains values within the inclusive 25th-75th percentile interval and calculates their median; if interpolation of the quartiles leaves a small sample empty, all valid values for that reach are retained for the median.
+    - Finally, ARC moves downstream through the reach graph and raises a downstream reach median when necessary so depth stays equal or increases downstream. At a confluence, the deepest valid incoming branch controls. The constrained reach median replaces the initial depth on every sampled cross section in that reach, including sections whose initial value came from the drainage-area power law.
+8. Before writing the bathymetry GeoTIFF, ARC performs one synchronous gap-fill pass. A NaN cell is filled when at least four of its eight surrounding cells contain bathymetry, and it receives the arithmetic mean of only those non-NaN values. Newly filled values are not used to fill any other cell.
+>>>>>>> varying_roughness_and_slope
 
 | | `Bathy_Use_Banks: False` (the default) | `Bathy_Use_Banks: True` |
 | --- | --- | --- |

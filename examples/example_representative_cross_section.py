@@ -57,6 +57,7 @@ if __name__ == "__main__":
             "Gen_Slope_Dist": Gen_Slope_Dist,
             "Stream_Slope_Method": Stream_Slope_Method,
             "StrmShp_File": StrmShp_File,
+            "Stream_Length_m": "LengthGeodesicMeters",
             "Bathy_Trap_H": Bathy_Trap_H,
             "Bathy_Use_Banks": Bathy_Use_Banks,
             "LC_Water_Value": LC_Water_Value,
