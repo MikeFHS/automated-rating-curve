@@ -3,7 +3,5 @@ __pycache__/
 *.egg-info/
 build/
 *.py.bak
-testing/shape_case_outputs
-testing/angle_case_outputs
-testing/slope_method_angle_case_outputs
-testing/slope_method_case_outputs
+testing/*_outputs/
+site/

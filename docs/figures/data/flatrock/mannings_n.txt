@@ -1,0 +1,12 @@
+LC_ID	Description	Manning_n
+10	Tree Cover	0.185
+20	Shrubland	0.050
+30	Grassland	0.1
+40	Cropland	0.0125
+50	Builtup	0.088
+60	Bare	0.35
+70	SnowIce	0.030
+80	Water	0.072
+90	Emergent_Herb_Wet	0.100
+95	Mangroves	0.100
+100	MossLichen	0.100

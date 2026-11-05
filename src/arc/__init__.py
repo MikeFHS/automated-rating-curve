@@ -1,30 +1,38 @@
 """
 Automated Rating Curve (ARC).
 
-This package exposes the public entry points for running ARC from Python or the
-command line.
+ARC builds a rating curve (discharge, velocity, top width and water surface elevation) for each stream cell of the
+reaches in its flow file, from cross sections sampled across the stream.
 
-Primary entry points
---------------------
-- :class:`arc.arc.Arc`: High-level runner for ARC simulations.
-- :func:`arc.process_geospatial_data.Process_ARC_Geospatial_Data`: Utilities for preparing
-  geospatial inputs.
-- :func:`arc.streamflow_processing.Create_ARC_Streamflow_Input`: Utilities for preparing
-  streamflow inputs.
-- :func:`arc.Create_GeoJSON.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector`: Convert ARC
-  outputs to GeoJSON.
+Entry points
+------------
+- arc.Arc, or the ``arc`` command: run ARC from an input file or a dictionary (arc.pipeline.run).
+- arc.streamflow_processing.Create_ARC_Streamflow_Input: make ARC's flow file from GEOGLOWS data.
+- arc.process_geospatial_data.Process_ARC_Geospatial_Data: make ARC's input rasters and input file.
+- arc.create_geojson.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector: turn ARC's curve file into GeoJSON for flood
+  mapping.
 
-Notes
------
-Most of ARC's core computation lives in
-:mod:`arc.Automated_Rating_Curve_Generator`.
+The entry points are imported when first used, so that a run doesn't import the flow file tools' s3fs and xarray.
 """
+import importlib
 
 from ._log import LOG
-from .arc import Arc
-from .Create_GeoJSON import Run_Main_Curve_to_GEOJSON_Program_Stream_Vector
-from .streamflow_processing import Create_ARC_Streamflow_Input
-from .process_geospatial_data import Process_ARC_Geospatial_Data
 
-__all__ = ['Arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data']
-__version__ = '0.4.0'
+_ENTRY_POINTS = {'Arc': '.arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector': '.create_geojson',
+                 'Create_ARC_Streamflow_Input': '.streamflow_processing',
+                 'Process_ARC_Geospatial_Data': '.process_geospatial_data'}
+
+__all__ = ['LOG', 'Arc', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector']
+__version__ = '0.5.0'
+
+
+def __getattr__(name):
+    if name in _ENTRY_POINTS:
+        value = getattr(importlib.import_module(_ENTRY_POINTS[name], __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_ENTRY_POINTS))

@@ -10,16 +10,16 @@ cell sizes from degrees to meters internally.
 Execution modes
 ---------------
 1. Automated test mode
-   ``pytest automated-rating-curve/testing/unit_test_with_shapes_geographic.py``
+   ``pytest testing/unit_test_with_geographic.py``
 
    Pytest imports the module, runs the ``test_*`` functions, and writes outputs
    to a temporary directory.
 
 2. Manual diagnostic mode
-   ``python automated-rating-curve/testing/unit_test_with_shapes_geographic.py``
+   ``python testing/unit_test_with_geographic.py``
 
    The script writes geographic test artifacts into
-   ``testing/shape_case_outputs_geographic/``, prints a compact summary, and
+   ``testing/geographic_case_outputs/``, prints a compact summary, and
    opens the same diagnostic plots used by the projected-coordinate companion
    test. It also exports a stream GeoPackage that ARC can read through
    ``StrmShp_File`` when the ``end_points`` slope method is enabled.
@@ -35,11 +35,10 @@ physical spacing is still approximately 1 m.
 
 from __future__ import annotations
 
-from pathlib import Path
 import stat
 import time
+from pathlib import Path
 
-from arc import Arc
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -47,6 +46,8 @@ import pandas as pd
 from osgeo import gdal, osr
 from pyproj import Geod
 from shapely.geometry import LineString
+
+from arc import Arc
 
 gdal.UseExceptions()
 
@@ -313,6 +314,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray) -> dict[str, Path]:
     with mannings_path.open("w", encoding="utf-8") as mannings_file:
         mannings_file.write("lu\tdesc\troughness\n")
         mannings_file.write(f"1\tland\t{roughness}\n")
+        mannings_file.write(f"80\twater\t{roughness}\n")  # ARC makes the stream cells water
 
     return {
         "dem_path": dem_path,
@@ -631,7 +633,7 @@ def summarize_results(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 "max_upstream_top_width_residual_m": float(top_width_residual.max()),
                 "median_upstream_velocity_residual_mps": float(velocity_residual.median()),
                 "max_upstream_velocity_residual_mps": float(velocity_residual.max()),
-                "num_vdt_rows": int(len(vdt_df)),
+                "num_vdt_rows": len(vdt_df),
             }
         )
 

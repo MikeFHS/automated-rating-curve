@@ -4,7 +4,7 @@ Synthetic ARC test for trapezoidal, rectangular, and triangular channels.
 This module is intentionally written to support two execution modes:
 
 1. Automated test mode
-   ``pytest automated-rating-curve/testing/unit_test_with_shapes.py``
+   ``pytest testing/unit_test_with_shapes.py``
 
    In this mode, pytest imports the module, calls the ``test_*`` functions, and
    verifies that ARC can successfully process all three synthetic channel
@@ -12,7 +12,7 @@ This module is intentionally written to support two execution modes:
    outputs into a pytest-managed directory.
 
 2. Manual diagnostic mode
-   ``python automated-rating-curve/testing/unit_test_with_shapes.py``
+   ``python testing/unit_test_with_shapes.py``
 
    In this mode, the script writes shape-specific outputs into a persistent
    folder under ``testing/shape_case_outputs/``, prints a short summary of the
@@ -54,18 +54,18 @@ robust indicators that the workflow is healthy:
 
 from __future__ import annotations
 
+import stat
+import time
 from pathlib import Path
 
-from arc import Arc
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from osgeo import gdal, osr
-import os
-import stat
 from shapely.geometry import LineString
-import time
+
+from arc import Arc
 
 gdal.UseExceptions()
 
@@ -371,6 +371,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray) -> dict[str, Path]:
     with mannings_path.open("w", encoding="utf-8") as mannings_file:
         mannings_file.write("lu\tdesc\troughness\n")
         mannings_file.write(f"1\tland\t{roughness}\n")
+        mannings_file.write(f"80\twater\t{roughness}\n")  # ARC makes the stream cells water
 
     return {
         "dem_path": dem_path,
@@ -776,7 +777,7 @@ def summarize_results(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 "max_upstream_top_width_residual_m": float(top_width_residual.max()),
                 "median_upstream_velocity_residual_mps": float(velocity_residual.median()),
                 "max_upstream_velocity_residual_mps": float(velocity_residual.max()),
-                "num_vdt_rows": int(len(vdt_df)),
+                "num_vdt_rows": len(vdt_df),
             }
         )
 

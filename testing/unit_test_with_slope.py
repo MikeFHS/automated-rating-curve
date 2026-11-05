@@ -2,17 +2,17 @@
 Synthetic ARC test that isolates stream-slope-method behavior on one triangle channel.
 
 This module is intentionally structured like the other synthetic testing
-scripts in ``automated-rating-curve/testing`` so it can be used in two ways:
+scripts in ``testing`` so it can be used in two ways:
 
 1. Automated test mode
-   ``pytest automated-rating-curve/testing/unit_test_with_slope.py``
+   ``pytest testing/unit_test_with_slope.py``
 
    Pytest imports the module, runs the ``test_*`` function, writes outputs into
    a temporary directory, and checks that ARC can process one fixed triangle
    channel using three different stream-slope methods.
 
 2. Manual diagnostic mode
-   ``python automated-rating-curve/testing/unit_test_with_slope.py``
+   ``python testing/unit_test_with_slope.py``
 
    Manual mode writes persistent artifacts under
    ``testing/slope_method_case_outputs/``, prints a compact summary table, and
@@ -45,17 +45,19 @@ requested for this comparison.
 
 from __future__ import annotations
 
-from pathlib import Path
 import stat
 import time
+from pathlib import Path
 
-from arc import Arc
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
 from osgeo import gdal, osr
 from shapely.geometry import LineString
+
+from arc import Arc
 
 gdal.UseExceptions()
 
@@ -422,6 +424,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray) -> dict[str, Path]:
     with mannings_path.open("w", encoding="utf-8") as mannings_file:
         mannings_file.write("lu\tdesc\troughness\n")
         mannings_file.write(f"1\tland\t{roughness}\n")
+        mannings_file.write(f"80\twater\t{roughness}\n")  # ARC makes the stream cells water
 
     return {
         "dem_path": dem_path,
@@ -557,10 +560,13 @@ def run_all_slope_method_cases(output_root: Path) -> dict[str, pd.DataFrame]:
     workflows use the same geometry generation and ARC configuration logic.
     """
     output_root.mkdir(parents=True, exist_ok=True)
-    return {
-        method_name: run_slope_method_case(method_name, method_config, output_root)
-        for method_name, method_config in slope_method_configs.items()
-    }
+    results = {}
+    for method_name, method_config in slope_method_configs.items():
+        try:
+            results[method_name] = run_slope_method_case(method_name, method_config, output_root)
+        except ValueError as error:
+            print(f"{method_name}: {error}")
+    return results
 
 
 def _select_upstream_normal_flow_slice(vdt_df: pd.DataFrame) -> pd.Series:
@@ -657,7 +663,7 @@ def summarize_results(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 "max_upstream_top_width_residual_m": float(top_width_residual.max()),
                 "median_upstream_velocity_residual_mps": float(velocity_residual.median()),
                 "max_upstream_velocity_residual_mps": float(velocity_residual.max()),
-                "num_vdt_rows": int(len(vdt_df)),
+                "num_vdt_rows": len(vdt_df),
             }
         )
 
@@ -700,7 +706,7 @@ def plot_results(results: dict[str, pd.DataFrame]) -> None:
     tick_fontsize = 8
     legend_fontsize = 8
 
-    figure, axes = plt.subplots(len(slope_method_configs), 4, figsize=(16, 9), sharex="col")
+    figure, axes = plt.subplots(len(results), 4, figsize=(16, 9), sharex="col")
     axes_array = np.atleast_2d(axes)
     all_vdt_frames = list(results.values())
     wse_ylim = _compute_fixed_ylim([df["wse_2"] for df in all_vdt_frames] + [df["Manning WSE (m)"] for df in all_vdt_frames])
@@ -710,9 +716,8 @@ def plot_results(results: dict[str, pd.DataFrame]) -> None:
         [df["Slope"] * 100.0 for df in all_vdt_frames] + [np.array([bed_slope * 100.0])]
     )
 
-    for axis_row, (method_name, method_config) in zip(axes_array, slope_method_configs.items()):
-        vdt_df = results[method_name]
-        method_color = str(method_config["color"])
+    for axis_row, (method_name, vdt_df) in zip(axes_array, results.items()):
+        method_color = str(slope_method_configs[method_name]["color"])
 
         wse_axis = axis_row[0]
         top_width_axis = axis_row[1]
@@ -763,17 +768,17 @@ def plot_results(results: dict[str, pd.DataFrame]) -> None:
     plt.show()
 
 
-def test_slope_method_cases(tmp_path: Path) -> None:
+@pytest.mark.parametrize("method_name", ["local_average", "reach_average", "end_points"])
+def test_slope_method_cases(tmp_path: Path, method_name: str) -> None:
     """
-    Automated regression test for all three synthetic slope-method cases.
+    Automated regression test for each synthetic slope-method case.
 
     Pytest provides ``tmp_path`` so the run is isolated and does not interfere
     with any persistent manual outputs from earlier exploratory runs.
     """
-    results = run_all_slope_method_cases(tmp_path / "slope_method_cases")
+    vdt_df = run_slope_method_case(method_name, slope_method_configs[method_name], tmp_path / "slope_method_cases")
 
-    for method_name, vdt_df in results.items():
-        assert_slope_method_case_is_valid(method_name, vdt_df)
+    assert_slope_method_case_is_valid(method_name, vdt_df)
 
 
 def main() -> None:

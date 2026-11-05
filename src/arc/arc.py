@@ -1,80 +1,65 @@
 from __future__ import annotations
+
 import argparse
 import logging
-from typing import Literal
 
 from arc import LOG
-from arc.Automated_Rating_Curve_Generator import main
+from arc.config import Configs
+from arc.pipeline import Results, run
 
 __all__ = ['Arc']
 
-class Arc():
+class Arc:
     """
-    High-level ARC runner.
+    Run ARC from Python, as the ``arc`` command does.
 
-    This class provides a lightweight interface for running ARC from Python and
-    is used by the ``arc`` console script.
+    Give it an input file or a dictionary of the same keys, then call `run`. See the Model Input File page of
+    the documentation for the keys.
     """
-    _mifn: str = ""
-    _args: dict = {}
-    
-    def __init__(self, mifn: str = "", args: dict | None = None, quiet: bool = False, processes: int | Literal["auto"] = 1) -> None:
-        """Initialize an `Arc` instance.
-        
+    def __init__(self, mifn: str = "", args: dict | None = None, quiet: bool = False) -> None:
+        """
         Parameters
         ----------
         mifn : str, optional
-            Path to an ARC model input file (MIF).
-        args : dict or None, optional
-            Dictionary of key-value pairs corresponding to ARC input-file arguments. Will only be used if `mifn` is not provided.
-        quiet : bool, optional
-            If True, suppress progress bars and non-error log output.
-        processes : int or {"auto"}, optional
-            Number of worker processes for the per-stream-cell computation. Use ``"auto"`` to select serial vs. parallel based on domain size.
-        
-        Returns
-        -------
-        None
+            Path to an ARC model input file (MIF): YAML, or text with a key and its value on each line.
+        args : dict, optional
+            The input file's keys and values, used only if ``mifn`` isn't given.
+        quiet : bool
+            Hide the progress bars and every log message but errors.
         """
         self._mifn = mifn
         self._args = args or {}
         self._quiet = quiet
-        self._processes = processes
         if quiet:
             self.set_log_level('error')
-        
-    def run(self):
+
+    def run(self) -> Results:
         """
-        Run ARC.
+        Run ARC, writing the outputs the inputs name.
 
         Returns
         -------
-        None
-            Outputs are written to disk based on input-file arguments.
+        Results
+            What the run made (see `arc.pipeline.Results`).
         """
-        LOG.info('Inputs to the Program is a Main Input File')
-        LOG.info('\nFor Example:')
-        LOG.info('  python Automated_Rating_Curve_Generator.py ARC_InputFiles/ARC_Input_File.txt')
-        
-        ### User-Defined Main Input File ###
-        if self._mifn or self._args:
+        if self._mifn:
             LOG.info(f'Main Input File Given: {self._mifn}')
+            configs = Configs.from_file(self._mifn)
+        elif self._args:
+            configs = Configs.from_mapping(self._args)
         else:
-            #Read Main Input File
-            self._mifn = 'ARC_InputFiles/ARC_Input_File.txt'
-            self._mifn = r"C:\Projects\2024_FHS_FloodForecasting\ARC_Shields_Nencarta\nencarta_test_wsebathy_clean\yellowstone_wsebathy_clean\ARC_InputFiles\ARC_Input_Shields_Bathy.txt"
-            LOG.warning('Moving forward with Default MIF Name: ' + self._mifn)
+            raise ValueError('Arc needs a model input file (mifn) or a dictionary of input arguments (args).')
+        
+        return run(configs, quiet=self._quiet)
 
-        main(self._mifn, self._args, self._quiet, self._processes)
-
-    def set_log_level(self, log_level: str) -> 'Arc':
+    def set_log_level(self, log_level: str) -> Arc:
         """
         Set ARC's logging verbosity.
 
         Parameters
         ----------
-        log_level : {"debug", "info", "warn", "error"}
-            Desired log level.
+        log_level : str
+            ``"debug"``, ``"info"``, ``"warn"`` or ``"error"``. Anything else sets ``"warn"``, with a warning.
 
         Returns
         -------
@@ -98,8 +83,8 @@ class Arc():
             LOG.setLevel(logging.WARNING)
             handler.setLevel(logging.WARNING)
             LOG.warning('Invalid log level. Defaulting to warning.')
-            return
-            
+            return self
+
         LOG.info('Log Level set to ' + log_level)
         return self
 
@@ -107,20 +92,18 @@ def _main():
     """Command-line entry point for the ``arc`` console script."""
     parser = argparse.ArgumentParser(description='Run ARC')
     parser.add_argument('mifn', type=str, help='Model Input File Name')
-    parser.add_argument('-l', '--log', type=str, help='Log Level', 
-                        default='warn', choices=['debug', 'info', 'warn', 'error'])
+    parser.add_argument('-l', '--log', type=str, help='Log level (default warn, or error with --quiet)',
+                        default=None, choices=['debug', 'info', 'warn', 'error'])
     parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output progress bar and other non-error messages')
-    parser.add_argument('-p', '--processes', type=str, default='1', help='Number of worker processes, or \"auto\"')
     args = parser.parse_args()
-    processes: int | Literal["auto"]
-    processes = "auto" if args.processes.strip().lower() == "auto" else int(args.processes)
-    arc = Arc(args.mifn, args=None, quiet=args.quiet, processes=processes)
-    arc.set_log_level(args.log)
+    arc = Arc(args.mifn, args=None, quiet=args.quiet)
+    if args.log or not args.quiet:  # --quiet keeps the errors alone unless a level is given
+        arc.set_log_level(args.log or 'warn')
     arc.run()
 
     LOG.info('Finished')
 
-    
-    
+
+
 if __name__ == "__main__":
     _main()

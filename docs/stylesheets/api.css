@@ -1,0 +1,10 @@
+/* Python API: indent each object's contents under its heading, with a rule down the side */
+.doc-contents:not(.first) {
+  padding-left: 1.2rem;
+  border-left: .05rem solid var(--md-typeset-table-color);
+}
+
+/* A little more room above each object */
+.doc-object + .doc-object, h2 + .doc-object {
+  margin-top: 1.5rem;
+}
