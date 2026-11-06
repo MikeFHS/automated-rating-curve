@@ -53,6 +53,9 @@ class Configs:
     flow_file_qmax: str | None = None
     lc_water_value: int = 80
     drainage_area_field: str | None = None
+    # Representative export only: column of full reach lengths in meters
+    # Also accepted as s_stream_length_field in input mappings.
+    stream_length_m: str | None = None
     coefficient_depth: float | None = None
     exponent_depth: float | None = None
     coefficient_width: float | None = None
@@ -206,6 +209,13 @@ class Configs:
     def _normalize_keys(cls, params: dict) -> dict:
         # Keys are case-insensitive, so DEM_File is dem_file
         params = {str(k).lower(): v for k, v in params.items()}
+        # Accept internal-style aliases for representative input options.
+        for alias, key in (("b_build_representative_cross_section", "build_representative_cross_section"),
+                           ("s_stream_length_field", "stream_length_m")):
+            if alias in params:
+                if key in params and params[key] != params[alias]:
+                    raise ValueError(f"Conflicting values for {alias} and {key}.")
+                params[key] = params.pop(alias)
 
         # AROutBATHY is another name for BATHY_Out_File, and wins when both are given
         aroutbathy = params.pop("aroutbathy", None)
@@ -265,6 +275,11 @@ class Configs:
 
         if self.build_representative_cross_section and not self.representative_cross_section_file:
             raise ValueError("Building a representative cross section requires a representative_cross_section_file to be specified.")
+        if self.build_representative_cross_section:
+            if not self.stream_length_m or self.stream_length_m.strip().lower() in {"", "none", "null"}:
+                raise ValueError("Build_Representative_Cross_Section requires Stream_Length_m (meters).")
+            if not self.strmshp_file:
+                raise ValueError("Build_Representative_Cross_Section requires StrmShp_File.")
 
         # A run makes rating curves unless it only builds representative cross sections. Asked for an output of the
         # rating curves as well, it makes both from the same cross sections, and carves its channels as it would

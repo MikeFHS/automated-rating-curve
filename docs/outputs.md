@@ -29,7 +29,7 @@ Where water spills over a bank into lower ground, the discharge jumps, and the c
 maximum flow. A stream cell only gets a rating curve if the discharge at its top is within half of the maximum flow
 either way.
 
-With a baseflow (`Flow_File_BF`, above 0.001 m³/s), the first step's discharge is set 0.001 m³/s below the baseflow if
+With a baseflow (`Flow_File_BF`, above 0.001 mÂ³/s), the first step's discharge is set 0.001 mÂ³/s below the baseflow if
 it was at or above it, so that the baseflow lies inside the rating curve, and its velocity to that discharge over its
 area. It keeps the top width and water surface of its depth.
 
@@ -68,11 +68,11 @@ narrowest cross sections hold it up. Take that into account when choosing Mannin
 | --- | --- |
 | `COMID`, `Row`, `Col` | See above. |
 | `Elev` | The bed at the centre of the cross section, which the rating curve starts from: the carved bed with bathymetry, and otherwise the DEM's elevation (m). |
-| `QBaseflow` | The baseflow from `Flow_File_BF` (m³/s), or 0 without it. |
+| `QBaseflow` | The baseflow from `Flow_File_BF` (mÂ³/s), or 0 without it. |
 | `Slope` | The stream's slope at the cell (m/m). |
 | `XS_Angle` | The cross section's direction, in radians (see [Directions and sides](miscellaneous.md#directions-and-sides)). |
 | `Valley_Slope` | Only with [`Valley_Sections`](valley_sections.md): the slope the overbanks flow at (m/m), `Slope` times the cross section's slope ratio, or `Slope` where the cross section is left as it is. Curve2Flood takes the velocity over the floodplain from it. |
-| `q_1`, `q_2`, ... | The discharge at each step (m³/s). |
+| `q_1`, `q_2`, ... | The discharge at each step (mÂ³/s). |
 | `v_1`, `v_2`, ... | The mean velocity, discharge over area (m/s). |
 | `t_1`, `t_2`, ... | The top width (m). |
 | `wse_1`, `wse_2`, ... | The water surface elevation (m). |
@@ -97,7 +97,7 @@ where the depth is the water surface elevation less `BaseElev`.
 | --- | --- |
 | `COMID`, `Row`, `Col` | See above. |
 | `BaseElev` | The bed at the centre of the cross section, as `Elev` in the VDT database (m). |
-| `QMax` | The reach's maximum flow from the flow file (m³/s). |
+| `QMax` | The reach's maximum flow from the flow file (mÂ³/s). |
 | `Slope`, `XS_Angle` | As in the VDT database. |
 | `depth_a`, `depth_b`, `tw_a`, `tw_b`, `vel_a`, `vel_b` | The power laws' coefficients and exponents. |
 | `QA_Flag` | As in the VDT database (not in the reach-average curve file). |
@@ -114,8 +114,8 @@ out.
 | Column | Description |
 | --- | --- |
 | `COMID`, `Row`, `Col` | See above. |
-| `q_1`, `q_2`, ... | The discharge at each step (m³/s). |
-| `a_1`, `a_2`, ... | The flow area, discharge over velocity (m²), 0 where the velocity is 0. |
+| `q_1`, `q_2`, ... | The discharge at each step (mÂ³/s). |
+| `a_1`, `a_2`, ... | The flow area, discharge over velocity (mÂ²), 0 where the velocity is 0. |
 | `p_1`, `p_2`, ... | The wetted perimeter (m). |
 | `QA_Flag` | As in the VDT database. |
 
@@ -128,7 +128,7 @@ decided for it, then a row for each cell skipped for want of a slope.
 | --- | --- |
 | `COMID`, `Row`, `Col` | As in the VDT database: `Row` and `Col` are the centre of the cross section. |
 | `Stream_Row`, `Stream_Col` | The stream cell, which `Low_Spot_Range` may have moved the cross section from. |
-| `Baseflow`, `Max_Flow` | The cell's flows from the flow file (m³/s). |
+| `Baseflow`, `Max_Flow` | The cell's flows from the flow file (mÂ³/s). |
 | `Slope`, `Slope_Source` | The slope (m/m), and where it came from: `cell` (its own), `reach` (its reach's, the cell having none of its own) or `neighbours` (its reach having none, its neighbours' in the stream network). |
 | `Bank_Method` | How its banks were found: `width_to_depth_ratio` (the bank tops, with `Bathy_Use_Banks` or without bathymetry), `max_flow_water` (no bank top below the water that carries the maximum flow, the width-to-depth ratio still falling there: the highest level's water's edges below it with `Bathy_Use_Banks`, that water's own without bathymetry; they don't set the reach's bank height or width), `water_edge` (the DEM's water's edge: with bathymetry and without `Bathy_Use_Banks`, or where no bank tops were found), `land_cover` (the water mask's or the land cover's water's edge, where neither the bank tops nor the DEM's water's edge are found), `target_width` (the width power law, none being found), `single_cell` (one cell wide, none being found) or `none`. ARC before 0.5.0 also wrote `flat_water`, the DEM's water 0.1 m above the stream cell. |
 | `Channel_Width` | The width between the banks the hydraulics use (m): the bank tops, also without `Bathy_Use_Banks`, where `Bank_Method` is the carve's `water_edge`. |
@@ -210,47 +210,29 @@ lines square to the valley aren't in the file (see [Valley Cross Sections](valle
 
 ## Representative cross sections
 
-`Representative_Cross_Section_File`, with `Build_Representative_Cross_Section`: one average cross section for each
-reach, for routing models that need one channel shape per reach.
+`Build_Representative_Cross_Section` triggers the creation of two output datasets: a representative cross-setion file and
+a power function fit of discharge as a predictor of the K value used in Muskingum routing. Local sampling, banks, bathymetry and rating curves stay
+unchanged. Representative discharge is recomputed at 0.10 m stages to 25 m using depth-varying roughness, slope adjustment and outlier filtering, independently of any
+standard-step curve. Stage tables and companion coefficients are always CSV.
 
-ARC raises the water every 0.10 m above each cross section's centre point, up to 25 m, and works out the area, top
-width, discharge and velocity at each stage. The velocity is the channel's (between its banks) where it has banks,
-and the whole cross section's where not. At each stage, it averages the cross sections whose area, velocity and top
-width are all within two standard deviations of the reach's means. A reach stops at the first stage where a cross
-section's hydraulics can't be worked out.
+Here are the representative cross-section file output columns.
 
-The discharge is Manning's at the cross section's own slope, so the water is at normal depth, unless the run has
-`Standard_Step` on. Then each cross section with a rating curve carries the flows that curve has: at each of the
-curve's water surfaces, the curve's flow, and between them the flow linear in the water surface, as the VDT database
-is read. Below the lowest water surface and above the top one, it carries Manning's discharge at the friction slope
-at that end, the slope at which Manning's equation carries the curve's flow there. So each cross section carries the
-VDT database's water, and where the step backs the water up, it carries less at each stage than at normal depth.
-Cross sections without a rating curve stay at normal depth. A run that builds only representative cross sections makes
-no rating curves, so its cross sections are all at normal depth. A cross section's discharge never falls as the stage
-rises: where normal depth's would, as where the water spills onto a flat overbank, the discharge below is held, as the
-rating curves hold their last increment.
-
-The representative cross section is built from those averages. Its area and top width are kept from falling as the
-stage rises, and its depth at each stage is the one that gives that area with the width growing steadily from the
-stage below. It is symmetric about the reach's mean bed elevation.
-
-There's a row for each reach and each stage at which some of its cross sections were averaged:
-
-| Column | Description |
+| Columns | Meaning |
 | --- | --- |
-| `COMID` | The reach ID. |
-| `Cross_Section_Count` | How many cross sections the reach has. |
-| `Hydraulic_Sample_Count` | How many were averaged at this stage. |
-| `Depth_Stage_Index`, `Depth_Stage_Meters` | The stage, 1 for 0.10 m above the bed, and its height (m). |
-| `Stream_Slope` | The mean of the cross sections' slopes. |
-| `Reach_Inflect_Terrace_Depth` | The reach's highest stage (m). |
-| `Representative_Thalweg_Elevation` | The mean of the cross sections' bed elevations (m). |
-| `Mean_Discharge`, `Mean_Velocity`, `Mean_Top_Width`, `Mean_Cross_Sectional_Area`, `Mean_WSE` | The averages at this stage. |
-| `Mean_Depth` | The stage's height, as `Depth_Stage_Meters`. |
-| `Representative_Velocity` | As `Mean_Velocity`. |
-| `Representative_Cross_Sectional_Area`, `Representative_Top_Width` | The representative cross section's area and top width at this stage. |
-| `Representative_Depth_Increment`, `Representative_Depth` | Its depth gained since the stage below, and its depth (m). |
-| `Representative_Stage_Elevation` | Its water surface elevation: the mean bed elevation plus its depth (m). |
-| `Representative_Left_Station`, `Representative_Right_Station` | Its water's edges, at minus and plus half its top width (m). |
-| `Mean_Friction_Slope` | The mean friction slope of the cross sections averaged at this stage, the slope at which each carries its discharge. Each one's own slope where it is at normal depth; with `Standard_Step`, below the slope where the water is backed up; above it where a falling discharge is held. A routing model that applies Manning's equation to the representative cross section can use it in place of `Stream_Slope`. |
-| `Mean_Section_Velocity` | The mean of the cross sections' whole-section velocities, discharge over area: the VDT database's velocity. `Mean_Velocity` is the channel's where a cross section has banks, and differs once water is on the overbanks. |
+| `COMID`, `Cross_Section_Count` | Reach ID and total sampled-section count. |
+| `Hydraulic_Sample_Count` | Sections retained by the stage's outlier filter. |
+| `Depth_Stage_Index`, `Depth_Stage_Meters` | Stage index and absolute stage depth in meters. |
+| `Stream_Slope` | Reach-mean positive stream slope. |
+| `Reach_Inflect_Terrace_Depth` | Last successful stage depth, at most 25 m. |
+| `Representative_Thalweg_Elevation` | Mean local thalweg elevation. |
+| `Mean_Discharge`, `Mean_Depth`, `Mean_Velocity`, `Mean_Top_Width`, `Mean_Cross_Sectional_Area`, `Mean_WSE` | Filtered stage means. |
+| `Representative_Velocity` | Mean channel velocity where valid banks exist, whole-section velocity otherwise. |
+| `Representative_Cross_Sectional_Area`, `Representative_Top_Width` | Mean area and width without monotonic reconstruction. |
+| `Representative_Depth_Increment`, `Representative_Depth` | Both contain the absolute stage depth in meters. |
+| `Representative_Stage_Elevation` | Mean thalweg plus stage depth. |
+| `Representative_Left_Station`, `Representative_Right_Station` | Minus/plus half the mean width. |
+
+The power function table contains one row per river reach with
+`Cross_Section_Count`, `Celerity_K_Power_Law_A` and signed
+`Celerity_K_Power_Law_p`. Its unrounded coefficients fit K = A Q^p, using supplied
+full reach lengths in meters and celerity = (5/3) * representative velocity.

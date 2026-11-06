@@ -24,6 +24,7 @@ WIDTH_POWERLAW = {"drainage_area_field": "DA", "coefficient_width": 3.0, "expone
 REPRESENTATIVE = {
     "Build_Representative_Cross_Section": True,
     "Representative_Cross_Section_File": "representative.csv",
+    "Stream_Length_m": "length_m",
 }
 
 

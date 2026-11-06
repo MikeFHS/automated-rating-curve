@@ -139,8 +139,8 @@ See [Bathymetry](bathymetry.md) for how these are used.
 | `BathyWaterMask` | | A raster on the DEM's grid whose non-zero cells are water (it takes the place of the land cover's water). Without `Bathy_Use_Banks`, its flat water beside a burned stream cell gives the water level, and its edge stops the DEM's water running more than two cells past it; with it, it gives the water level the bank tops are found above, and its edge is the banks where no bank tops are found. Without bathymetry, as with `Bathy_Use_Banks`: the banks are the bank tops, and the mask's edge only where none are found. Curve2Flood burns ARC's bathymetry raster as it is, inside the mask or not, and reads the mask only with `Flood_Bathy_Mask`, to flood its water. |
 | `FindBanksBasedOnLandCover` | False | Without `BathyWaterMask`, use the land cover's water class as the water mask. |
 | `drainage_area_field` | | The stream lines' field of drainage areas, for the power laws below. |
-| `coefficient_depth`, `exponent_depth` | | Bankfull depth = `coefficient_depth` × drainage area ^ `exponent_depth`, in metres. Sets the channel's depth instead of the baseflow. |
-| `coefficient_width`, `exponent_width` | | Bankfull width = `coefficient_width` × drainage area ^ `exponent_width`, in metres. Sets the width of channels whose banks the water mask, the land cover and the DEM don't show: a single cell that wide where it's no wider than a cell, and otherwise the width of a reach none of whose banks are found (see [Bathymetry](bathymetry.md#1-find-the-banks)). |
+| `coefficient_depth`, `exponent_depth` | | Bankfull depth = `coefficient_depth` x drainage area ^ `exponent_depth`, in metres. Sets the channel's depth instead of the baseflow. |
+| `coefficient_width`, `exponent_width` | | Bankfull width = `coefficient_width` x drainage area ^ `exponent_width`, in metres. Sets the width of channels whose banks the water mask, the land cover and the DEM don't show: a single cell that wide where it's no wider than a cell, and otherwise the width of a reach none of whose banks are found (see [Bathymetry](bathymetry.md#1-find-the-banks)). |
 
 ## Outputs
 
@@ -157,9 +157,13 @@ and otherwise as CSV, except the cross-section file, which is otherwise tab-sepa
 | `XS_Out_File` | | The cross sections ARC used. |
 | `Build_Representative_Cross_Section` | False | Build a representative cross section for each reach. |
 | `Representative_Cross_Section_File` | | Where to write the representative cross sections. Needed with `Build_Representative_Cross_Section`. |
+| `Stream_Length_m` | | Existing full-reach length attribute in meters, required for representative celerity-K coefficients. |
 | `Print_Decision_Log` | | The decision log: a row for each stream cell, with what each step of the run decided for it and its quality flags (see [Outputs](outputs.md#decision-log)). |
 | `Log_File` | | A text file of the run's messages at the info level, whatever the console shows, after the ARC version, the inputs and what was worked out from them. |
 | `Compression` | ZSTD | The output rasters' compression: ZSTD, DEFLATE, LZW, LZMA or NONE. |
+
+Representative stage hydraulics and celerity-K fits use the [representative cross-section calculations](representative_cross_section.md), while local
+sampling, banks, bathymetry and rating-curve generation are preserved. `Stream_Length_m` names an existing length column; no unit conversion is done.
 
 ### Representative cross sections only
 

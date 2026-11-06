@@ -44,12 +44,11 @@ The steps
 
 Representative cross sections and rating curves
 -----------------------------------------------
-A run asked for both makes them from the same cross sections, carved as they would be for the rating curves alone, so
-that asking for the representative cross sections doesn't change the rating curves. With Standard_Step, each cross
-section with a rating curve carries, in the representative cross sections, the flows its rating curve has at its water
-surfaces, rather than normal depth's (see arc.outputs.representative). A run that only builds
-representative cross sections (one that asks for no output of the rating curves) makes no rating curves, and needs a
-flow file only to carve its channels for the baseflow (see arc.config).
+ARC samples cross sections, finds their banks and carves bathymetry before
+calculating representative hydraulics. The representative export uses the
+sampled geometry and bank indices to compute filtered stage means, independently
+of standard-step rating curves. Stream_Length_m names the full-reach length
+attribute in StrmShp_File used to fit celerity-K coefficients.
 
 Cross section lengths
 ---------------------
@@ -1938,8 +1937,10 @@ def write_tables(configs: Configs, results: Results, flows: pd.DataFrame | None)
         write_cross_sections(results.cross_sections, configs.xs_out_file, metadata)
 
     if configs.build_representative_cross_section and configs.representative_cross_section_file:
-        write_representative_cross_sections(results.representative, configs.representative_cross_section_file,
-                                            metadata)
+        # Representative stages and coefficients have a dedicated writer; other tables and raster
+        # products continue through the existing local writers.
+        from arc.outputs.representative import write_representative_tables
+        write_representative_tables(results.representative, configs.representative_cross_section_file)
 
     if configs.print_decision_log:
         write_decision_log(results, configs.print_decision_log, metadata)
@@ -2172,13 +2173,31 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
             for _, s in usable:
                 resampler.reach_above(s, highest_stage(_centre(s)))
 
-        # With the standard step, each rated cross section's discharges are its rating curve's
-        stepped = results.curves.increments if configs.standard_step and results.curves is not None else None
-        samples = [RepresentativeSample(int(cells.comids[k]), s.xs, _centre(s), float(slopes[k]),
-                                        stepped[k][:, [WSE, Q]] if stepped is not None
-                                        and np.isfinite(stepped[k, -1, Q]) else None) for k, s in usable]
-        results.representative = representative_cross_section_dataframe(
-            samples, roughness=roughness, slope_factor=configs.slope_adjustment_factor)
+        # Port only the representative calculation. Sections, banks, channel
+        # carving, smoothing and rating curves above are still the local ones.
+        # Export the same uniformly sampled profiles as the local XS file; the
+        # calculation consumes two outward-facing profiles and discrete bank indices.
+        from arc.outputs.representative import (
+            build_representative_cross_section_dataframe, reach_lengths_from_network,
+        )
+        records = []
+        for k, section in usable:
+            record = cross_section_record(section, int(cells.comids[k]))
+            row = dict(zip(('COMID', 'Row', 'Col', 'XS1_Profile', 'Ordinate_Dist', 'Manning_N_Raster1',
+                            'XS2_Profile', 'Manning_N_Raster2', 'r1', 'c1', 'r2', 'c2'), record))
+            distances = (section.xs.left_bank_distance, section.xs.right_bank_distance)
+            if section.side_one > 0:
+                distances = distances[::-1]
+            for side, distance in enumerate(distances, 1):
+                row[f'Bank_Index{side}'] = int(round(distance / record.ordinate_dist)) if distance >= 0 else -1
+            row.update(Thalweg=_centre(section), Slope=float(slopes[k]))
+            records.append(row)
+        lengths = reach_lengths_from_network(gdf, records, configs.stream_length_m, configs.reach_id)
+        # Depth-scaled roughness and slope adjustment apply to this table
+        # alone, regardless of the ordinary engine's Depth_Varying_N switch.
+        results.representative = build_representative_cross_section_dataframe(
+            records, configs.k_decay, configs.shallow_factor, configs.deep_factor,
+            configs.slope_adjustment_factor, reach_lengths_m=lengths)
 
     # Done with the input rasters: they go before the bathymetry raster is made, so that it isn't in memory with them
     del resampler, mannings_n, water
