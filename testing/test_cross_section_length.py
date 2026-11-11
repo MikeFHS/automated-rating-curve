@@ -227,7 +227,7 @@ def test_trimmed_cross_sections_give_the_untrimmed_results(tmp_path: Path, monke
               "Standard_Step": True,
               "BATHY_Out_File": str(tmp_path / "bathy.tif"), "Bathy_Use_Banks": use_banks,
               "XS_Out_File": str(tmp_path / "xs.parquet"), "Build_Representative_Cross_Section": True,
-              "Representative_Cross_Section_File": str(tmp_path / "representative.csv")}
+              "Representative_Cross_Section_File": str(tmp_path / "representative.csv"), "Stream_Length_m": "length_m"}
     untrimmed, trimmed = run_both(inputs)
 
     assert_same(untrimmed, trimmed)
