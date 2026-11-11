@@ -29,8 +29,8 @@ from shapely.geometry import LineString
 from osgeo import gdal, osr
 
 from arc import Arc
-from arc.hydraulic_data import (
-    REPRESENTATIVE_CROSS_SECTION_COLUMNS, REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS,
+from arc.outputs import (
+    REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS, REPRESENTATIVE_CROSS_SECTION_COLUMNS,
     representative_cross_section_coefficients_path,
 )
 

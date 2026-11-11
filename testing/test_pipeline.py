@@ -401,7 +401,9 @@ def test_representative_cross_sections(tmp_path: Path, suffix: str) -> None:
     path = tmp_path / f"representative{suffix}"
     inputs = representative_inputs(tmp_path, suffix)
     results = pipeline.run(Configs.from_mapping(inputs), quiet=True)
-    df = pd.read_csv(path)  # The representative writer always emits CSV.
+    read = pd.read_parquet if suffix == ".parquet" else pd.read_csv
+    df = read(path)
+    coefficients = read(tmp_path / f"representative_exponents{suffix}")
 
     assert results.curves is None and not (tmp_path / "vdt.csv").exists()
     assert sorted(df["COMID"].unique()) == [11, 12]
@@ -409,7 +411,9 @@ def test_representative_cross_sections(tmp_path: Path, suffix: str) -> None:
     stage = df[(df["COMID"] == 12) & (df["Depth_Stage_Index"] == 10)].iloc[0]
     # 1 m deep in the trapezoid; the slopes at the reach's ends are the bed's too
     assert stage["Mean_Cross_Sectional_Area"] == pytest.approx(12.0, rel=1e-6)
-    assert stage["Mean_Discharge"] > 0  # Representative staging applies depth-varying roughness.
+    assert stage["Mean_Discharge"] == pytest.approx(trapezoid_discharge(1.0), rel=1e-4)
+    assert coefficients["COMID"].tolist() == [11, 12]
+    assert (coefficients["Celerity_K_Power_Law_A"] > 0).all()
 
 
 @pytest.mark.parametrize("bathymetry", [{}, {"BATHY_Out_File": "bathy.tif"},
@@ -456,6 +460,67 @@ def test_representative_export_does_not_replace_the_local_standard_step(tmp_path
     np.testing.assert_array_equal(plain.curves.increments, exported.curves.increments)
     np.testing.assert_array_equal(plain.curves.metadata, exported.curves.metadata)
     assert "Celerity_K_Power_Law_A" in exported.representative
+
+
+def test_with_the_standard_step_the_representative_cross_sections_carry_the_rating_curves(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each rated cross section's sample has its rating curve's water surfaces and flows. On the synthetic channel the
+    outlet reach's water stays at normal depth, and so do its representative cross sections, but for the discharge
+    between its rating curves' water surfaces, the chord above normal depth's that the VDT database is read along;
+    reach 11's is backed up (by the larger flow below it at the same share of the maximum flow), and its cross sections
+    carry less at each stage, at a friction slope below the bed's."""
+    samples, original = [], pipeline.representative_cross_section_dataframe
+
+    def capture(given, **kwargs):
+        samples.append(list(given))
+        return original(given, **kwargs)
+
+    monkeypatch.setattr(pipeline, "representative_cross_section_dataframe", capture)
+
+    def run(folder: Path, **extra) -> pipeline.Results:
+        inputs = {**write_channel(folder), "Build_Representative_Cross_Section": True,
+                  "Representative_Cross_Section_File": str(folder / "representative.csv"),
+                  "Stream_Length_m": "length_m", **extra}
+        return pipeline.run(Configs.from_mapping(inputs), quiet=True)
+
+    stepped = run(tmp_path / "step", Standard_Step=True)
+    plain = run(tmp_path / "plain")
+
+    usable = [k for k, section in enumerate(stepped.sections) if section is not None and section.usable]
+    increments = stepped.curves.increments
+    rated = [k for k in usable if np.isfinite(increments[k, -1, Q])]
+    assert len(rated) > 100
+    for k, sample in zip(usable, samples[0], strict=True):
+        if k in rated:
+            np.testing.assert_array_equal(sample.curve, increments[k][:, [WSE, Q]])
+        else:
+            assert sample.curve is None
+    assert all(sample.curve is None for sample in samples[1])
+    # The cross sections are all alike, so which the two-deviation filter leaves out is down to rounding (and the
+    # step's tolerance): the count isn't compared, nor the mean water surface, which their beds' fall moves
+    # nor the celerity K power laws, which are fitted to the discharges
+    by_reach = [{comid: df[df["COMID"] == comid].drop(columns=["Hydraulic_Sample_Count", "Mean_WSE",
+                                                                "Celerity_K_Power_Law_A", "Celerity_K_Power_Law_p"])
+                 .reset_index(drop=True) for comid in (11, 12)} for df in (stepped.representative, plain.representative)]
+    outlet, at_normal = by_reach[0][12], by_reach[1][12]
+    hydraulics = ["Mean_Discharge", "Mean_Velocity", "Representative_Velocity", "Mean_Section_Velocity",
+                  "Mean_Friction_Slope"]
+    pd.testing.assert_frame_equal(outlet.drop(columns=hydraulics), at_normal.drop(columns=hydraulics),
+                                  check_exact=False, rtol=1e-5)
+    # Above the top of every rating curve, normal depth's; below, the chord's, a few percent at most above it here
+    top = max(np.nanmax(sample.curve[:, 0]) - sample.thalweg for sample in samples[0]
+              if sample.comid == 12 and sample.curve is not None)
+    above = outlet["Depth_Stage_Meters"] > top
+    assert above.sum() > 200
+    pd.testing.assert_frame_equal(outlet.loc[above, hydraulics], at_normal.loc[above, hydraulics],
+                                  check_exact=False, rtol=1e-5)
+    chord = (outlet.loc[~above, "Mean_Discharge"] / at_normal.loc[~above, "Mean_Discharge"]).to_numpy()
+    assert np.all((chord > 1 - 1e-5) & (chord < 1.05))
+    backed_up, normal = by_reach[0][11], by_reach[1][11]
+    assert (backed_up["Mean_Discharge"] < 0.95 * normal["Mean_Discharge"]).all()
+    assert (backed_up["Mean_Friction_Slope"] < 0.9 * SLOPE).all()
+    pd.testing.assert_frame_equal(backed_up[["Mean_Cross_Sectional_Area", "Mean_Top_Width"]],
+                                  normal[["Mean_Cross_Sectional_Area", "Mean_Top_Width"]], check_exact=False, rtol=1e-9)
 
 
 

@@ -384,7 +384,8 @@ def test_cross_sections_alike_average_to_their_own_manning_hydraulics() -> None:
     area = 40.0 * d + d * spread
     perimeter = 40.0 + 2.0 * np.hypot(d, spread)
     discharge = area * (area / perimeter) ** (2 / 3) * math.sqrt(0.002) / 0.035
-    assert list(df.columns) == REPRESENTATIVE_CROSS_SECTION_COLUMNS
+    assert list(df.columns) == REPRESENTATIVE_CROSS_SECTION_COLUMNS + ["Celerity_K_Power_Law_A",
+                                                                      "Celerity_K_Power_Law_p"]
     assert df["Depth_Stage_Meters"].to_numpy() == pytest.approx(d, rel=1e-12)
     assert (df["Cross_Section_Count"] == 3).all() and (df["Hydraulic_Sample_Count"] == 3).all()
     assert df["Mean_Cross_Sectional_Area"].to_numpy() == pytest.approx(area, rel=1e-12)
@@ -395,28 +396,36 @@ def test_cross_sections_alike_average_to_their_own_manning_hydraulics() -> None:
     assert (df["Stream_Slope"] == 0.002).all() and (df["Representative_Thalweg_Elevation"] == 100.0).all()
 
 
-def test_the_representative_shape_grows_its_width_linearly_between_stages_to_hold_each_area() -> None:
-    """From no width at the thalweg, each stage's depth increment is the one that holds the stage's extra area in a
-    trapezoid between the stage below's top width and its own."""
+def test_the_representative_shape_is_the_stage_means() -> None:
+    """At each stage, the representative cross section's area and top width are the means', its depth the stage's,
+    and its edges half its top width either side of the reach's mean bed."""
     rng = np.random.default_rng(9)
     samples = [flat_bed_sample(rng, 9) for _ in range(5)]
 
     df = representative_cross_section_dataframe(samples)
 
-    area = df["Representative_Cross_Sectional_Area"].to_numpy()
-    width = df["Representative_Top_Width"].to_numpy()
-    increment = df["Representative_Depth_Increment"].to_numpy()
-    depth = df["Representative_Depth"].to_numpy()
-    assert np.all(np.diff(area) >= 0.0) and np.all(np.diff(width) >= 0.0) and np.all(np.diff(depth) >= 0.0)
-    previous_width = previous_area = previous_depth = 0.0
-    for i in range(len(df)):
-        assert area[i] - previous_area == pytest.approx(0.5 * (previous_width + width[i]) * increment[i], abs=1e-9)
-        assert depth[i] == pytest.approx(previous_depth + increment[i], abs=1e-12)
-        previous_width, previous_area, previous_depth = width[i], area[i], depth[i]
+    width = df["Mean_Top_Width"].to_numpy()
+    np.testing.assert_array_equal(df["Representative_Cross_Sectional_Area"], df["Mean_Cross_Sectional_Area"])
+    np.testing.assert_array_equal(df["Representative_Top_Width"], width)
+    np.testing.assert_array_equal(df["Representative_Depth"], df["Depth_Stage_Meters"])
+    np.testing.assert_array_equal(df["Representative_Depth_Increment"], df["Depth_Stage_Meters"])
     assert df["Representative_Left_Station"].tolist() == pytest.approx((-0.5 * width).tolist())
     assert df["Representative_Right_Station"].tolist() == pytest.approx((0.5 * width).tolist())
     assert df["Representative_Stage_Elevation"].tolist() == \
-        pytest.approx((df["Representative_Thalweg_Elevation"] + depth).tolist())
+        pytest.approx((df["Representative_Thalweg_Elevation"] + df["Depth_Stage_Meters"]).tolist())
+
+
+def test_an_outlying_cross_section_is_left_out_of_its_stage_s_means() -> None:
+    """Of nine alike cross sections and one at four times their slope, the one carries twice their discharge at twice
+    their velocity, more than two standard deviations from the reach's means, and is left out of every stage's means;
+    its area, top width and wetted perimeter are theirs, so they leave the nine in."""
+    samples = [channel_sample(7, 2, 10.0, 100.0, 0.002) for _ in range(9)] + [channel_sample(7, 2, 10.0, 100.0, 0.008)]
+
+    df = representative_cross_section_dataframe(samples)
+
+    assert (df["Hydraulic_Sample_Count"] == 9).all()
+    alike = representative_cross_section_dataframe(samples[:9])
+    np.testing.assert_allclose(df["Mean_Discharge"], alike["Mean_Discharge"], rtol=1e-12)
 
 
 def test_cross_sections_without_a_slope_count_but_are_not_averaged() -> None:

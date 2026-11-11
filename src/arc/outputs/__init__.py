@@ -33,8 +33,12 @@ from arc.outputs.rating_curves import (
                                         write_vdt,
 )
 from arc.outputs.representative import (
+                                        REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS,
                                         REPRESENTATIVE_CROSS_SECTION_COLUMNS,
                                         RepresentativeSample,
+                                        fit_celerity_k_power_law,
+                                        reach_lengths_from_network,
+                                        representative_cross_section_coefficients_path,
                                         representative_cross_section_dataframe,
                                         write_representative_cross_sections,
 )
@@ -43,6 +47,7 @@ from arc.outputs.tables import write_table
 __all__ = [
                                         "INCREMENT_FIELDS",
                                         "METADATA_COLUMNS",
+                                        "REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS",
                                         "REPRESENTATIVE_CROSS_SECTION_COLUMNS",
                                         "XS_EXPORT_COLUMNS",
                                         "CrossSectionRecord",
@@ -52,9 +57,12 @@ __all__ = [
                                         "cross_section_dataframe",
                                         "cross_section_table",
                                         "curve_file_dataframe",
+                                        "fit_celerity_k_power_law",
                                         "fit_power_law",
                                         "format_array",
                                         "reach_average_curve_file_dataframe",
+                                        "reach_lengths_from_network",
+                                        "representative_cross_section_coefficients_path",
                                         "representative_cross_section_dataframe",
                                         "vdt_dataframe",
                                         "write_ap",
