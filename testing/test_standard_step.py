@@ -19,6 +19,7 @@ from arc.config import Configs
 from arc.outputs.rating_curves import WSE, Q
 from arc.standard_step import (
     EXPANSION,
+    FLOW_POWER,
     G,
     HydraulicTable,
     _eddy_ends,
@@ -183,15 +184,33 @@ def test_each_eddy_window_ends_at_the_first_cross_section_far_enough_below() -> 
     np.testing.assert_array_equal(_eddy_ends(stations, 0.0), [1, 2, 3, 4, 5, 5])
 
 
+def shares(n: int) -> np.ndarray:
+    """(j / n)^FLOW_POWER, j = 1 to n."""
+    return (np.arange(1, n + 1) / n) ** FLOW_POWER
+
+
 def test_the_flows_are_shares_of_the_maximum_and_the_baseflow_is_one_of_them() -> None:
-    """The first flow at or above the baseflow is set just below it, whichever it is; none is above the maximum flow,
-    and a baseflow just over a flow below it leaves the flows as they are rather than out of order."""
-    np.testing.assert_allclose(flows_for(10.0, 0.0, 5), [2.0, 4.0, 6.0, 8.0, 10.0])
-    np.testing.assert_allclose(flows_for(10.0, 1.5, 5), [1.499, 4.0, 6.0, 8.0, 10.0])
-    np.testing.assert_allclose(flows_for(10.0, 3.0, 5), [2.0, 2.999, 6.0, 8.0, 10.0])
-    np.testing.assert_allclose(flows_for(10.0, 8.0, 5), [2.0, 4.0, 6.0, 7.999, 10.0])
-    np.testing.assert_allclose(flows_for(10.0, 12.0, 5), [2.0, 4.0, 6.0, 8.0, 10.0])
-    np.testing.assert_allclose(flows_for(10.0, 2.0005, 5), [2.0, 4.0, 6.0, 8.0, 10.0])
+    """N - 1 shares of the maximum flow, crowded towards the small flows, and one just below the baseflow, in order,
+    whichever shares it falls between; without a baseflow below the maximum flow, N shares."""
+    assert FLOW_POWER > 1.0
+    np.testing.assert_allclose(flows_for(10.0, 0.0, 5), 10.0 * shares(5))
+    np.testing.assert_allclose(flows_for(10.0, 12.0, 5), 10.0 * shares(5))
+    np.testing.assert_allclose(flows_for(10.0, 10.001, 5), 10.0 * shares(5))  # just below it is the maximum
+    for baseflow in (0.5, 1.5, 3.0, 8.0, 9.9995):
+        flows = flows_for(10.0, baseflow, 5)
+        np.testing.assert_allclose(flows, np.sort(np.append(10.0 * shares(4), baseflow - 0.001)))
+        assert flows.size == 5 and flows[-1] == 10.0 and np.all(np.diff(flows) > 0)
+
+    np.testing.assert_allclose(flows_for(10.0, 3.0, 1), [10.0])  # one flow: the maximum
+    assert flows_for(10.0, 3.0, 0).size == 0
+
+
+def test_the_flows_crowd_where_the_old_ones_left_a_gap_above_the_baseflow() -> None:
+    """The old flows, j/N of the maximum with the first at or above the baseflow moved to it, left a gap above a
+    small baseflow as wide as 2/N of the maximum flow; the shares crowd towards the small flows instead."""
+    flows = flows_for(100.0, 1.0, 15)
+    above = flows[np.searchsorted(flows, 0.999) + 1]
+    assert above - 0.999 < 100.0 * 2 / 15 / 3
 
 
 # --- The synthetic channel ------------------------------------------------------------------------------------------
@@ -210,11 +229,9 @@ def normal_wse(col: int, q: float) -> float:
 
 def test_with_nothing_backing_it_up_the_water_is_at_normal_depth(tmp_path: Path) -> None:
     """Reach 12 is the outlet, and its cross sections and slope are all alike: uniform flow. Its rating curves are
-    rewritten at tenths of its maximum flow, the second set just below its baseflow, with the water at normal
-    depth."""
+    rewritten at N - 1 shares of its maximum flow and one just below its baseflow, with the water at normal depth."""
     results = run_channel(tmp_path)
-    flows = channel.Q_MAX[12] * np.arange(1, channel.INCREMENTS + 1) / channel.INCREMENTS
-    flows[1] = channel.BASEFLOW[12] - 0.001
+    flows = np.sort(np.append(channel.Q_MAX[12] * shares(channel.INCREMENTS - 1), channel.BASEFLOW[12] - 0.001))
 
     for k in np.flatnonzero(results.cells.reaches == 12):
         increments = results.curves.increments[k]
@@ -237,6 +254,23 @@ def test_the_reach_below_backs_water_up_the_reach_above(tmp_path: Path) -> None:
     excess = np.array([increments[k, top, WSE] - normal_wse(int(cols[k]), channel.Q_MAX[11]) for k in reach_11])
     assert excess[-1] > 0.02
     assert np.all(np.diff(excess) >= -1e-6)  # never more above normal depth further upstream
+
+
+def test_a_reach_starts_from_the_water_below_at_the_same_share_of_its_maximum_flow(tmp_path: Path) -> None:
+    """Reach 11's baseflow is a smaller share of its maximum flow than reach 12's, so their flows aren't the same
+    shares: reach 11's last cross section starts from reach 12's first one's water at its own shares, read between
+    reach 12's flows."""
+    results = run_channel(tmp_path)
+    cols, reaches, increments = results.cells.cols, results.cells.reaches, results.curves.increments
+    reach_11 = np.flatnonzero(reaches == 11)
+    last_of_11 = reach_11[np.argmax(cols[reach_11])]
+    first_of_12 = np.flatnonzero(reaches == 12)[np.argmin(cols[reaches == 12])]
+    shares_11 = increments[last_of_11, :, Q] / channel.Q_MAX[11]
+    shares_12 = increments[first_of_12, :, Q] / channel.Q_MAX[12]
+    assert not np.allclose(shares_11, shares_12)
+
+    water_below = np.interp(shares_11, shares_12, increments[first_of_12, :, WSE])
+    np.testing.assert_allclose(increments[last_of_11, :, WSE], water_below, atol=1e-9)
 
 
 SILL = 0.5  # metres: how far the sill at reach 11's foot stands above the bed's even fall
@@ -278,8 +312,8 @@ def test_a_reach_above_one_without_flows_is_an_outlet_no_higher_than_the_water_b
                                                                                    q_max_12: float) -> None:
     """Reach 13, columns 110 to 119, has no flows and lies between reaches 11 and 12. Reach 11 starts at its own
     normal depth, as an outlet does, though reach 12 carrying more water stands higher. But carrying less, reach 12
-    stands lower, and reach 11's water then starts no higher than reach 12's risen by its slope over the 11 m between
-    their cells."""
+    stands lower, and reach 11's water then starts no higher than reach 12's, at the same share of its maximum flow,
+    risen by its slope over the 11 m between their cells."""
     inputs = {**write_channel(tmp_path), "Stream_Slope_Method": "reach_average", "Standard_Step": True}
     streams = gdal.Open(inputs["Stream_File"], gdal.GA_Update)
     values = streams.GetRasterBand(1).ReadAsArray()
@@ -301,7 +335,8 @@ def test_a_reach_above_one_without_flows_is_an_outlet_no_higher_than_the_water_b
     first_of_12 = np.flatnonzero(reaches == 12)[np.argmin(cols[reaches == 12])]
     assert (cols[last_of_11], cols[first_of_12]) == (109, 120)
     normal = np.array([normal_wse(109, q) for q in increments[last_of_11, :, Q]])
-    below = increments[first_of_12, :, WSE] + results.slopes[last_of_11] * 11.0
+    shares_11, shares_12 = increments[last_of_11, :, Q] / channel.Q_MAX[11], increments[first_of_12, :, Q] / q_max_12
+    below = np.interp(shares_11, shares_12, increments[first_of_12, :, WSE]) + results.slopes[last_of_11] * 11.0
     np.testing.assert_allclose(increments[last_of_11, :, WSE], np.minimum(normal, below), atol=0.001)
     assert np.all(below > normal) if q_max_12 > channel.Q_MAX[11] else np.all(below < normal)
 
