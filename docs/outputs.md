@@ -50,10 +50,10 @@ for its baseflow, holds the water at flows up to the baseflow at most at the lev
 
 The rating curves change in two ways:
 
-- The flows are the same along each reach: `q_1` is a `VDT_Database_NumIterations`th of its maximum flow, `q_2` two,
-  and so on up to the maximum flow, but the first that reaches the baseflow is set just below it, so that the baseflow
-  is one of the flows. Read between two flows, its water would otherwise be a line from the held water below it to
-  the step's above it.
+- The flows are the same along each reach: one just below the baseflow, so that the baseflow is one of the flows, and
+  `VDT_Database_NumIterations` − 1 shares of the maximum flow crowded towards the small flows, (j / (N − 1))<sup>1.5</sup>,
+  up to the maximum flow itself (see [Standard Step](standard_step.md#how-the-flows-are-spaced)). Read between two
+  flows, the baseflow's water would otherwise be a line from the held water below it to the step's above it.
 - The water surface at each flow is the standard step's (held up to the baseflow), and the velocity and top width are
   the cross section's own there.
 

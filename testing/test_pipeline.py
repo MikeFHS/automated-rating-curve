@@ -514,8 +514,9 @@ def test_with_the_standard_step_the_representative_cross_sections_carry_the_rati
     assert above.sum() > 200
     pd.testing.assert_frame_equal(outlet.loc[above, hydraulics], at_normal.loc[above, hydraulics],
                                   check_exact=False, rtol=1e-5)
+    # (the widest, about 5%, between the step's two smallest flows, (1/9)^1.5 and (2/9)^1.5 of the maximum flow)
     chord = (outlet.loc[~above, "Mean_Discharge"] / at_normal.loc[~above, "Mean_Discharge"]).to_numpy()
-    assert np.all((chord > 1 - 1e-5) & (chord < 1.05))
+    assert np.all((chord > 1 - 1e-5) & (chord < 1.06))
     backed_up, normal = by_reach[0][11], by_reach[1][11]
     assert (backed_up["Mean_Discharge"] < 0.95 * normal["Mean_Discharge"]).all()
     assert (backed_up["Mean_Friction_Slope"] < 0.9 * SLOPE).all()
