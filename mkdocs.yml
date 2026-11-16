@@ -55,6 +55,7 @@ nav:
     - Stream Slope Methods: stream_slope_methods.md
     - Standard Step: standard_step.md
     - Valley Cross Sections: valley_sections.md
+    - Flow-Through Threads: flow_through_threads.md
     - Running the Tests: testing_unit_tests.md
   - Examples:
     - Produce Streamflow Inputs: produce_streamflow_inputs.md

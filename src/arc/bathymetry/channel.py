@@ -14,6 +14,12 @@ each bank's top out to the first ordinate beyond it.
 Without bank elevations (Bathy_Use_Banks) the reference level is the stream cell's elevation, and the channel only ever lowers the
 ground. With bank elevations the reference level is the bank elevation given, and the channel sets the ground whether that raises
 or lowers it.
+
+A cross section's threads (Flow_Through_Threads, arc.xsection.threads) are carved too, each as a trapezoid between its
+water's edges as deep below the reference level as the channel, its sides taking up trapezoid_height of its width. A
+thread is carved into its ordinates alone, which the profile then joins with straight lines, and only ever lowers the
+ground: it's a stretch of the water mask, at least one ordinate wide, and its banks are the bars and the ground beside
+it, not the channel's bank elevation.
 """
 from __future__ import annotations
 
@@ -24,10 +30,16 @@ from numba import njit
 
 from arc.bathymetry.banks import Banks, _ground_at, single_cell_banks
 from arc.bathymetry.depth import _check_trapezoid_height
-from arc.hydraulics import DepthRoughness, _check_slope_factor, _parameters
+from arc.hydraulics import (
+    DepthRoughness,
+    _check_slope_factor,
+    _parameters,
+    connection_levels,
+)
 from arc.rating_curve import section_hydraulics
 from arc.xsection.xsection import Profile, XSection
 
+_NO_THREADS = np.empty((0, 2))
 MIN_DEPTH = 1e-6  # metres: the depth carved_depth gives a channel whose ground below the level carries its flow
 _MIN_LOG_DEPTH = math.log(MIN_DEPTH)
 _MAX_LOG_DEPTH = math.log(1e4)  # no channel is solved deeper than 10 km
@@ -198,27 +210,58 @@ def _channel_profile(ground, mannings_n, spacing, left, right, reference, depth,
 
 
 @njit(cache=True, error_model="numpy")
+def _carve_threads(elevations, spacing, threads, reference, depth, trapezoid_height, changed):
+    """Carve the threads (a row each, the stations of its water's edges) depth below the reference level into the
+    ordinates, in place, lowering them only, and mark the ordinates it lowers in changed (see the notes above)."""
+    center = elevations.size // 2
+    bed = reference - depth
+    tolerance = 1e-9 * spacing
+    for t in range(threads.shape[0]):
+        low, high = threads[t, 0], threads[t, 1]
+        slope_width = trapezoid_height * (high - low)
+        first = max(center + math.ceil((low - tolerance) / spacing), 0)
+        last = min(center + math.floor((high + tolerance) / spacing), elevations.size - 1)
+        for k in range(first, last + 1):
+            to_edge = max(min((k - center) * spacing - low, high - (k - center) * spacing), 0.0)
+            elevation = bed + depth * max(1.0 - to_edge / slope_width, 0.0) if slope_width > 0.0 else bed
+            if elevation < elevations[k]:
+                elevations[k] = elevation
+                changed[k] = True
+
+
+@njit(cache=True, error_model="numpy")
 def _log_conveyance_carved(log_depth, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
-                           lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor):
+                           lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor, threads):
     """ln of the channel's conveyance with its water at the reference level, carved exp(log_depth) deep, as the
     hydraulics work it out on the profile _channel_profile gives (the channel's between left_bank and right_bank, or
-    the whole section's where they're -1)."""
-    stations, elevations, n, center = _channel_profile(ground, mannings_n, spacing, left, right, reference,
-                                                       math.exp(log_depth), trapezoid_height, lower_only)
-    k = section_hydraulics(stations, elevations, n, center, left_bank, right_bank, reference, k_decay,
-                           shallow_factor, deep_factor)[5]
+    the whole section's where they're -1), with the threads (rows of their edges' stations, none for none) carved as
+    deep and spreading water (arc.hydraulics)."""
+    depth = math.exp(log_depth)
+    if threads.shape[0] == 0:
+        stations, elevations, n, center = _channel_profile(ground, mannings_n, spacing, left, right, reference,
+                                                           depth, trapezoid_height, lower_only)
+        k = section_hydraulics(stations, elevations, n, center, left_bank, right_bank, reference, k_decay,
+                               shallow_factor, deep_factor)[5]
+    else:
+        carved = ground.copy()
+        _carve_threads(carved, spacing, threads, reference, depth, trapezoid_height, np.zeros(ground.size, np.bool_))
+        stations, elevations, n, center = _channel_profile(carved, mannings_n, spacing, left, right, reference,
+                                                           depth, trapezoid_height, lower_only)
+        connect = connection_levels(stations, elevations, center, threads)
+        k = section_hydraulics(stations, elevations, n, center, left_bank, right_bank, reference, k_decay,
+                               shallow_factor, deep_factor, connect)[5]
     return math.log(k) if k > 0.0 else -np.inf
 
 
 @njit(cache=True, error_model="numpy")
 def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid_height, lower_only, left_bank,
-                  right_bank, k_decay, shallow_factor, deep_factor, target, guess):
+                  right_bank, k_decay, shallow_factor, deep_factor, target, guess, threads):
     """The depth at which the carved channel's ln conveyance at the reference level is target (see carved_depth).
     The conveyance rises with the depth, so the root is bracketed out from guess, doubling the step in ln depth, and
     then found by false position, halving the end that stays put (the Illinois method)."""
     u = math.log(guess)
     f = _log_conveyance_carved(u, ground, mannings_n, spacing, left, right, reference, trapezoid_height, lower_only,
-                               left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+                               left_bank, right_bank, k_decay, shallow_factor, deep_factor, threads) - target
     if f == 0.0:
         return guess
     
@@ -227,7 +270,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
         lo, f_lo = u, f
         hi = lo + step
         f_hi = _log_conveyance_carved(hi, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
-                                      lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+                                      lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor, threads) - target
         while f_hi < 0.0:
             if hi > _MAX_LOG_DEPTH:
                 return math.nan
@@ -237,12 +280,12 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
             hi = lo + step
             f_hi = _log_conveyance_carved(hi, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
                                           lower_only, left_bank, right_bank, k_decay, shallow_factor,
-                                          deep_factor) - target
+                                          deep_factor, threads) - target
     else:
         hi, f_hi = u, f
         lo = hi - step
         f_lo = _log_conveyance_carved(lo, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
-                                      lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+                                      lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor, threads) - target
         while f_lo > 0.0:
             if lo < _MIN_LOG_DEPTH:
                 return MIN_DEPTH  # the ground below the level carries the flow already
@@ -252,7 +295,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
             lo = hi - step
             f_lo = _log_conveyance_carved(lo, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
                                           lower_only, left_bank, right_bank, k_decay, shallow_factor,
-                                          deep_factor) - target
+                                          deep_factor, threads) - target
     if f_hi == 0.0:
         return math.exp(hi)
     if f_lo == 0.0:
@@ -265,7 +308,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
         else:
             u = 0.5 * (lo + hi)
         f = _log_conveyance_carved(u, ground, mannings_n, spacing, left, right, reference, trapezoid_height,
-                                   lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor) - target
+                                   lower_only, left_bank, right_bank, k_decay, shallow_factor, deep_factor, threads) - target
         if abs(f) <= 1e-13 or hi - lo <= 1e-13 * (1.0 + abs(u)):
             break
 
@@ -311,7 +354,12 @@ def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: floa
     target = math.log(q / (math.sqrt(slope) * _check_slope_factor(slope_factor)))
     return float(_carved_depth(elevations, np.asarray(xs.mannings_n, dtype=np.float64), spacing, float(carved.left),
                                float(carved.right), reference, trapezoid_height, bank_elevation is None, left_bank,
-                               right_bank, *_parameters(roughness), target, float(guess)))
+                               right_bank, *_parameters(roughness), target, float(guess), _threads_of(xs)))
+
+
+def _threads_of(xs: XSection) -> np.ndarray:
+    """A cross section's threads as the compiled functions take them: a row each, none for none."""
+    return _NO_THREADS if xs.threads is None else np.asarray(xs.threads, dtype=np.float64).reshape(-1, 2)
 
 
 def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height: float,
@@ -351,6 +399,9 @@ def carve_channel(xs: XSection, banks: Banks, depth: float, *, trapezoid_height:
             xs.ground = elevations.copy()
         xs.carved_banks = (left, right)
         
+    if xs.threads is not None:
+        _carve_threads(elevations, spacing, _threads_of(xs), reference, float(depth), trapezoid_height, changed)
+
     stations, profile, n, stream_cell = _channel_profile(elevations, xs.mannings_n, spacing, left, right, reference,
                                                          float(depth), trapezoid_height, lower_only)
     _carve(elevations, spacing, left, right, reference, float(depth), trapezoid_height, lower_only, changed)

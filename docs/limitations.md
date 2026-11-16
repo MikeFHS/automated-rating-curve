@@ -70,6 +70,12 @@ to the water above or below.
 - **Banks without a channel.** A cross section without banks of its own, on a small flow, is carved to carry its
   baseflow at its stream's level (`CARVED_TO_STREAM`, `Bathy_Bankless_Max_Baseflow`) rather than at its reach's bank
   height, which could stand above the ground beside it.
+- **Threads the water mask doesn't show.** Where bars split the river, its other threads carry water only where the
+  water mask shows them, and only those that rejoin the river within 3 km of the cross section either way
+  (`Flow_Through_Threads`). A thread dry on the mask's date, or one long enough to rejoin farther away, stays dry until
+  the water tops the bar, as without the option. The threads take the channel's water surface and depth: where one's
+  bed is higher than the channel's, the channel is carved too shallow (see
+  [Flow-Through Threads](flow_through_threads.md)).
 
 ## Rating curves and flood maps
 

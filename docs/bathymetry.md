@@ -264,7 +264,9 @@ what its neighbours give it.
 ![A cross section at its maximum flow, and its channel carved below the DEM's water surface](images/cross_section.svg)
 
 With a water mask, the channel spans the mask's water, and the gap filling can reach a few cells just beyond its
-edge. Curve2Flood burns the raster into the DEM as it is: ARC's elevation wherever the raster has one, and the DEM
+edge. With `Flow_Through_Threads`, the river's other threads beside the channel, where bars split it, are carved as
+deep as the channel, lowering the ground only, and the depth is the one at which the channel and the threads together
+carry the baseflow (see [Flow-Through Threads](flow_through_threads.md)). Curve2Flood burns the raster into the DEM as it is: ARC's elevation wherever the raster has one, and the DEM
 elsewhere (never above the DEM without `Bathy_Use_Banks`). So the DEM the floods are mapped on has the channels the
 rating curves were worked out on.
 
