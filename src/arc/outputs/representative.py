@@ -50,6 +50,7 @@ from arc.hydraulics import (
     DepthRoughness,
     _check_roughness,
     _check_slope_factor,
+    hydraulic_connect,
     hydraulic_profile,
 )
 from arc.outputs.tables import write_table
@@ -87,8 +88,8 @@ class RepresentativeSample(NamedTuple):
 
 
 @njit(cache=True, error_model="numpy")
-def _curve_nodes(stations, elevations, mannings_n, starts, centers, lefts, rights, curve_starts, curve_wse,
-                 curve_q, k_decay, shallow_factor, deep_factor, slope_factor):
+def _curve_nodes(stations, elevations, mannings_n, starts, centers, lefts, rights, connects, connect_starts, threaded,
+                 curve_starts, curve_wse, curve_q, k_decay, shallow_factor, deep_factor, slope_factor):
     """Each cross section's rating curve as _staged_means reads it (see the notes above), the profiles as it takes
     them and cross section j's curve from curve_starts[j] to curve_starts[j + 1]: where each one's start, the water
     surfaces rising, their flows, the conveyances there, and the friction slopes. A water surface lower than the one
@@ -109,7 +110,9 @@ def _curve_nodes(stations, elevations, mannings_n, starts, centers, lefts, right
                 continue
 
             k = section_hydraulics(stations[start:end], elevations[start:end], mannings_n[start:end], centers[j],
-                                   lefts[j], rights[j], wse, k_decay, shallow_factor, deep_factor)[3]
+                                   lefts[j], rights[j], wse, k_decay, shallow_factor, deep_factor,
+                                   connects[connect_starts[j]:connect_starts[j + 1]] if threaded[j] else
+                                   connects[:0])[3]
             if not (np.isfinite(k) and k > 0.0):
                 continue
 
@@ -212,7 +215,8 @@ def _keep_within_two_deviations(values, count, keep, squares):
 
 
 @njit(cache=True, error_model="numpy")
-def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, rights, thalwegs, slopes, node_starts,
+def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, rights, connects, connect_starts,
+                  threaded, thalwegs, slopes, node_starts,
                   node_levels, node_flows, node_conveyances, node_slopes, by_conveyance, k_decay, shallow_factor,
                   deep_factor, slope_factor, stage_count):
     """A reach's stages: for each stage from the first, how many of its cross sections were averaged (0 for none, and
@@ -244,7 +248,8 @@ def _staged_means(stations, elevations, mannings_n, starts, centers, lefts, righ
             wse = thalwegs[j] + depth
             area, perimeter, top_width, k, channel_area, channel_k = section_hydraulics(
                 stations[start:end], elevations[start:end], mannings_n[start:end], centers[j], lefts[j], rights[j],
-                wse, k_decay, shallow_factor, deep_factor)
+                wse, k_decay, shallow_factor, deep_factor,
+                connects[connect_starts[j]:connect_starts[j + 1]] if threaded[j] else connects[:0])
             if area <= 0.0 or perimeter <= 0.0 or k <= 0.0:
                 area = perimeter = velocity = section_velocity = discharge = 0.0
             else:
@@ -331,9 +336,16 @@ def _reach_columns(comid: int, group: Sequence[RepresentativeSample], parameters
     starts[1:] = np.cumsum([profile.stations.size for profile in profiles])
     vertices = [np.concatenate([np.asarray(getattr(profile, name), dtype=np.float64) for profile in profiles])
                 for name in ("stations", "elevations", "mannings_n")]
+    # Their connection levels end to end too, where they have threads (arc.hydraulics)
+    connects = [hydraulic_connect(sample.xs, profile) for sample, profile in zip(group, profiles)]
+    threaded = np.array([connect is not None for connect in connects], dtype=np.bool_)
     sections = (*vertices, starts, np.array([profile.center for profile in profiles], dtype=np.int64),
                 np.array([sample.xs.left_bank_distance for sample in group], dtype=np.float64),
-                np.array([sample.xs.right_bank_distance for sample in group], dtype=np.float64))
+                np.array([sample.xs.right_bank_distance for sample in group], dtype=np.float64),
+                np.concatenate([np.empty(0) if connect is None else connect
+                                for connect in connects]).astype(np.float64, copy=False),
+                np.cumsum([0] + [0 if connect is None else connect.size for connect in connects]).astype(np.int64),
+                threaded)
     # Each cross section's rating curve, end to end, none for those without one
     curves = [np.empty((0, 2)) if sample.curve is None else np.asarray(sample.curve, dtype=np.float64).reshape(-1, 2)
               for sample in group]

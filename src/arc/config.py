@@ -115,6 +115,11 @@ class Configs:
     # Reconstruct each narrow channel's ground below the cell scale, where its cross section's banks are under 10 cells
     # apart (arc.xsection.subcell): straight lines between the cells' means turn its corners into ramps
     subcell_channels: bool = False
+    # Where bars split the river, its other threads beside the channel carry water at the channel's water surface
+    # below the bars' tops, and the bathymetry carves them as deep as the channel (arc.xsection.threads): threads are
+    # the water mask's (BathyWaterMask) stretches along a cross section that join the river both upstream and
+    # downstream of it. Without a water mask, there are none
+    flow_through_threads: bool = True
     # How far each way along the stream the valley's direction and sinuosity are taken over (a Gaussian of half that,
     # arc.xsection.valley.valley_axes), about a meander's length: as many of the reach's channel widths (its cross
     # sections' median bank-to-bank width), or with 0, or for a reach without banks, Valley_Dir_Dist cells

@@ -34,6 +34,7 @@ from arc.hydraulics import (
     _conveyance,
     _parameters,
     _profile_sides,
+    hydraulic_connect,
     hydraulic_profile,
     profile_compound_geometry,
     wse_for_discharge,
@@ -64,12 +65,12 @@ class RatingCurve(NamedTuple):
 
 @njit(cache=True, error_model="numpy")
 def section_hydraulics(stations, elevations, mannings_n, center, left_bank, right_bank, wse, k_decay, shallow_factor,
-                       deep_factor):
+                       deep_factor, connect=None):
     """Area, wetted perimeter, top width and conveyance of a cross section's profile at a water surface elevation,
     and the channel's area and conveyance. The conveyance is the sum of the subsections' where there are banks, and
-    all channel where not."""
+    all channel where not. connect: the profile's connection levels where it has threads (arc.hydraulics)."""
     left, channel, right = profile_compound_geometry(stations, elevations, mannings_n, center, left_bank, right_bank,
-                                                     wse, k_decay, shallow_factor, deep_factor)
+                                                     wse, k_decay, shallow_factor, deep_factor, connect)
     area = left[0] + channel[0] + right[0]
     perimeter = left[1] + channel[1] + right[1]
     top_width = left[2] + channel[2] + right[2]
@@ -80,7 +81,7 @@ def section_hydraulics(stations, elevations, mannings_n, center, left_bank, righ
 
 @njit(cache=True, error_model="numpy")
 def section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, right_bank, levels, k_decay,
-                          shallow_factor, deep_factor):
+                          shallow_factor, deep_factor, connect=None):
     """section_hydraulics at each of the water surface elevations levels, which must ascend, a row each, worked out
     together (arc.hydraulics._profile_sides): the same numbers, in half the time."""
     m = levels.size
@@ -91,9 +92,9 @@ def section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, r
     lo = np.zeros((m, 8))
     hi = np.zeros((m, 8))
     _profile_sides(stations, elevations, mannings_n, center, -1, levels, first, left_bank, k_decay, shallow_factor,
-                   deep_factor, lo)
+                   deep_factor, lo, connect)
     _profile_sides(stations, elevations, mannings_n, center, 1, levels, first, right_bank, k_decay, shallow_factor,
-                   deep_factor, hi)
+                   deep_factor, hi, connect)
     result = np.zeros((m, 6))
     for i in range(first, m):
         # The sides put together as _profile_parts and section_hydraulics put them
@@ -111,7 +112,7 @@ def section_hydraulics_at(stations, elevations, mannings_n, center, left_bank, r
 
 @njit(cache=True, error_model="numpy")
 def _increments(stations, elevations, mannings_n, center, left_bank, right_bank, k_decay, shallow_factor, deep_factor,
-                thalweg, max_wse, count, discharge_scale, q_top, out):
+                thalweg, max_wse, count, discharge_scale, q_top, out, connect=None):
     """The flow increments from the thalweg up to max_wse (see the notes above): fills out (count, 5) and returns the
     last increment whose geometry wasn't valid and the last with its own values, counting from 1. q_top is the
     discharge at max_wse."""
@@ -122,7 +123,8 @@ def _increments(stations, elevations, mannings_n, center, left_bank, right_bank,
     for i in range(1, count + 1):
         wse = thalweg + step * i
         area, perimeter, top_width, k, _, _ = section_hydraulics(stations, elevations, mannings_n, center, left_bank,
-                                                                 right_bank, wse, k_decay, shallow_factor, deep_factor)
+                                                                 right_bank, wse, k_decay, shallow_factor, deep_factor,
+                                                                 connect)
         row = out[i - 1]
         if top_width > 0.0 and area > 0.0 and perimeter > 0.0:
             q = k * discharge_scale
@@ -134,7 +136,7 @@ def _increments(stations, elevations, mannings_n, center, left_bank, right_bank,
                 while candidate < upper:
                     area, perimeter, top_width, k, _, _ = section_hydraulics(
                         stations, elevations, mannings_n, center, left_bank, right_bank, candidate, k_decay,
-                        shallow_factor, deep_factor)
+                        shallow_factor, deep_factor, connect)
                     q_candidate = k * discharge_scale
                     if area > prev_a and perimeter > prev_p and q_candidate > prev_q and q_candidate <= q_top:
                         wse = candidate
@@ -191,10 +193,11 @@ def rating_curve(xs: XSection, q_max: float, slope: float, increments: int, *, b
         return None
     
     profile = hydraulic_profile(xs)
+    connect = hydraulic_connect(xs, profile)
     left, right = _banks(xs)
     parameters = _parameters(roughness)
     discharge_scale = math.sqrt(slope) * _check_slope_factor(slope_factor)
-    q_top = section_hydraulics(*profile, left, right, wse, *parameters)[3] * discharge_scale
+    q_top = section_hydraulics(*profile, left, right, wse, *parameters, connect)[3] * discharge_scale
     if not ACCEPTABLE[0] * q_max <= q_top <= ACCEPTABLE[1] * q_max:
         return None
     
@@ -202,7 +205,8 @@ def rating_curve(xs: XSection, q_max: float, slope: float, increments: int, *, b
         return RatingCurve(out, wse, -1, 0)
     
     thalweg = float(profile.elevations[profile.center])
-    start, last = _increments(*profile, left, right, *parameters, thalweg, wse, count, discharge_scale, float(q_top), out)
+    start, last = _increments(*profile, left, right, *parameters, thalweg, wse, count, discharge_scale, float(q_top), out,
+                              connect)
     if last > start and baseflow > BASEFLOW_MARGIN and out[start, Q] >= baseflow:
         # Its velocity stays its discharge over its area, the area at its water surface (its discharge over its
         # velocity before)

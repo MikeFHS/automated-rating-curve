@@ -1,8 +1,8 @@
 """ARC's decision log and quality flags.
 
 For each stream cell of the reaches in the flow file, the decision log (Print_Decision_Log) records what each step of
-the run decided: where its slope came from, how its banks were found, how its channel was carved, whether it got a
-rating curve (and if not, why), and what the standard step did with its water. QA_Flag sums the flags below that apply
+the run decided: where its slope came from, how its banks were found, how its channel was carved, how many of the
+river's other threads lie beside it (Flow_Through_Threads), whether it got a rating curve (and if not, why), and what the standard step did with its water. QA_Flag sums the flags below that apply
 to the cell, 0 for none, and QA names them. A flag marks a cell to look at, not an error: most runs have many.
 
 The VDT database, the curve file and the AP database carry each cell's QA_Flag too, as their last column.
@@ -46,7 +46,8 @@ _SPILL_TOLERANCE = 1e-3  # a top discharge this share or more from the maximum f
 
 DECISION_LOG_COLUMNS = ["COMID", "Row", "Col", "Stream_Row", "Stream_Col", "Baseflow", "Max_Flow", "Slope",
                         "Slope_Source", "Bank_Method", "Channel_Width", "Bank_Elevation", "Carve", "Carve_Depth",
-                        "Valley_Section", "Subcell", "Rating_Curve", "Step_Held", "Step_Critical", "QA_Flag", "QA"]
+                        "Valley_Section", "Subcell", "Threads", "Rating_Curve", "Step_Held", "Step_Critical", "QA_Flag",
+                        "QA"]
 
 
 class QA(IntFlag):
@@ -167,6 +168,7 @@ def decision_log_dataframe(results) -> pd.DataFrame:
             "Carve_Depth": math.nan if section is None else section.carve_depth,
             "Valley_Section": section is not None and section.xs.valley is not None,
             "Subcell": section is not None and section.xs.subcell,
+            "Threads": 0 if section is None or section.xs.threads is None else len(section.xs.threads),
             "Rating_Curve": rating_curve_status(results, k),
             "Step_Held": int(step.held_at[k]) if step is not None and step.held_at is not None else 0,
             "Step_Critical": int(step.critical_at[k]) if step is not None and step.critical_at is not None else 0,
@@ -180,7 +182,7 @@ def decision_log_dataframe(results) -> pd.DataFrame:
                          "Stream_Row": int(skipped.rows[k]), "Stream_Col": int(skipped.cols[k]),
                          "Baseflow": math.nan, "Max_Flow": math.nan, "Slope": math.nan, "Slope_Source": "",
                          "Bank_Method": "", "Channel_Width": math.nan, "Bank_Elevation": math.nan, "Carve": "",
-                         "Carve_Depth": math.nan, "Valley_Section": False, "Subcell": False,
+                         "Carve_Depth": math.nan, "Valley_Section": False, "Subcell": False, "Threads": 0,
                          "Rating_Curve": "no_slope", "Step_Held": 0, "Step_Critical": 0,
                          "QA_Flag": int(QA.NO_SLOPE), "QA": QA.NO_SLOPE.name})
 

@@ -42,6 +42,13 @@ class XSection:
     ground: np.ndarray | None = field(init=False, default=None)
     carved_banks: tuple[float, float] | None = field(init=False, default=None)
     subcell: bool = field(init=False, default=False)
+    # With Flow_Through_Threads, the other threads of the river beside the channel (arc.xsection.threads): a row
+    # each, the stations (metres from the stream cell, negative to the left) of its water's two edges. The water
+    # spreads from them as from the stream cell, at any water surface above their ground (arc.hydraulics)
+    threads: np.ndarray | None = field(init=False, default=None)
+    # The connection levels last worked out for the hydraulic profile and what they were worked out from
+    # (arc.hydraulics.hydraulic_connect)
+    _connect: tuple | None = field(init=False, default=None)
     # The last spliced profile and what it was spliced from (arc.hydraulics.hydraulic_profile), which it knows by
     # identity: arrays changed in place after a splice aren't seen, so replace them instead. Only the most recent
     # splices are kept (arc.hydraulics.KEPT_SPLICES)

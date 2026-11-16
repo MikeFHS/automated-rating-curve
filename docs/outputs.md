@@ -136,6 +136,7 @@ decided for it, then a row for each cell skipped for want of a slope.
 | `Carve`, `Carve_Depth` | How the bathymetry carved the channel, and how deep (m): `baseflow` (the depth that carries `Flow_File_BF`), `depth_law` (the drainage-area depth), `stream_level` (the baseflow at the stream cell's level, see `Bathy_Bankless_Max_Baseflow`) or `none`; empty without bathymetry. |
 | `Valley_Section` | Whether its overbanks were taken square to the valley (`Valley_Sections`). |
 | `Subcell` | Whether its narrow channel was reconstructed below the cell scale (`Subcell_Channels`). |
+| `Threads` | How many of the river's other threads lie beside its channel, sharing its water surface (`Flow_Through_Threads`; see [Flow-Through Threads](flow_through_threads.md)). |
 | `Rating_Curve` | `rated`, or why not: `no_slope`, `no_cross_section` (its centre had no data), `reach_dropped` (no bank elevation anywhere in its reach, with `Bathy_Use_Banks`), `no_curve` (the discharge at its top is more than half the maximum flow away from it) or `edge` (`Drop_Edge_Sections`). |
 | `Step_Held`, `Step_Critical` | With `Standard_Step`, at how many of its flows the water was held at the baseflow level, and at how many it was at critical depth. |
 | `QA_Flag`, `QA` | The sum of the flags below that apply, and their names joined by `|`. |

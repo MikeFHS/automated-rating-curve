@@ -113,7 +113,12 @@ from arc.bathymetry.bed_smoothing import MAX_BED_GRADE, MEDIAN_WINDOW
 from arc.bathymetry.depth import power_law_geometry
 from arc.bathymetry.smoothing import WATER_BANKS, reach_widths
 from arc.config import Configs
-from arc.hydraulics import DepthRoughness, hydraulic_profile, wse_for_discharge
+from arc.hydraulics import (
+    DepthRoughness,
+    hydraulic_connect,
+    hydraulic_profile,
+    wse_for_discharge,
+)
 from arc.io import Raster, Vector
 from arc.outputs import (
     CrossSectionRecord,
@@ -166,6 +171,7 @@ from arc.xsection.stream_path import (
     stream_row_starts,
 )
 from arc.xsection.subcell import reconstruct_all
+from arc.xsection.threads import ThreadFinder, in_threads, outside, reach_out
 from arc.xsection.valley import (
     Valley,
     ray_reach,
@@ -279,6 +285,9 @@ class Section:
     bank_tops: Banks | None = None
     carve_banks: Banks | None = None  # with bathymetry, those the channel is carved between: after the width filter
     hydraulic_banks: Banks | None = None  # as the hydraulics use them: the carve's, or its bank tops (dividing_banks)
+    # With Flow_Through_Threads, the threads found beside its channel (arc.xsection.threads), before the banks clip them:
+    # the cross section's own (XSection.threads) are their parts beyond its channel's banks
+    threads: np.ndarray | None = None
     bank_elevation: float = math.nan  # the smoothed bank elevation, with bathymetry
     # The water surface its channel was carved to carry the baseflow at (its bank elevation with Bathy_Use_Banks, its
     # stream cell's otherwise), where bathymetry carved it for the baseflow; the standard step holds the baseflow there
@@ -1082,6 +1091,34 @@ def dividing_banks(section: Section, banks: Banks | None) -> Banks | None:
     return tops._replace(left=left[0], right=right[0], left_elevation=left[1], right_elevation=right[1])
 
 
+def threads_beyond(threads: np.ndarray | None, banks: Banks | None) -> np.ndarray | None:
+    """A cross section's threads (arc.xsection.threads) beyond its channel's banks, or None: those within them are its
+    channel. Banks that aren't valid leave the threads as they are, as none holds the stream cell."""
+    if threads is None or len(threads) == 0:
+        return None
+    if banks is None or not banks.valid:
+        return threads
+    return outside(threads, float(banks.left), float(banks.right))
+
+
+def with_threads(banks: Banks | None, threads: np.ndarray | None) -> Banks | None:
+    """The banks the hydraulics divide a cross section at, reaching out to its outermost threads: the water in the
+    threads and the bars between is the channel's, not the overbanks'."""
+    if threads is None or banks is None or not banks.valid:
+        return banks
+    left, right = reach_out(threads)
+    return banks._replace(left=max(float(banks.left), left), right=max(float(banks.right), right))
+
+
+def set_water_roughness(xs: XSection, banks: Banks | None, water_n: float) -> None:
+    """Give the ordinates between a cross section's valid banks (set_in_bank_roughness) and in its threads the water's
+    Manning's n."""
+    if banks is not None:
+        set_in_bank_roughness(xs, banks, water_n)
+    if xs.threads is not None and xs.mannings_n.size == xs.elevations.size:
+        xs.mannings_n[in_threads(xs)] = water_n
+
+
 def bank_ceiling(configs: Configs, section: Section, grid: Grid, mannings_n: ManningsN, resampler: Resampler | None,
                  max_flow: float, slope: float, roughness: DepthRoughness | None
                  ) -> tuple[float, tuple[np.ndarray, float]]:
@@ -1201,7 +1238,7 @@ def sampled_trim_wse(configs: Configs, section: Section, grid: Grid, mannings_n:
         elevations = xs.elevations[center - half:center + half + 1]
         wse = wse_for_discharge(XSection(elevations, n, spacing), max_flow, slope, roughness=roughness,
                                 slope_factor=configs.slope_adjustment_factor)
-        if half >= center or (math.isfinite(wse) and _rises_above(elevations, half, wse)):
+        if half >= center or (math.isfinite(wse) and _rises_above(elevations, half, wse, half, half + 1)):
             return wse
 
         half = min(2 * half, center)
@@ -1239,11 +1276,12 @@ def fit_section(configs: Configs, section: Section, grid: Grid, mannings_n: Mann
 
 
 @njit(cache=True, error_model="numpy")
-def _ordinates_to(elevations, step, level):
-    """How many ordinates out from the centre on one side the first above level is, or more than the side has."""
+def _ordinates_to(elevations, step, level, start=1):
+    """How many ordinates out from the centre on one side the first above level is, from the start'th out, or more
+    than the side has."""
     center = elevations.size // 2
     end = elevations.size if step > 0 else -1
-    for j in range(center + step, end, step):
+    for j in range(center + step * max(start, 1), end, step):
         if elevations[j] > level:
             return abs(j - center)
 
@@ -1261,7 +1299,9 @@ def trim_section(section: Section, level: float, widths=()) -> None:
     for channels these widths (any of them on one side). Its Manning's n isn't sampled yet."""
     xs = section.xs
     center, spacing = xs.elevations.size // 2, float(xs.ordinate_distance)
-    half = max(_ordinates_to(xs.elevations, -1, level), _ordinates_to(xs.elevations, 1, level),
+    # Beyond its threads, whose water spreads out from them too
+    left, right = (math.ceil(distance / spacing) for distance in reach_out(xs.threads))
+    half = max(_ordinates_to(xs.elevations, -1, level, left), _ordinates_to(xs.elevations, 1, level, right),
                *(_ordinates_for(distance, spacing) for distance in (section.banks.left, section.banks.right, *widths)))
     if half >= center:
         return
@@ -1288,22 +1328,35 @@ def reaches_above(section: Section, level: float) -> bool:
 
     if valley is None and xs.profile is None:
         # The ordinates are the profile's vertices
-        return bool(_rises_above(xs.elevations, xs.elevations.size // 2, float(level)))
+        center = xs.elevations.size // 2
+        if xs.threads is None:
+            return bool(_rises_above(xs.elevations, center, float(level), center, center + 1))
+
+        left, right = (math.ceil(distance / float(xs.ordinate_distance)) for distance in reach_out(xs.threads))
+        return bool(_rises_above(xs.elevations, center, float(level), center - left, center + right + 1))
 
     profile = hydraulic_profile(xs)
-    return bool(_rises_above(profile.elevations, profile.center, float(level)))
+    first, end = profile.center, profile.center + 1
+    if xs.threads is not None:
+        # Beyond its threads, whose water spreads out from them too
+        left, right = reach_out(xs.threads)
+        first = min(int(np.searchsorted(profile.stations, -left, side="left")), first)
+        end = max(int(np.searchsorted(profile.stations, right, side="right")), end)
+
+    return bool(_rises_above(profile.elevations, profile.center, float(level), first, end))
 
 
 @njit(cache=True, error_model="numpy")
-def _rises_above(elevations, center, level):
-    """Whether a profile has a vertex above level on both sides of its centre."""
+def _rises_above(elevations, center, level, first, end):
+    """Whether a profile has a vertex above level on both sides of its centre: before first on its left, and from end
+    on its right (center and center + 1 for all of either side)."""
     left = right = False
-    for j in range(center):
+    for j in range(min(first, center)):
         if elevations[j] > level:
             left = True
             break
 
-    for j in range(center + 1, elevations.size):
+    for j in range(max(end, center + 1), elevations.size):
         if elevations[j] > level:
             right = True
             break
@@ -1637,11 +1690,14 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list[
 
             sections[k].carve_banks = banks if banks.valid else unresolved_banks(sections[k].xs, float(target_width[k]))
             sections[k].hydraulic_banks = dividing_banks(sections[k], sections[k].carve_banks)
+            if sections[k].threads is not None:
+                # The threads beyond the channel the carve makes, which the width filter may have widened
+                sections[k].xs.threads = threads_beyond(sections[k].threads, sections[k].carve_banks)
             if use_banks and _carved_to_its_stream(sections[k], float(baseflow[k]), configs.bathy_bankless_max_baseflow):
                 result.bank_elevations[position] = _centre(sections[k])
 
             sections[k].bank_elevation = float(result.bank_elevations[position])
-            set_in_bank_roughness(sections[k].xs, sections[k].hydraulic_banks, water_n)
+            set_water_roughness(sections[k].xs, sections[k].hydraulic_banks, water_n)
 
     depths, applies = {}, {}
     for reach, ks in by_reach.items():
@@ -1655,7 +1711,7 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list[
                                      mannings_n=water_n, roughness=roughness,
                                      slope_factor=configs.slope_adjustment_factor,
                                      bank_elevation=section.bank_elevation if use_banks else None,
-                                     divide=section.hydraulic_banks)
+                                     divide=with_threads(section.hydraulic_banks, section.xs.threads))
             depths[reach].append(depth.depth)
             applies[reach].append(depth.apply)
             if depth.apply:
@@ -1832,9 +1888,11 @@ def reaches_edge(section: Section, wse: float, grid: Grid, margin: float = 0.0) 
         return False
     
     rows, cols = grid.dem.shape
+    connect = hydraulic_connect(section.xs, profile)
     for step in (-1, 1):
         end = elevations.size - 1 if step > 0 else 0
-        j = _water_end(elevations, center, float(wse), step)
+        j = _water_end(elevations, center, float(wse), step) if connect is None else \
+            _connected_water_end(connect, center, float(wse), step)
         if j == end:
             return True
         
@@ -1863,6 +1921,19 @@ def _water_end(elevations, center, level, step):
         j += step
 
     return j
+
+
+@njit(cache=True, error_model="numpy")
+def _connected_water_end(connect, center, level, step):
+    """_water_end with connection levels (arc.hydraulics): the last vertex out one way that the water connects to."""
+    end = connect.size - 3 if step > 0 else 0  # its last two values aren't vertices' (connection_levels)
+    j = last = center
+    while j != end:
+        j += step
+        if connect[j] < level:
+            last = j
+
+    return last
 
 
 def _station_position(section: Section, station: float, dx: float, dy: float) -> tuple[float, float]:
@@ -2049,6 +2120,11 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
     offsets = angle_offsets(configs.degree_manip, configs.degree_interval)
     water, water_value = bank_water(configs, grid)
     at = banks_at(configs)
+    finder = None
+    if configs.flow_through_threads and grid.water_mask is not None and not manual:
+        finder = ThreadFinder(grid.water_mask, grid.stream_index(), grid.stream_raster_cells()[2], grid.dx, grid.dy,
+                              network)
+
     sections: list[Section | None] = []
     for k in tqdm.tqdm(range(cells.count), disable=quiet):
         if manual:
@@ -2077,23 +2153,34 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
                                                water_value=water_value if along is not None else None, at="divide",
                                                ceiling=ceiling)
             section.hydraulic_banks = dividing_banks(section, section.banks)
+            if finder is not None:
+                section.threads = finder.threads(section.rows, section.cols, section.xs.elevations,
+                                                 section.xs.ordinate_distance, section.row, section.col,
+                                                 section.direction, int(cells.reaches[k]))
+                section.xs.threads = threads_beyond(section.threads, section.hydraulic_banks)
+
             if trim and not section.manual:
                 fit_section(configs, section, grid, mannings_n, resampler, float(max_flow[k]), float(slopes[k]),
                             roughness, float(target_width[k]), max_water)
                 
         sections.append(section)
 
-    # The water's n between each cross section's hydraulic banks, put in the raster so that the cross sections crossing
-    # it get it too, and then each cross section's n
+    # The water's n between each cross section's hydraulic banks and in its threads, put in the raster so that the
+    # cross sections crossing it get it too, and then each cross section's n
     for section in sections:
         if section is not None:
-            wet = in_bank(section.xs, section.hydraulic_banks)
+            wet = in_bank(section.xs, section.hydraulic_banks) | in_threads(section.xs)
             mannings_n.water_between_banks(section.rows[wet], section.cols[wet])
 
     for section in sections:
         if section is not None:
             sample_roughness(section, grid, mannings_n)
-            set_in_bank_roughness(section.xs, section.hydraulic_banks, water_n)
+            set_water_roughness(section.xs, section.hydraulic_banks, water_n)
+
+    if finder is not None:
+        threaded = sum(s is not None and s.xs.threads is not None for s in sections)
+        LOG.info(f"Flow_Through_Threads: {threaded} cross sections have threads beside their channels")
+        del finder
 
     if not configs.valley_sections:
         # Only the valleys' overbanks read the water mask again: it goes before the steps that take the most memory
@@ -2119,7 +2206,7 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
         
     usable = [(k, s) for k, s in enumerate(sections) if s is not None and s.usable]
     for _, section in usable:
-        set_bank_distances(section.xs, section.hydraulic_banks)
+        set_bank_distances(section.xs, with_threads(section.hydraulic_banks, section.xs.threads))
 
     if configs.subcell_channels:
         made = reconstruct_all([section.xs for _, section in usable if not section.manual])

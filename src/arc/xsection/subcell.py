@@ -96,6 +96,13 @@ def _window(xs: XSection) -> _Window | None:
     if not usable.all() or z.size < 3:
         return None
 
+    if xs.threads is not None:
+        # A thread beside the channel (Flow_Through_Threads) keeps its own carve: none is reconstructed over one
+        low, high = (lo - 0.5) * spacing, (hi + 0.5) * spacing
+        for thread_low, thread_high in np.asarray(xs.threads, dtype=np.float64):
+            if thread_low <= high and thread_high >= low:
+                return None
+
     return _Window(z, lo, hi, float(left), float(right), carved)
 
 
