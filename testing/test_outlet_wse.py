@@ -75,20 +75,21 @@ def test_a_point_too_far_from_the_outlet_is_not_taken(tmp_path: Path) -> None:
 
 
 def test_beyond_the_given_flows_an_outlet_starts_as_far_from_normal_depth_as_at_the_nearest(tmp_path: Path) -> None:
-    """Given water only up to half the maximum flow, the higher flows start at normal depth raised as much as the
-    given water is at the highest flow given: so that the water rises with the flow, with no step down where the
-    given water ends."""
+    """Given water only from a twentieth of the maximum flow to half of it, the flows beyond start at normal depth
+    raised as much as the given water is at the nearest flow given: so that the water rises with the flow, with no
+    step down where the given water ends."""
     flows = channel.Q_MAX[12] * np.linspace(0.05, 0.5, 10)
     inputs, col = outlet_inputs(tmp_path, flows=flows)
     given = run(inputs)
 
     last = by_column(given, 12)[-1]
     q, wse = given.curves.increments[last, :, Q], given.curves.increments[last, :, WSE]
-    inside = (q >= flows[0]) & (q <= flows[-1])
-    assert inside.any() and (~inside).any()
+    inside, under, over_top = (q >= flows[0]) & (q <= flows[-1]), q < flows[0], q > flows[-1]
+    assert inside.any() and under.any() and over_top.any()
     over = wse - np.array([normal_wse(col, flow) for flow in q])
     assert np.all(over[inside] > RAISED - 0.1)  # the given water, up to the interpolation between its flows
-    np.testing.assert_allclose(over[~inside], over[inside][-1], atol=1e-6)
+    np.testing.assert_allclose(over[under], over[inside][0], atol=1e-6)
+    np.testing.assert_allclose(over[over_top], over[inside][-1], atol=1e-6)
     assert np.all(np.diff(wse) > 0.0)
 
 

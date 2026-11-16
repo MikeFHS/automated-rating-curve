@@ -77,13 +77,17 @@ sections have.
    ends (stream lines run downstream). Only a reach with none of these is turned to put its higher end upstream, by
    the DEM along it, which on flat water can be the wrong way round. The lengths between cross sections are along the
    stream (see [Stream Slope Methods](stream_slope_methods.md)).
-2. **The flows.** A cross section's flows are 1/N, 2/N and so on up to its maximum flow (`Flow_File_QMax`), N being
-   `VDT_Database_NumIterations`, but the first at or above its baseflow (`Flow_File_BF`) is set 0.001 m³/s below it,
-   so that the baseflow is one of the flows (see [The baseflow as one of the flows](#the-baseflow-as-one-of-the-flows)).
-   The flow file gives a reach one maximum flow and one baseflow, so the flows are the same all along it.
+2. **The flows.** A cross section has N flows, N being `VDT_Database_NumIterations`: one 0.001 m³/s below its
+   baseflow (`Flow_File_BF`), so that the baseflow is one of the flows (see
+   [The baseflow as one of the flows](#the-baseflow-as-one-of-the-flows)), and N − 1 shares of its maximum flow
+   (`Flow_File_QMax`), (j / (N − 1))<sup>1.5</sup> for j = 1 to N − 1, the last the maximum flow itself. Without a
+   baseflow below the maximum flow, all N are shares, (j / N)<sup>1.5</sup>. The shares crowd towards the small flows
+   (see [How the flows are spaced](#how-the-flows-are-spaced)). The flow file gives a reach one maximum flow and one
+   baseflow, so the flows are the same all along it.
 3. **The start.** An outlet starts from its last cross section's normal depth, or from the water `Outlet_WSE_File`
    gives for it. A reach flowing into another starts from the water at the first cross section of the reach below, at
-   the same share of that reach's maximum flow. Where the reaches below have no rating curves (one in a lake, or one
+   the same share of that reach's maximum flow, read between its flows (the two reaches' baseflows are different
+   shares of their maximum flows). Where the reaches below have no rating curves (one in a lake, or one
    the flow file leaves out), the reach starts as an outlet does, but no higher than the water at the top of the first
    reach further down that has them, risen by the reach's median slope over the straight distance between them:
    normal depth at one cross section, a choke as like as not on flat water, could otherwise stand the whole reach
@@ -225,8 +229,27 @@ level.
 ### The baseflow as one of the flows
 
 The hold works on the flows the step works out. If the baseflow fell between two of them, Curve2Flood would read its
-water as a line from the held water at the flow below it to the step's water at the flow above, over the banks. So the
-first flow at or above the baseflow is set 0.001 m³/s below it, and the baseflow's water is the held water. 
+water as a line from the held water at the flow below it to the step's water at the flow above, over the banks. So one
+of the flows is 0.001 m³/s below the baseflow, and the baseflow's water is the held water. It is a flow of its own,
+added to the N − 1 shares of the maximum flow, not one of them moved there.
+
+### How the flows are spaced
+
+Curve2Flood reads the water at a flow on a line between the two flows either side of it, and the water rises fastest
+at the small flows, where a little more water fills the channel, and just above the baseflow, where the held water
+gives way to the step's. The step itself also needs its flows close there: each flow's water is the floor for the
+next (see [The water at each step](#the-water-at-each-step)), so where the energy balances at a low root and a high
+one, the march climbs onto the high one only once the low one is gone, and finds where that happens only as closely as
+its flows are spaced. So the shares of the maximum flow crowd towards the small flows, (j / (N − 1))<sup>1.5</sup>.
+
+The flows used to be j/N of the maximum flow, with the first at or above the baseflow moved to it. That left the
+widest gap of all just above the baseflow: on the 85 FIM benchmark sites, the water Curve2Flood read at their flows
+with N = 15 was 7.7 cm low on average against N = 120 (1.5 m low at the worst 1%), and on a 1° FABDEM tile the water
+at the 5-year flow, just above the 2-year baseflow, was 25 cm low (2.6 m at the worst 1%). With the shares, N = 15 is
+1.2 cm from the old N = 120 on average at the benchmark sites (16 cm at the worst 1%) and 1.8 cm at the tile's 5-year
+flow (13 cm), about what N = 60 gave before, at the same cost and size as before at the same N. Above about half the
+maximum flow the shares are further apart than before, and the water there is a few millimetres further off (0.8 cm
+at the tile's 100-year flow, against 0.5 cm).
 
 ### Why a hold, and not other banks
 
@@ -263,7 +286,7 @@ banks and beds as the bathymetry makes them, and changes only the water at the f
 | `Standard_Step` | False | Links the water surfaces along the stream network. Needs `StrmShp_File` with `reach_id` and `downstream_reach_id`. |
 | `Standard_Step_Eddy_Length` | 300 | How far downstream, in metres, each step's eddy loss is reckoned over (see [The eddy loss](#the-eddy-loss)). 0 charges each step the change in velocity head from the cross section below. |
 | `Outlet_WSE_File` | None | The water surface to start reaches that leave the raster from, instead of normal depth (see [Model Input File](model_input_file.md)). Needs `Standard_Step`. |
-| `VDT_Database_NumIterations` | 15 | How many flows, the shares of each maximum flow the step works out. |
+| `VDT_Database_NumIterations` | 15 | How many flows the step works out: the baseflow and shares of each maximum flow (see [How the flows are spaced](#how-the-flows-are-spaced)). |
 | `Flow_File_BF` | None | The baseflow: one of the flows, and with bathymetry, the flow up to which the water is held (see [Keeping the baseflow in its banks](#keeping-the-baseflow-in-its-banks)). |
 | `Bathy_Smooth_Bed` | False with `Standard_Step` or `Bathy_Use_Banks` | Whether to smooth each reach's channel bed. Off, each channel carries its baseflow at its own banks. |
 

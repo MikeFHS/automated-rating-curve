@@ -113,7 +113,9 @@ $$
 n(h) = n \left( \text{deep\_factor} + \frac{\text{shallow\_factor} - \text{deep\_factor}}{1 + \text{k\_decay} \, h} \right)
 $$
 
-where $n$ is the table's. Both factors at 1 leave $n$ as it is.
+where $n$ is the table's. Both factors at 1 leave $n$ as it is. Each stretch of ground between two points of a cross
+section takes $h$ as its mean depth: at the water's edge, half the depth at its inner end. So $n$ near the edge
+doesn't depend on how far apart the points are.
 
 ## Bathymetry
 

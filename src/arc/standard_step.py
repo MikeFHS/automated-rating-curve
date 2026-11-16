@@ -42,11 +42,17 @@ Each reach's rated cells are put in order along the stream (arc.bathymetry.smoot
 to it in the network, on the stream raster if they have no rating curves, or else by where its line ends, and only
 failing those by its stream cells' elevations. A march from the wrong end piles water up from there, and the
 elevations, the carved beds above all, are noisy where the water is flat. Their rating curves are then worked out
-again at flows common to the reach: Q_j = j/N of each cell's maximum flow, j = 1 to N (VDT_Database_NumIterations),
-with the first at or above the baseflow set just below it, so that the baseflow is one of them (rating_curve does the
-same when that is the first). A reach starts from the water surface of the first rated cell of the reach below it at
-the same j (the same share of that reach's maximum flow), and an outlet from its last cell's normal depth
-(arc.hydraulics.wse_for_discharge), both at least critical depth. Where the reaches below have no rated cells (one in
+again at flows common to the reach (flows_for): N flows (VDT_Database_NumIterations), N - 1 of them shares of each
+cell's maximum flow, (j / (N - 1))^FLOW_POWER for j = 1 to N - 1, and one just below its baseflow, so that the baseflow
+is one of them (rating_curve sets the first increment's discharge there too). The shares crowd towards the small flows,
+where the water rises fastest and the baseflow's held water gives way to the step's, and a march's water at a flow is
+the floor for the next (see _march), so the march can only find where the water jumps from one root to another as
+closely as its flows are spaced there. With the flows j/N of the maximum, the first at or above the baseflow in its
+place, the gap above the baseflow was as wide as any: water read between the flows there was as much as metres low.
+A reach starts from the water surface of the first rated cell of the reach below it at the same share of that reach's
+maximum flow (interpolated between its flows, which are shares of its own maximum flow but for its baseflow), and an
+outlet from its last cell's normal depth (arc.hydraulics.wse_for_discharge), both at least critical depth. Where the
+reaches below have no rated cells (one in
 a lake, or one the flow file leaves out), the reach starts as an outlet does, but no higher than the water at the top of the first reach further down that has
 them, risen by the reach's median slope over the straight distance between them: normal depth at one cross section, a
 choke as like as not on flat water, could otherwise stand the whole reach metres above the river below it. The water
@@ -114,6 +120,7 @@ CONTRACTION = 0.1  # loss coefficients on the change in velocity head, where the
 EXPANSION = 0.3  # ...and where it slows
 EDDY_LENGTH = 300.0  # metres: the eddy loss is reckoned on the change in velocity head over this far downstream
 OUTLET_REACH = 3.0  # cells: how near an outlet's last cross section a water surface given for it must be
+FLOW_POWER = 1.5  # the flows are (j / (N - 1))^FLOW_POWER of the maximum flow, crowded towards the small flows
 
 
 @njit(cache=True, error_model="numpy")
@@ -592,16 +599,16 @@ class StepSummary(NamedTuple):
 
 
 def flows_for(max_flow: float, baseflow: float, increments: int) -> np.ndarray:
-    """A cell's flows: j/N of its maximum flow, j = 1 to N, the first at or above its baseflow set just below it, so
-    that the baseflow is one of them (none is if the baseflow is above the maximum flow)."""
-    flows = max_flow * np.arange(1, increments + 1) / increments
-    if increments and baseflow > BASEFLOW_MARGIN:
-        reaching = np.flatnonzero(flows >= baseflow)
-        if reaching.size:
-            j = int(reaching[0])
-            node = baseflow - BASEFLOW_MARGIN
-            if j == 0 or node > flows[j - 1]:
-                flows[j] = node
+    """A cell's N flows, in order, the last its maximum flow (see the notes above): (j / (N - 1))^FLOW_POWER of its
+    maximum flow, j = 1 to N - 1, and one just below its baseflow, so that the baseflow is one of them. Without a
+    baseflow below the maximum flow (or with a single flow), the N flows are all shares, (j / N)^FLOW_POWER."""
+    n = max(int(increments), 0)
+    node = baseflow - BASEFLOW_MARGIN
+    inserted = n > 1 and baseflow > BASEFLOW_MARGIN and node < max_flow
+    shares = n - 1 if inserted else n
+    flows = max_flow * (np.arange(1, shares + 1) / max(shares, 1)) ** FLOW_POWER
+    if inserted:
+        flows = np.insert(flows, int(np.searchsorted(flows, node)), node)
 
     return flows
 
@@ -658,7 +665,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         raise ValueError("The stream network has a loop, so it has no outlet to start the standard step from.") from None
 
     cells = {reach: (np.asarray(rows)[ks].astype(np.int64), np.asarray(cols)[ks].astype(np.int64)) for reach, ks in by_reach.items()}
-    upstream_wse: dict[int, np.ndarray] = {}  # each reach's first cell's water surface at each j
+    upstream_wse: dict[int, np.ndarray] = {}  # each reach's first cell's water surface at each of its flows
+    upstream_shares: dict[int, np.ndarray] = {}  # and those flows as shares of its maximum flow
     first_cell: dict[int, tuple[int, int]] = {}  # and that cell
     levels_all = np.full(len(sections), math.nan) if baseflow_levels is None else np.asarray(baseflow_levels, dtype=np.float64)
     steps = given = 0
@@ -672,19 +680,23 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         tops = np.nanmax(curves.increments[ks, :, WSE], axis=1).tolist()
         tables = [_table_for(sections[k].xs, top, roughness, k, ensure_level) for k, top in zip(ks, tops)]
         flows = np.array([flows_for(float(max_flow[k]), float(baseflow[k]), increments) for k in ks])
+        shares = flows / np.asarray(max_flow, dtype=np.float64)[ks, None]
         # Each cell's level and the flows it holds the water at most at it: those up to its baseflow
         levels = levels_all[ks]
         holds = (flows <= np.asarray(baseflow, dtype=np.float64)[ks, None]) & np.isfinite(levels)[:, None]
         below, cap = _reach_below(network, reach, upstream_wse), np.full(increments, math.inf)
+        if below is not None:
+            # The water below at the shares of its maximum flow that the last cell's flows are of its own
+            water_below = np.interp(shares[-1], upstream_shares[below], upstream_wse[below])
         if below is not None and not network.has_edge(reach, below):
             # Past reaches without rated cells: an outlet, its water no higher than the water below risen by the slope
             row, col = first_cell[below]
             gap = math.hypot((int(rows[ks[-1]]) - row) * dy, (int(cols[ks[-1]]) - col) * dx)
-            cap = upstream_wse[below] + float(np.median(np.asarray(slopes)[ks])) * gap
+            cap = water_below + float(np.median(np.asarray(slopes)[ks])) * gap
             below = None
 
         if below is not None:
-            start = upstream_wse[below]
+            start = water_below
         else:
             start = np.array([_outlet_wse(sections[ks[-1]].xs, tables[-1], flows[-1, j], float(slopes[ks[-1]]),
                                           roughness, slope_factor, cap[j]) for j in range(increments)])
@@ -715,7 +727,7 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
             
         steps += reach_steps
         critical_at[ks], held_at[ks] = reach_critical, reach_held
-        upstream_wse[reach] = wse[0]
+        upstream_wse[reach], upstream_shares[reach] = wse[0], shares[0]
         first_cell[reach] = (int(rows[ks[0]]), int(cols[ks[0]]))
         curves.increments[ks] = out
 

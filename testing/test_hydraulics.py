@@ -697,21 +697,23 @@ def test_shallow_water_is_shallow_factor_times_rougher() -> None:
 
 
 def test_a_flat_bed_s_roughness_is_its_n_scaled_for_the_depth() -> None:
-    """On a flat bed out to the section's ends every segment is as deep as the water, and so are the end walls the
-    water stands against, so the composite n is n0 scaled for that depth."""
+    """On a flat bed out to the section's ends every segment is as deep as the water, and the end walls the water
+    stands against are half as deep on average, so the bed takes n0 scaled for the depth and the walls for half."""
     xs = make_section(np.full(21, BED))
     roughness = DepthRoughness(6.0, 2.0, 1.0)
+    n_15 = lambda depth: float(roughness.scale(N, depth)) ** 1.5
 
     geometry = hydraulic_geometry(xs, depth=1.5, roughness=roughness)
 
     assert geometry.wetted_perimeter == pytest.approx(20.0 + 2 * 1.5)  # the walls count
-    assert geometry.mannings_n == pytest.approx(roughness.scale(N, 1.5), rel=1e-12)
+    weighted = 20.0 * n_15(1.5) + 2 * 1.5 * n_15(0.75)
+    assert geometry.mannings_n == pytest.approx((weighted / (20.0 + 2 * 1.5)) ** (2 / 3), rel=1e-12)
     assert geometry.area == hydraulic_geometry(xs, depth=1.5).area
 
 
-def test_each_segment_takes_the_depth_over_its_inner_end() -> None:
+def test_each_segment_takes_its_mean_depth() -> None:
     """In a V at 1 m spacing with banks rising 1 m a metre, water 2 m deep covers a segment 2 m deep at its inner
-    end and 1 m at its outer end, then meets the ground at the end of the next, over its inner end 1 m deep."""
+    end and 1 m at its outer end, 1.5 m on average, then meets the ground at the end of the next, 0.5 m on average."""
     xs = trapezoid(0.0, 1.0, ordinates_per_side=5)
     roughness = DepthRoughness(6.0, 2.0, 1.0)
     n_15 = lambda depth: float(roughness.scale(N, depth)) ** 1.5
@@ -721,8 +723,38 @@ def test_each_segment_takes_the_depth_over_its_inner_end() -> None:
 
     assert (geometry.area, geometry.wetted_perimeter, geometry.top_width) == pytest.approx((4.0, 4 * length, 4.0),
                                                                                          rel=1e-12)
-    weighted = 2 * (length * n_15(2.0) + length * n_15(1.0))
+    weighted = 2 * (length * n_15(1.5) + length * n_15(0.5))
     assert geometry.mannings_n == pytest.approx((weighted / (4 * length)) ** (2 / 3), rel=1e-12)
+
+
+def test_the_water_s_edge_segment_takes_half_its_inner_depth() -> None:
+    """Where the water meets the ground part way along a segment, its wet part's mean depth is half the depth at its
+    inner end: water 1.5 m deep in the V wets the second segment halfway, 0.5 m deep at its inner end."""
+    xs = trapezoid(0.0, 1.0, ordinates_per_side=5)
+    roughness = DepthRoughness(6.0, 2.0, 1.0)
+    n_15 = lambda depth: float(roughness.scale(N, depth)) ** 1.5
+    length = math.sqrt(2.0)
+
+    geometry = hydraulic_geometry(xs, wse=BED + 1.5, roughness=roughness)
+
+    weighted = 2 * (length * n_15(1.0) + 0.5 * length * n_15(0.25))
+    assert geometry.mannings_n == pytest.approx((weighted / (3 * length)) ** (2 / 3), rel=1e-12)
+
+
+def test_a_bank_inside_a_segment_gives_each_part_its_own_mean_depth() -> None:
+    """A bank halfway along the V's first segment divides it into a channel part 2 to 1.5 m deep and an overbank part
+    1.5 to 1 m deep, each with the n of its own mean depth."""
+    xs = with_banks(trapezoid(0.0, 1.0, ordinates_per_side=5), 0.5, 0.5)
+    roughness = DepthRoughness(6.0, 2.0, 1.0)
+    n_15 = lambda depth: float(roughness.scale(N, depth)) ** 1.5
+    half = math.sqrt(2.0) / 2
+
+    parts = compound_geometry(xs, wse=BED + 2.0, roughness=roughness)
+
+    assert parts.channel.mannings_n == pytest.approx(float(roughness.scale(N, 1.75)), rel=1e-12)
+    overbank = (half * n_15(1.25) + 2 * half * n_15(0.5)) / (3 * half)
+    assert parts.left_overbank.mannings_n == pytest.approx(overbank ** (2 / 3), rel=1e-12)
+    assert parts.right_overbank == parts.left_overbank
 
 
 @pytest.mark.parametrize("shape", SHAPES)
