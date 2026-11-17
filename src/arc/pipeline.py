@@ -89,6 +89,7 @@ from numba import njit
 
 from arc import LOG
 from arc._log import logging_format
+from arc._memory import RELEASE_EVERY, release_freed_memory
 from arc.bathymetry import (
     Banks,
     Burns,
@@ -1553,6 +1554,9 @@ def attach_valleys(configs: Configs, grid: Grid, cells: Cells, sections: list[Se
             trim_to_channel(section)
             
         count += 1
+        if count % RELEASE_EVERY == 0:
+            # trim_to_channel frees each cross section's ordinates beyond its channel (see arc._memory)
+            release_freed_memory()
 
     return count
 
@@ -2164,6 +2168,11 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
                             roughness, float(target_width[k]), max_water)
                 
         sections.append(section)
+        if (k + 1) % RELEASE_EVERY == 0:
+            # Each cross section was sampled out further than it's trimmed to (see arc._memory)
+            release_freed_memory()
+
+    release_freed_memory()
 
     # The water's n between each cross section's hydraulic banks and in its threads, put in the raster so that the
     # cross sections crossing it get it too, and then each cross section's n
@@ -2218,6 +2227,7 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
         # go where the valley's overbanks replace them
         split = attach_valleys(configs, grid, cells, sections, mannings_n, slopes,
                                channel_only=trim and not configs.xs_out_file)
+        release_freed_memory()
         LOG.info(f"Valley_Sections: {split} of {len(usable)} cross sections take their overbanks square to the valley")
 
     if configs.makes_rating_curves:
