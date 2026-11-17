@@ -1,16 +1,40 @@
 # Automated Rating Curve (ARC)
 
-ARC is a Python tool that generates rating-curve-like hydraulic relationships for each stream cell in a raster domain. Given a DEM, a stream-ID raster, land-cover, and a flow table, ARC:
+ARC builds a rating curve for each stream cell of the reaches in its flow file: how the water surface elevation, top
+width and velocity change with the flow. It needs a DEM, a stream raster, a land cover raster and a table of flows,
+and it applies Manning's equation to a cross section cut across the stream at each cell. Flood mapping tools such as Curve2Flood and
+FIST turn the rating curves into flood maps.
 
-1. Samples a cross-section for each stream cell
-2. Estimates bathymetry (optional), using either `Flow_File_BF` or an optional drainage-area power-law depth relationship
-3. Computes water-surface elevation (WSE), depth, velocity, and top width across discharge increments
-4. Writes one or more output datasets (VDT database, curve file, bathymetry raster, representative cross-section file, etc.)
+For each stream cell, ARC:
 
-We recommend reading all documentation in the order it appears in the sidebar.
+1. Measures the stream's slope and direction.
+2. Cuts a cross section square to the stream, and if asked (`Degree_Manip`), turns it a little each way to where the
+   valley is narrowest.
+3. Finds the channel's banks: where the water ends in a water mask or the land cover, or from the DEM.
+4. Optionally estimates the channel's bathymetry (the part of the channel the DEM can't see below the water) and
+   carves it into the cross section.
+5. Works out the water surface elevation, top width and velocity at a series of flows, up to the maximum flow: at
+   each cross section's own normal depth, or with `Standard_Step`, linked along the stream (see [Standard Step](standard_step.md)).
+6. Writes the outputs you ask for: the VDT database, the curve file, the bathymetry raster, the cross sections and
+   others.
+
+## From data to flood maps
+
+```mermaid
+flowchart LR
+    model["Streamflow model<br>(GEOGLOWS, NWM)"] -- "Produce Streamflow Inputs" --> flows["Flow file"]
+    geodata["DEM, land cover,<br>stream lines"] -- "Produce Geospatial Inputs" --> rasters["Rasters on the DEM's grid,<br>and an input file"]
+    flows --> arc(("ARC"))
+    rasters --> arc
+    arc --> results["Rating curves (VDT database,<br>curve file) and bathymetry"]
+    results -- "Curve2Flood or FIST" --> maps["Flood maps"]
+```
+
+The Examples pages walk through each step with a test case. Read the pages in the order of the sidebar: install ARC,
+run it, then look up the inputs and outputs as you need them.
 
 ## Authors and acknowledgment
-Mike Follum has been the lead for this project since the code was in it's AutoRoute days. Other contributors include Ahmad Tavakoly, Alan Snow, Joseph Gutenson, Drew Loney, and Ricky Rosas.
+Mike Follum has been the lead for this project since the code was in its AutoRoute days. Other contributors include Ahmad Tavakoly, Alan Snow, Joseph Gutenson, Drew Loney, and Ricky Rosas.
 
 Follum Hydrologic Solutions, LLC (FHS) has open-sourced the ARC and Curve2Flood tools to support early flood warning and preparedness in riverine areas lacking adequate flood data or alert systems. These are first-order tools, designed to encourage the development of more advanced modeling systems. We are grateful to all who share in this mission.
 

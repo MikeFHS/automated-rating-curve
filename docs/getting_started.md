@@ -1,51 +1,45 @@
 # Getting Started
 
-After installing ARC, you can run it from the command line or from Python. Instructions for both are provided below.
+ARC reads its settings from a model input file (MIF): a YAML file, or a text file with a key and its value on each
+line. See [Model Input File](model_input_file.md) for the keys.
 
 ## Run from the command line
 
-ARC installs a console script named `arc`.
+Installing ARC adds the `arc` command:
 
 ```bash
-arc "path/to/ARC_Input_File.txt"
+arc path/to/ARC_Input_File.yaml
 ```
 
-To run with parallel processing (recommended for large domains at high resolution):
-
-```bash
-arc "path/to/ARC_Input_File.txt" --processes 4
-```
-
-Where `4` is the number of processes to use. If you have a large domain and want to use all available cores, you can set `--processes` to `-1`:
-```bash
-arc "path/to/ARC_Input_File.txt" --processes -1
-```
-
-You can also set processes to 'auto' to determine the number of processes automatically:
-```bash
-arc "path/to/ARC_Input_File.txt" --processes auto
-```
+Add `-q` to hide the progress bars and every message but errors, or `-l info` (or `debug`) to see more of what ARC
+is doing. `arc -h` lists the options.
 
 ## Run from Python
 
 ```python
 from arc import Arc
 
-Arc(mifn="path/to/ARC_Input_File.txt").run()
+Arc("path/to/ARC_Input_File.yaml").run()
 ```
 
-Alternatively, you can pass the input parameters as a dictionary instead of an input file:
+You can also give the inputs as a dictionary, with the same keys as the input file:
 
 ```python
 from arc import Arc
 
 Arc(args={
-    "param1": "value1",
-    "param2": "value2"
+    "DEM_File": "path/to/dem.tif",
+    "Stream_File": "path/to/streams.tif",
+    # ...
 }).run()
 ```
 
+`run()` writes the outputs and also returns them (the cross sections, rating curves, bathymetry and so on), so a
+script can use them directly. To change settings in a script, or to run without writing anything, see
+[Python API](api.md).
+
 ## Next
 
-- See [Model Input File](model_input_file.md) for the full list of input arguments.
-- See [Outputs](outputs.md) for what each output file contains.
+- [Model Input File](model_input_file.md): every input and what it does.
+- [Outputs](outputs.md): what each output file contains.
+- [Python API](api.md): running ARC from a script.

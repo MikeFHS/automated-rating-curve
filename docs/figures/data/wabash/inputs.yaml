@@ -1,0 +1,31 @@
+# Wabash River at New Harmony (2016): ARC's inputs, clipped to the stream cells and the water of the USGS
+# flood drawn (see docs/figures/data/README.md). The paths are relative to this folder.
+DEM_File: dem.tif
+Stream_File: streams.tif
+LU_Raster_SameRes: land_cover.tif
+LU_Manning_n: mannings_n.txt
+Flow_File: flows.csv
+StrmShp_File: streams.parquet
+BathyWaterMask: water_mask.tif
+Flow_File_ID: COMID
+Flow_File_BF: baseflow
+Flow_File_QMax: max
+VDT_Database_NumIterations: 30
+Degree_Manip: 23.600000023600003
+Degree_Interval: 11.8
+Low_Spot_Range: 0
+Gen_Dir_Dist: 122
+Gen_Slope_Dist: 133
+Bathy_Trap_H: 0.48
+Stream_Slope_Method: local_average_corrected
+Depth_Varying_n: true
+shallow_factor: 1.39
+k_decay: 0.59
+bathy_bed_cap: false
+Reach_Average_Curve_File: false
+Slope_Low_Percentile: 5
+Slope_High_Percentile: 95
+Standard_Step: true
+reach_id: LINKNO
+downstream_reach_id: DSLINKNO
+Bathy_Use_Banks: 1

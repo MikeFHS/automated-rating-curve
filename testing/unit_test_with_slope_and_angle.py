@@ -21,14 +21,14 @@ while the stream itself is rotated in plan view.
 Execution modes
 ---------------
 1. Automated test mode
-   ``pytest automated-rating-curve/testing/unit_test_with_slope_and_angle.py``
+   ``pytest testing/unit_test_with_slope_and_angle.py``
 
    Pytest imports the module, runs the test function, writes outputs into a
    temporary directory, and checks that ARC can process the angled triangle
    reach under all three requested slope methods.
 
 2. Manual diagnostic mode
-   ``python automated-rating-curve/testing/unit_test_with_slope_and_angle.py``
+   ``python testing/unit_test_with_slope_and_angle.py``
 
    Manual mode writes persistent artifacts under
    ``testing/slope_method_angle_case_outputs/``, prints a compact summary
@@ -44,17 +44,18 @@ derived internally as the perpendicular direction.
 
 from __future__ import annotations
 
-from pathlib import Path
 import stat
 import time
+from pathlib import Path
 
-from arc import Arc
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from osgeo import gdal, osr
 from shapely.geometry import LineString
+
+from arc import Arc
 
 gdal.UseExceptions()
 
@@ -77,7 +78,7 @@ side_slope = 2.0
 
 # Automated tests always use this default angle so they remain deterministic.
 # Manual runs can change the value directly in the script and rerun the file.
-XS_ANGLE_DEG = float(10.2)
+XS_ANGLE_DEG = 10.2
 XS_ANGLE_RAD = float(np.deg2rad(10.2))
 
 # Coordinate system and georeferencing for the synthetic rasters.
@@ -310,9 +311,7 @@ def clean_stream_raster_like_nencarta(stream_raster: np.ndarray) -> np.ndarray:
                     cleaned[row_idx + 1, col_idx - 1]
                     + cleaned[row_idx + 1, col_idx]
                     + cleaned[row_idx + 1, col_idx + 1]
-                ) == 0 and cleaned[row_idx - 1, col_idx] > 0:
-                    cleaned[row_idx, col_idx] = 0
-                elif (
+                ) == 0 and cleaned[row_idx - 1, col_idx] > 0 or (
                     cleaned[row_idx - 1, col_idx - 1]
                     + cleaned[row_idx - 1, col_idx]
                     + cleaned[row_idx - 1, col_idx + 1]
@@ -324,9 +323,7 @@ def clean_stream_raster_like_nencarta(stream_raster: np.ndarray) -> np.ndarray:
                     cleaned[row_idx + 1, col_idx + 1]
                     + cleaned[row_idx, col_idx + 1]
                     + cleaned[row_idx - 1, col_idx + 1]
-                ) == 0 and cleaned[row_idx, col_idx - 1] > 0:
-                    cleaned[row_idx, col_idx] = 0
-                elif (
+                ) == 0 and cleaned[row_idx, col_idx - 1] > 0 or (
                     cleaned[row_idx + 1, col_idx - 1]
                     + cleaned[row_idx, col_idx - 1]
                     + cleaned[row_idx - 1, col_idx - 1]
@@ -761,6 +758,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray, stream: np.ndarray) -> di
     with mannings_path.open("w", encoding="utf-8") as mannings_file:
         mannings_file.write("lu\tdesc\troughness\n")
         mannings_file.write(f"1\tland\t{roughness}\n")
+        mannings_file.write(f"80\twater\t{roughness}\n")  # ARC makes the stream cells water
 
     return {
         "dem_path": dem_path,
@@ -1031,7 +1029,7 @@ def summarize_results(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 "max_core_top_width_residual_m": float(top_width_residual.max()),
                 "median_core_velocity_residual_mps": float(velocity_residual.median()),
                 "max_core_velocity_residual_mps": float(velocity_residual.max()),
-                "num_vdt_rows": int(len(vdt_df)),
+                "num_vdt_rows": len(vdt_df),
             }
         )
 

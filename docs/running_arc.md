@@ -1,29 +1,57 @@
-Now let's run ARC. [Here](https://github.com/MikeFHS/automated-rating-curve/blob/main/examples/example_step3.py) is a script that illustrates how ARC runs. ARC can also be called directly from the command line by entering `arc "path\to\input.txt"` into the command line window.
+# Running ARC
 
-::: arc.Arc
+With the input file from [Produce Geospatial Inputs](produce_geospatial_inputs.md) (`ARC_InputFiles/ARC_Input_File.txt`),
+run ARC from the command line:
 
-The only argument that needs to pass to the `Arc.run()` function is a path to your ARC input file. The file will be the "ARC_InputFiles\ARC_Input_File.txt" that you created in [Produce Geospatial Inputs](produce_geospatial_inputs.md). 
+```bash
+arc path/to/ARC_InputFiles/ARC_Input_File.txt
+```
 
-If you are running ARC from gap-crossing seasonal exports, add `Manual_Cross_Sections_File` to the MIF and set `Flow_File_ID` to the cross-section identifier field written by gap-crossing, typically `XS_ID`. ARC will then use the supplied manual profiles instead of sampling new cross sections from the stream raster.
+or from Python, as [example_step3.py](https://github.com/MikeFHS/automated-rating-curve/blob/main/examples/example_step3.py)
+does:
 
-If you also want a reach-level geometry summary, set `Build_Representative_Cross_Section: True` and provide `Representative_Cross_Section_File`. ARC groups sampled stream cells by the positive reach IDs stored in `Stream_File`; it does not require `Flow_File_QMax` for this output. The run samples, low-spot-adjusts, and resamples every stream-cell cross section, evaluates the reach-scale bank-finding workflow, and optionally applies bathymetry when `AROutBATHY` or `BATHY_Out_File` is configured. In representative mode, complete `Flow_File`, `Flow_File_ID`, and `Flow_File_BF` inputs select baseflow-driven bathymetry. If that trio is not complete, ARC uses the full drainage-area power-law configuration when available. If no bathymetry output path is configured, bathymetry estimation and excavation are skipped.
+```python
+from arc import Arc
 
-After cross-section preprocessing, ARC evaluates each contributing section every 0.10 m above its local thalweg. At each stage it recomputes area, wetted perimeter, velocity, discharge, top width, and hydraulic radius with Manning's equation. ARC removes cross sections whose area or hydraulic radius falls outside two standard deviations of the stage mean, then stores the reach means for the retained sections. The representative CSV also includes `Stream_Slope`, the reach-mean positive stream slope from the sampled cross sections. Staging is capped at 25 m and stops earlier for a reach as soon as any of those hydraulic calculations becomes non-finite. ARC enforces non-decreasing mean area and mean top width before deriving the representative geometry from the staged width-area relationship.
+Arc("path/to/ARC_InputFiles/ARC_Input_File.txt").run()
+```
 
-When the ARC simulation completes, you should find a `CurveFile.csv` and `VDT_Database.txt` in your "VDT" folder. If you do, congrats! You've completed a successful ARC simulation!
+A progress bar shows ARC working through the stream cells. When it finishes, the `VDT` folder holds
+`VDT_Database.txt` and `CurveFile.csv`, and the `Bathymetry` folder `ARC_Bathy.tif`.
 
-[Here](outputs.md) is a breakdown of what these values represent, each row in the CurveFile or VDT Database is a stream cell in your domain of interest:
+## What ARC did
 
-You may wonder, "What has ARC done?", and that's a good question! 
+For each stream cell, ARC cut a cross section across the stream and used
+[Manning's equation](https://www.weather.gov/aprfc/NormalDepthCalc) to find the water surface that carries the
+maximum flow from your flow file. It then split the depth up to that water surface into equal steps (15 by default,
+`VDT_Database_NumIterations`) and worked out the discharge, velocity, top width and water surface elevation at each.
 
-ARC has used [Manning's equation](https://www.weather.gov/aprfc/NormalDepthCalc) to solve for the various hydraulic outputs contained in the `CurveFile.csv` for each stream cell in your domain of interest. ARC solved Manning's equation once for each stream cell, using the max_flow_field value we supplied to it. ARC then divided the resulting water surface elevation into 15 increments, reducing the original maximum water surface elevation by 1/15 each step of the way. For each of these water surface elevation increments, ARC again solved Manning's equation for each stream cell. The result is that for each stream cell, we have 15 separate sets of hydraulic outputs that Manning's equation produced. 
+The VDT database holds those steps, a row per stream cell with a complete rating curve:
 
-From these 15 sets of solutions, ARC then fits a power function (e.g., $depth = a * streamflow^b$) to the data to produce the rating curves described by the a and b variables above in the `CurveFile.csv`. 
+```text
+COMID,Row,Col,Elev,QBaseflow,Slope,XS_Angle,q_1,v_1,t_1,wse_1,q_2,v_2,t_2,wse_2,...
+710045613,412,1033,99.412,12.0,0.001,2.0943951,1.334,0.239,29.652,99.619,4.903,0.398,35.304,99.827,...
+```
 
-The `VDT_Database.txt` file stores those 15 sets of solutions and looks like this:
+`q_*` is the discharge in m³/s, `v_*` the mean velocity in m/s, `t_*` the top width in m, and `wse_*` the water
+surface elevation in m, in the DEM's datum. `Elev` is the bed the steps start from, so `wse_* − Elev` is the water's
+depth.
 
-![image](https://github.com/user-attachments/assets/efc2e991-c37e-47a1-8c8b-88fd7bb04587)
+The curve file fits power laws such as $depth = a \cdot Q^b$ to each stream cell's steps:
 
-The q_* values represent the discharge in cubic meters per second, the v_* values represent the cross-sectional average velocity in meters per second, t_* values represent the top-width of the stream in meters, and the wse_* values represent the water surface elevation of the stream, in meters above the datum of your digital elevation model (DEM). 
+![Depth, top width and velocity against discharge: the VDT database's steps and the curve file's power laws](images/rating_curve.svg)
 
-If you're using the Shields Test Case, once you have a `CurveFile.csv` then let's proceed to [Making Inputs for FIST](making_inputs_for_fist.md).
+See [Outputs](outputs.md) for every column.
+
+## Manual cross sections
+
+To use cross sections you already have (for example, exported by gap-crossing), add `Manual_Cross_Sections_File` to
+the input file, and set `Flow_File_ID` to the field holding their IDs, typically `XS_ID`. ARC then uses them instead of
+sampling cross sections from the DEM. See [Model Input File](model_input_file.md#manual-cross-sections).
+
+## Representative cross sections
+
+To get one representative cross section for each reach as well, set `Build_Representative_Cross_Section: True` and
+`Representative_Cross_Section_File`. See [Representative Cross Section](representative_cross_section.md).
+
+If you're following the Shields River test case, go on to [Making Inputs for FIST](making_inputs_for_fist.md).

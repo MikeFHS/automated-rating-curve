@@ -2,13 +2,13 @@
 Synthetic ARC test for generating the representative cross-section output.
 
 This file follows the same pattern as the other stand-alone synthetic tests in
-``automated-rating-curve/testing``:
+``testing``:
 
 1. Automated test mode
-   ``pytest automated-rating-curve/testing/unit_test_with_representative_cross_section.py``
+   ``pytest testing/unit_test_with_representative_cross_section.py``
 
 2. Manual diagnostic mode
-   ``python automated-rating-curve/testing/unit_test_with_representative_cross_section.py``
+   ``python testing/unit_test_with_representative_cross_section.py``
 
 The automated test runs ARC end to end on one synthetic reach, writes the
 representative cross-section CSV, and validates the exported table. Manual
@@ -18,16 +18,21 @@ mode writes the same artifacts into a persistent folder under
 
 from __future__ import annotations
 
-from pathlib import Path
 import stat
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
+from shapely.geometry import LineString
 from osgeo import gdal, osr
 
 from arc import Arc
-from arc.hydraulic_data import REPRESENTATIVE_CROSS_SECTION_COLUMNS
+from arc.outputs import (
+    REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS, REPRESENTATIVE_CROSS_SECTION_COLUMNS,
+    representative_cross_section_coefficients_path,
+)
 
 gdal.UseExceptions()
 
@@ -183,6 +188,11 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray, stream: np.ndarray) -> di
     flow_path = case_dir / "flow.csv"
     mannings_path = case_dir / "mannings.txt"
     representative_output_path = case_dir / "representative_cross_section.csv"
+    stream_vector_path = case_dir / "stream.gpkg"
+    gpd.GeoDataFrame(
+        {"COMID": [1], "LengthGeodesicMeters": [length_m]},
+        geometry=[LineString([(0.0, 0.0), (length_m, 0.0)])], crs=f"EPSG:{epsg}",
+    ).to_file(stream_vector_path, driver="GPKG")
 
     write_raster(dem_path, dem, gdal.GDT_Float32, wkt)
     write_raster(stream_path, stream, gdal.GDT_Byte, wkt)
@@ -200,6 +210,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray, stream: np.ndarray) -> di
     with mannings_path.open("w", encoding="utf-8") as mannings_file:
         mannings_file.write("lu\tdesc\troughness\n")
         mannings_file.write(f"1\tland\t{roughness}\n")
+        mannings_file.write(f"80\twater\t{roughness}\n")  # ARC makes the stream cells water
 
     return {
         "dem_path": dem_path,
@@ -208,6 +219,7 @@ def write_case_inputs(case_dir: Path, dem: np.ndarray, stream: np.ndarray) -> di
         "flow_path": flow_path,
         "mannings_path": mannings_path,
         "representative_output_path": representative_output_path,
+        "stream_vector_path": stream_vector_path,
     }
 
 
@@ -231,20 +243,25 @@ def run_representative_case(output_root: Path) -> pd.DataFrame:
             "Gen_Dir_Dist": 10,
             "X_Section_Dist": 40,
             "Build_Representative_Cross_Section": True,
+            "StrmShp_File": str(case_paths["stream_vector_path"]),
+            "Stream_Length_m": "LengthGeodesicMeters",
             "Representative_Cross_Section_File": str(case_paths["representative_output_path"]),
             "Print_VDT_Database": "",
             "Print_AP_Database": "",
             "Print_Curve_File": "",
             "AROutBATHY": "",
-            "AROutFLOOD": "",
             "Stream_Slope_Method": "local_average",
             "LC_Water_Value": 80,
             "VDT_Database_NumIterations": 2,
         },
         quiet=True,
-        processes=1,
     ).run()
 
+    coefficients = pd.read_csv(representative_cross_section_coefficients_path(case_paths['representative_output_path']))
+    assert list(coefficients.columns) == REPRESENTATIVE_CROSS_SECTION_COEFFICIENT_COLUMNS
+    assert coefficients.COMID.tolist() == [1]
+    assert np.isfinite(coefficients.to_numpy(dtype=float)).all()
+    assert (coefficients.Celerity_K_Power_Law_A > 0).all()
     return pd.read_csv(case_paths["representative_output_path"])
 
 

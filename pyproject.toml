@@ -1,5 +1,5 @@
- [build-system]
-requires = ["setuptools"]
+[build-system]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,24 +8,19 @@ description = "Wrapper package for using ARC, by Mike Follum -> https://github.c
 dynamic = ["version"]
 dependencies = [
   "numpy",
-  "matplotlib",
   "pandas",
-  "fastparquet",
+  "pyarrow",
   "geopandas",
+  "pyogrio",
   "gdal",
-  "pip",
-  "netCDF4",
-  "xarray",
   "geojson",
   "networkx",
-  "dask",
   "numba",
   "pyyaml",
   "scipy",
   "tqdm",
   "pyproj",
   "shapely",
-  "s3fs"
 ]
 requires-python = ">= 3.10"
 authors = [
@@ -40,16 +35,30 @@ maintainers = [
     {name = "Drew Loney", email = "drew@follumhydro.com"},
     {name = "Louis 'Ricky' Rosas", email = "lrr43@byu.edu"},
 ]
-license = { text = "BSD-3-Clause" }
+license = "GPL-3.0-only"
+license-files = ["license.txt"]
 readme = "README.md"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Hydrology",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+# Create_ARC_Streamflow_Input: GEOGLOWS flows from netCDF files and from the zarr stores on S3
+streamflow = [
+  "xarray",
+  "netCDF4",
+  "zarr",
+  "s3fs",
 ]
 
 [tool.setuptools.dynamic]
@@ -57,5 +66,12 @@ version = { attr = "arc.__version__" }
 
 [project.scripts]
 arc = "arc.arc:_main"
-curve-to-geojson-stream-vector = "arc.Create_GeoJSON:main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector"
-write-seed-stream-raster = "arc.Create_GeoJSON:main_write_seed"
+curve-to-geojson-stream-vector = "arc.create_geojson:main_Run_Main_Curve_to_GEOJSON_Program_Stream_Vector"
+write-seed-stream-raster = "arc.create_geojson:main_write_seed"
+
+[tool.ruff]
+extend-exclude = [
+    "testing/*.py",
+    "docs",
+    "benchmarks"
+]
