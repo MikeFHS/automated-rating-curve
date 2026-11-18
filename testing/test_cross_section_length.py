@@ -108,14 +108,18 @@ def test_the_angle_search_finds_what_it_finds_on_whole_cross_sections(dtype) -> 
 # --- The Manning's n raster as classes ------------------------------------------------------------------------------
 
 
-def test_a_manning_s_n_raster_kept_as_classes_samples_as_the_raster_of_numbers() -> None:
+def test_a_manning_s_n_raster_kept_as_float32_samples_as_the_raster_of_numbers() -> None:
     rng = np.random.default_rng(9)
     classes = rng.choice(np.array([10, 20, 30, 80], dtype=np.uint8), size=(70, 90))
     lookup = np.zeros(256)
     lookup[[10, 20, 30, 80]] = np.float32([0.12, 0.05, 0.3, 0.03]).astype(np.float64)
     mannings_n = pipeline.ManningsN(classes, lookup, float(np.float32(0.035)))
-    mannings_n.water_between_banks(rng.integers(-5, 75, 900), rng.integers(-5, 95, 900))  # some off the raster
-    numbers = np.where(mannings_n.water, mannings_n.water_n, lookup[classes])
+    assert mannings_n.values.dtype == np.float32  # every n is at float32's precision
+    rows, cols = rng.integers(-5, 75, 900), rng.integers(-5, 95, 900)  # some off the raster
+    mannings_n.water_between_banks(rows, cols)
+    numbers = lookup[classes]
+    marked = (rows >= 0) & (rows < 70) & (cols >= 0) & (cols < 90)
+    numbers[rows[marked], cols[marked]] = mannings_n.water_n
     for _ in range(500):
         row, col = int(rng.integers(70)), int(rng.integers(90))
         direction, length = float(rng.uniform(0.0, np.pi)), float(rng.choice([5.0, 40.0, 300.0]))
@@ -125,6 +129,17 @@ def test_a_manning_s_n_raster_kept_as_classes_samples_as_the_raster_of_numbers()
     on = (rows >= 0) & (rows < 70) & (cols >= 0) & (cols < 90)
     np.testing.assert_array_equal(mannings_n.at(rows, cols)[on], numbers[rows[on], cols[on]])
     assert np.all(mannings_n.at(rows, cols)[~on] == OFF_RASTER_ELEVATION)
+
+
+
+def test_a_manning_s_n_table_not_at_float32_precision_keeps_the_float64_raster() -> None:
+    classes = np.full((20, 30), 10, dtype=np.uint8)
+    lookup = np.zeros(256)
+    lookup[10] = 0.035  # not a float32
+    mannings_n = pipeline.ManningsN(classes, lookup, 0.03)
+    assert mannings_n.values.dtype == np.float64
+    expected, _ = sample_elevations(lookup[classes], 10, 15, 0.7, 40.0, 1.0, 1.0)
+    np.testing.assert_array_equal(mannings_n.sample(10, 15, 0.7, 40.0, 1.0, 1.0), expected)
 
 
 # --- Trimming and extending ------------------------------------------------------------------------------------------

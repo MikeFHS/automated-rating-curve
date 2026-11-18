@@ -153,7 +153,6 @@ from arc.xsection.sampling import (
     _ordinates,
     ordinates_above,
     sample_above,
-    sample_classes,
     sample_elevations,
 )
 from arc.xsection.slope import (
@@ -967,32 +966,35 @@ def mannings_n_raster(configs: Configs, land_cover: np.ndarray) -> tuple[np.ndar
 
 
 class ManningsN:
-    """The Manning's n raster, kept as its land cover classes rather than as numbers, a byte a cell instead of eight:
-    each cell's n is its class's, or the water's where water_between_banks marks it. Cross sections are sampled from
-    it as from the raster of numbers, bit for bit."""
+    """The Manning's n raster: each cell's n is its land cover class's, or the water's where water_between_banks marks
+    it. It's kept as float32 (a quarter of the float64 raster), which holds every n of the table exactly (they're at
+    float32's precision, mannings_n_table), and sampled as a DEM is, in float64: as the float64 raster would be, bit
+    for bit. A table that isn't at float32's precision gets the float64 raster. Sampling the classes instead, a byte
+    a cell, took two rasters' reads and a lookup at every corner of every ordinate."""
 
     def __init__(self, classes: np.ndarray, lookup: np.ndarray, water_n: float):
         self.classes = classes  # uint8
         self.lookup = np.asarray(lookup, dtype=np.float64)  # each class's n
         self.water_n = float(water_n)
-        self.water = np.zeros(classes.shape, dtype=np.bool_)
+        exact = (np.array_equal(self.lookup.astype(np.float32).astype(np.float64), self.lookup)
+                 and float(np.float32(self.water_n)) == self.water_n)
+        self.values = self.lookup.astype(np.float32 if exact else np.float64)[classes]
 
     def water_between_banks(self, rows: np.ndarray, cols: np.ndarray) -> None:
         """Give these cells (any off the raster are passed over) the water's n."""
-        on_raster = (rows >= 0) & (rows < self.classes.shape[0]) & (cols >= 0) & (cols < self.classes.shape[1])
-        self.water[rows[on_raster], cols[on_raster]] = True
+        on_raster = (rows >= 0) & (rows < self.values.shape[0]) & (cols >= 0) & (cols < self.values.shape[1])
+        self.values[rows[on_raster], cols[on_raster]] = self.water_n
 
     def sample(self, row: int, col: int, direction: float, length: float, dx: float, dy: float) -> np.ndarray:
         """Sampled as sample_elevations samples a raster."""
-        return sample_classes(self.classes, self.water, self.lookup, self.water_n, int(row), int(col),
-                              float(direction), float(length), float(dx), float(dy))
+        return sample_elevations(self.values, int(row), int(col), float(direction), float(length), float(dx),
+                                 float(dy), ELEVATIONS)[0]
 
     def at(self, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
         """Each cell's n, OFF_RASTER_ELEVATION off the raster."""
-        on_raster = (rows >= 0) & (rows < self.classes.shape[0]) & (cols >= 0) & (cols < self.classes.shape[1])
+        on_raster = (rows >= 0) & (rows < self.values.shape[0]) & (cols >= 0) & (cols < self.values.shape[1])
         n = np.full(rows.size, OFF_RASTER_ELEVATION)
-        r, c = rows[on_raster], cols[on_raster]
-        n[on_raster] = np.where(self.water[r, c], self.water_n, self.lookup[self.classes[r, c]])
+        n[on_raster] = self.values[rows[on_raster], cols[on_raster]]
         return n
 
 
@@ -1459,7 +1461,7 @@ def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction
     center_n = float(xs.mannings_n[xs.mannings_n.size // 2]) if xs.mannings_n.size else 0.0
     # The water the lines cross: the stream cells and the water mask's
     elevations, n = valley_lines(
-        grid.dem, mannings_n.classes, mannings_n.water, mannings_n.lookup, mannings_n.water_n,
+        grid.dem, mannings_n.values,
         tuple((float(x0), float(y0), float(c), float(s)) for (x0, y0), c, s in lines), float(spacing), int(half),
         float(dx), float(dy), center, center_n, *grid.stream_index(), grid.water_mask,
         tuple(ground for _, _, ground in reaches))
@@ -1529,36 +1531,86 @@ def attach_valleys(configs: Configs, grid: Grid, cells: Cells, sections: list[Se
     with the valley's slope over its own (slope_ratio), and say how many. The left line runs out on the cross
     section's left side. With channel_only, each cross section given them keeps only its channel's ordinates
     (trim_to_channel)."""
-    windows = valley_windows(configs, grid, cells, sections)
-    directions, sinuosities, mean_slopes = valley_axes(cells.rows, cells.cols, cells.reaches, grid.dx, grid.dy,
-                                                       windows, slopes)
-    count = 0
-    for k, section in enumerate(sections):
+    return ValleyOverbanks(configs, grid, cells, sections, mannings_n, slopes, channel_only).attach_all()
+
+
+class ValleyOverbanks:
+    """attach_valleys, a cross section at a time: attach(k) gives cross section k its overbanks (if it takes them),
+    once, and attach_all the rest. The valleys' directions are worked out at the first, from the cross sections' bank
+    distances (set_bank_distances) and usable flags as they are then, so those have to be final by then.
+
+    The bathymetry gives each carved cross section a profile as long as the cross section (carve_channel), doubling
+    what it takes; attached right after its carve, a cross section gives up all but its channel before the next is
+    carved, rather than every one holding both until all are (apply_bathymetry's `carved`)."""
+
+    def __init__(self, configs: Configs, grid: Grid, cells: Cells, sections: list[Section], mannings_n: ManningsN,
+                 slopes: np.ndarray, channel_only: bool = False):
+        self.configs, self.grid, self.cells, self.sections = configs, grid, cells, sections
+        self.mannings_n, self.slopes, self.channel_only = mannings_n, slopes, channel_only
+        self.axes = None
+        self.attached = np.zeros(len(sections), dtype=np.bool_)
+        self.count = 0
+
+    def attach(self, k: int) -> None:
+        if self.attached[k]:
+            return
+
+        self.attached[k] = True
+        section = self.sections[k]
         if section is None or not section.usable or section.manual:
-            continue
+            return
 
         xs = section.xs
         if not (xs.left_bank_distance > 0.0 and xs.right_bank_distance > 0.0):
-            continue
+            return
 
+        if self.axes is None:
+            windows = valley_windows(self.configs, self.grid, self.cells, self.sections)
+            self.axes = valley_axes(self.cells.rows, self.cells.cols, self.cells.reaches, self.grid.dx,
+                                    self.grid.dy, windows, self.slopes)
+
+        directions, sinuosities, mean_slopes = self.axes
         direction, sinuosity = float(directions[k]), float(sinuosities[k])
         if not worth_splitting(section.direction, direction, sinuosity):
-            continue
+            return
 
         if math.cos(direction - section.direction) < 0.0:
             direction += math.pi
 
-        xs.valley = sample_valley(grid, mannings_n, section, direction, sinuosity,
-                                  slope_ratio(float(slopes[k]), float(mean_slopes[k]), sinuosity))
-        if channel_only:
+        xs.valley = sample_valley(self.grid, self.mannings_n, section, direction, sinuosity,
+                                  slope_ratio(float(self.slopes[k]), float(mean_slopes[k]), sinuosity))
+        if self.channel_only:
             trim_to_channel(section)
-            
-        count += 1
-        if count % RELEASE_EVERY == 0:
+
+        self.count += 1
+        if self.count % RELEASE_EVERY == 0:
             # trim_to_channel frees each cross section's ordinates beyond its channel (see arc._memory)
             release_freed_memory()
 
-    return count
+    def attach_all(self) -> int:
+        """Attach every cross section not attached yet, and say how many have overbanks in all."""
+        for k in range(len(self.sections)):
+            self.attach(k)
+
+        return self.count
+
+
+def _valleys_as_carved(sections: list[Section], valleys: ValleyOverbanks):
+    """apply_bathymetry's `carved`, which gives each cross section its valley's overbanks as soon as it's carved: at
+    the first, once the banks are final, every usable cross section's bank distances, as run sets them after the
+    bathymetry (set_bank_distances), for the valleys' directions."""
+    ready = False
+
+    def carved(k: int) -> None:
+        nonlocal ready
+        if not ready:
+            for section in sections:
+                if section is not None and section.usable:
+                    set_bank_distances(section.xs, with_threads(section.hydraulic_banks, section.xs.threads))
+            ready = True
+        valleys.attach(k)
+
+    return carved
 
 
 def trim_to_channel(section: Section) -> None:
@@ -1628,7 +1680,8 @@ def bank_ceilings(sections: list[Section], ks, max_flow, slopes, roughness: Dept
 
 def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list[Section], network, slopes, baseflow,
                      target_depth, target_width, water_n: float, *, stream_cells=None, outlets=None, max_flow=None,
-                     roughness: DepthRoughness | None = None, resampler: Resampler | None = None) -> SparseRaster:
+                     roughness: DepthRoughness | None = None, resampler: Resampler | None = None,
+                     carved=None) -> SparseRaster:
     """Smooth the banks, find, smooth and carve each channel, and return the filled bathymetry raster (as a
     SparseRaster).
 
@@ -1642,6 +1695,8 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list[
     whose neighbours has any (see order_reach). With max_flow, each cell's maximum flow, and the rating curves'
     roughness, a bank from the DEM above the water that carries the maximum flow isn't an observation of the bank
     elevation (bank_ceilings). A resampler extends trimmed cross sections where they're too short for a step.
+    `carved`, if given, is called with each carved cross section's index right after its carve, when the banks of
+    every cross section are final (see ValleyOverbanks).
 
     With `Bathy_Use_Banks`, a cross section whose banks weren't found (none, or a single cell from the width prior) and
     whose baseflow is below Bathy_Bankless_Max_Baseflow is carved to carry the baseflow at its stream cell's level,
@@ -1748,6 +1803,8 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list[
                                 bank_elevation=section.bank_elevation if use_banks else None,
                                 keep_ground=configs.subcell_channels)
         burns.add(section.rows, section.cols, section.xs.elevations, changed)
+        if carved is not None:
+            carved(k)
 
     # The raster held as the cells it has bathymetry at until the run is done with the DEM (see run)
     return fill_sparse_gaps(burns.burned(), None if use_banks else grid.dem)
@@ -2207,11 +2264,19 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
 
     results = Results(configs, cells, slopes, baseflow, max_flow, sections, slope_sources=slope_sources,
                       skipped=skipped)
+    # Without the cross-section file, which writes each cross section's own ordinates, those beyond the channel go
+    # where the valley's overbanks replace them
+    valleys = ValleyOverbanks(configs, grid, cells, sections, mannings_n, slopes,
+                              channel_only=trim and not configs.xs_out_file) if configs.valley_sections else None
     bathymetry = None
     if configs.bathy_out_file:
+        # Each carved cross section takes its valley's overbanks as soon as it's carved, giving up the rest of its
+        # ordinates (see ValleyOverbanks); not with Subcell_Channels, which reconstructs the channels first
+        early = valleys is not None and valleys.channel_only and not configs.subcell_channels
         bathymetry = apply_bathymetry(configs, grid, cells, sections, network, slopes, baseflow, target_depth,
                                       target_width, water_n, stream_cells=stream_reaches, outlets=outlets,
-                                      max_flow=max_flow, roughness=roughness, resampler=resampler)
+                                      max_flow=max_flow, roughness=roughness, resampler=resampler,
+                                      carved=_valleys_as_carved(sections, valleys) if early else None)
         
     usable = [(k, s) for k, s in enumerate(sections) if s is not None and s.usable]
     for _, section in usable:
@@ -2222,11 +2287,8 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
         LOG.info(f"Subcell_Channels: {made} of {len(usable)} cross sections have their narrow channel reconstructed "
                  "below the cell scale")
 
-    if configs.valley_sections:
-        # Without the cross-section file, which writes each cross section's own ordinates, those beyond the channel
-        # go where the valley's overbanks replace them
-        split = attach_valleys(configs, grid, cells, sections, mannings_n, slopes,
-                               channel_only=trim and not configs.xs_out_file)
+    if valleys is not None:
+        split = valleys.attach_all()
         release_freed_memory()
         LOG.info(f"Valley_Sections: {split} of {len(usable)} cross sections take their overbanks square to the valley")
 

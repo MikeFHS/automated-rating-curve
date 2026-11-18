@@ -239,12 +239,12 @@ def ray_classes(classes, water, lookup, water_value, x0, y0, cos, sin, spacing, 
 
 
 @njit(cache=True, error_model="numpy")
-def valley_lines(dem, classes, water, lookup, water_n, lines, spacing, half, dx, dy, centre, centre_n, stream_starts,
-                 stream_cols, water_mask, known):
+def valley_lines(dem, mannings_n, lines, spacing, half, dx, dy, centre, centre_n, stream_starts, stream_cols,
+                 water_mask, known):
     """The overbanks' ground and Manning's n as Valley holds them, from the two lines out from a cross section's
     banks, each `half` ordinates long: lines[0] the left and lines[1] the right, each (x0, y0, cos, sin) as ray_values
     takes them. The ground is ray_values' with the water the lines cross filled (fill_other_water) and the n
-    ray_classes', with the stream cell's ground centre and n centre_n in the middle. The water is where the cell
+    the Manning's n raster's (arc.pipeline.ManningsN), with the stream cell's ground centre and n centre_n in the middle. The water is where the cell
     nearest an ordinate is a stream cell (is_stream_cell, from stream_starts and stream_cols) or the water mask's
     above 0, without a water mask (None) a stream cell alone. `known` holds each line's ground sampled already, from
     its first ordinate out (ray_reach's), which isn't sampled again."""
@@ -262,7 +262,7 @@ def valley_lines(dem, classes, water, lookup, water_n, lines, spacing, half, dx,
             x, y = x0 + cos * distance / dx, y0 + sin * distance / dy
             i = half + step * k
             z[i] = ground[k - 1] if k <= ground.size else _interpolate(dem, x, y)
-            n[i] = _interpolate_classes(classes, water, lookup, water_n, x, y)
+            n[i] = _interpolate(mannings_n, x, y)
             r, c = np.rint(y), np.rint(x)
             if 0 <= r < nrows and 0 <= c < ncols:
                 wet[i] = is_stream_cell(stream_starts, stream_cols, int(r), int(c))

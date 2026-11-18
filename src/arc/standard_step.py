@@ -778,11 +778,20 @@ def _given_wse(points: list, row: float, col: float, flows: np.ndarray, dx: floa
 
 def _table_for(xs: XSection, top: float, roughness: DepthRoughness | None, k: int,
                ensure_level: Callable[[int, float], bool] | None) -> HydraulicTable:
-    """A cross section's table, made again if ensure_level has to extend it to reach the table's top level."""
-    table = HydraulicTable(xs, top, roughness)
-    if ensure_level is not None and ensure_level(int(k), float(table.levels[-1])):
-        table = HydraulicTable(xs, top, roughness)
-    return table
+    """A cross section's table, the cross section extended first if ensure_level has to for it to reach the table's
+    top level (HydraulicTable's, from its bed, which extending leaves where it is): one table, not one made again on
+    the cross section extended."""
+    if ensure_level is not None:
+        ensure_level(int(k), _top_level(xs, top))
+    return HydraulicTable(xs, top, roughness)
+
+
+def _top_level(xs: XSection, top: float) -> float:
+    """The top level of HydraulicTable(xs, top), worked out as it works it out."""
+    profile = hydraulic_profile(xs)
+    bed = float(profile.elevations[profile.center])
+    span = max(top - bed, 0.5)
+    return float(bed + (span + max(3.0, 0.5 * span)))
 
 
 def _outlet_wse(xs: XSection, table: HydraulicTable, q: float, slope: float, roughness: DepthRoughness | None,

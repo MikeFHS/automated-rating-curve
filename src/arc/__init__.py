@@ -11,6 +11,8 @@ Entry points
 - arc.process_geospatial_data.Process_ARC_Geospatial_Data: make ARC's input rasters and input file.
 - arc.create_geojson.Run_Main_Curve_to_GEOJSON_Program_Stream_Vector: turn ARC's curve file into GeoJSON for flood
   mapping.
+- arc.release_freed_memory: hand the memory a run has freed back to the system, as a caller that goes on after it
+  should once it has let go of the run's results (arc._memory).
 
 The entry points are imported when first used, so that a run doesn't import the flow file tools' s3fs and xarray.
 """
@@ -20,9 +22,10 @@ from ._log import LOG
 
 _ENTRY_POINTS = {'Arc': '.arc', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector': '.create_geojson',
                  'Create_ARC_Streamflow_Input': '.streamflow_processing',
-                 'Process_ARC_Geospatial_Data': '.process_geospatial_data'}
+                 'Process_ARC_Geospatial_Data': '.process_geospatial_data', 'release_freed_memory': '._memory'}
 
-__all__ = ['LOG', 'Arc', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data', 'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector']
+__all__ = ['LOG', 'Arc', 'Create_ARC_Streamflow_Input', 'Process_ARC_Geospatial_Data',
+           'Run_Main_Curve_to_GEOJSON_Program_Stream_Vector', 'release_freed_memory']
 __version__ = '2026.11.17'
 
 
