@@ -50,7 +50,14 @@ class Valley:
     the cross section's banks, as one array: the left line's from its far end in, the stream cell's, and the right
     line's from the bank out, `ordinate_distance` apart (and as far from the banks). `full_half` is how many ordinates
     the longer line would have out to the raster's edge. The ordinates' cells aren't kept, as nothing needs them:
-    arc.pipeline.valley_cells works them out."""
+    arc.pipeline.valley_cells works them out.
+
+    The lines are as long as each other, unless `left` says how many ordinates the left line has: each line then out
+    to its own first ground above a level (arc.pipeline.sample_valley), and on past any water there (valley_lines),
+    the right line the rest. The hydraulics read a profile only out to the first vertex above the water on each side,
+    so that the shorter line's ordinates past its own leave nothing as it is; and to work out water above that ground,
+    the lines are made as long as the longer one first (arc.pipeline.Resampler.extend_valley), as they would have
+    been."""
     direction: float
     sinuosity: float
     slope_ratio: float
@@ -58,6 +65,23 @@ class Valley:
     mannings_n: np.ndarray
     ordinate_distance: float
     full_half: int
+    left: int | None = None
+
+    @property
+    def centre(self) -> int:
+        """The stream cell's place in the arrays: how many ordinates the left line has."""
+        return self.elevations.size // 2 if self.left is None else int(self.left)
+
+    @property
+    def half(self) -> int:
+        """How many ordinates the longer line has."""
+        centre = self.centre
+        return max(centre, self.elevations.size - 1 - centre)
+
+    @property
+    def even(self) -> bool:
+        """Whether the two lines have as many ordinates as each other."""
+        return 2 * self.centre + 1 == self.elevations.size
 
 
 def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
@@ -186,29 +210,31 @@ def fill_other_water(elevations: np.ndarray, wet: np.ndarray) -> np.ndarray:
     The stream cell, in the middle, is never water here."""
     z = np.array(elevations, dtype=np.float64)
     wet = np.asarray(wet, dtype=np.bool_)
-    _fill_side(z, wet, -1)
-    _fill_side(z, wet, 1)
+    h = z.size // 2
+    _fill_side(z, wet, -1, h, h)
+    _fill_side(z, wet, 1, h, h)
     return z
 
 
 @njit(cache=True, error_model="numpy")
-def _fill_side(z, wet, step):
-    """fill_other_water along one line (step -1 for the left), in place."""
-    h = z.size // 2
+def _fill_side(z, wet, step, centre, count):
+    """fill_other_water along one line (step -1 for the left) of `count` ordinates out from the stream cell at
+    `centre`, in place."""
+    h = centre
     k = 1
-    while k <= h:
+    while k <= count:
         if not wet[h + step * k]:
             k += 1
             continue
 
         start = k
-        while k <= h and wet[h + step * k]:
+        while k <= count and wet[h + step * k]:
             k += 1
 
         lip = np.inf  # the ground either side, but not the stream cell's
         if start > 1:
             lip = z[h + step * (start - 1)]
-        if k <= h:
+        if k <= count:
             lip = min(lip, z[h + step * k])
         if lip < np.inf:
             for j in range(start, k):
@@ -239,28 +265,37 @@ def ray_classes(classes, water, lookup, water_value, x0, y0, cos, sin, spacing, 
 
 
 @njit(cache=True, error_model="numpy")
-def valley_lines(dem, mannings_n, lines, spacing, half, dx, dy, centre, centre_n, stream_starts, stream_cols,
+def valley_lines(dem, mannings_n, lines, spacing, halves, dx, dy, centre, centre_n, stream_starts, stream_cols,
                  water_mask, known):
     """The overbanks' ground and Manning's n as Valley holds them, from the two lines out from a cross section's
-    banks, each `half` ordinates long: lines[0] the left and lines[1] the right, each (x0, y0, cos, sin) as ray_values
-    takes them. The ground is ray_values' with the water the lines cross filled (fill_other_water) and the n
-    the Manning's n raster's (arc.pipeline.ManningsN), with the stream cell's ground centre and n centre_n in the middle. The water is where the cell
-    nearest an ordinate is a stream cell (is_stream_cell, from stream_starts and stream_cols) or the water mask's
-    above 0, without a water mask (None) a stream cell alone. `known` holds each line's ground sampled already, from
-    its first ordinate out (ray_reach's), which isn't sampled again."""
-    size = 2 * half + 1
+    banks, `halves` ordinates long (the left's, the right's), and how many the left has: lines[0] the left and
+    lines[1] the right, each (x0, y0, cos, sin) as ray_values takes them. The ground is ray_values' with the water the
+    lines cross filled (fill_other_water) and the n the Manning's n raster's (arc.pipeline.ManningsN), with the stream
+    cell's ground centre and n centre_n in the middle. The water is where the cell nearest an ordinate is a stream cell
+    (is_stream_cell, from stream_starts and stream_cols) or the water mask's above 0, without a water mask (None) a
+    stream cell alone. `known` holds each line's ground sampled already, from its first ordinate out (ray_reach's),
+    which isn't sampled again.
+
+    The shorter line goes on past its own length to the first ordinate that isn't water, as far as the longer at
+    most: water a line ends in is filled to its inner lip alone, where on a longer line the lip beyond may be lower.
+    Ending on dry ground, the shorter line is the start of the line as long as the longer, bit for bit."""
+    limit = max(halves[0], halves[1])  # the stream cell's place, as long as each other
+    size = 2 * limit + 1
     z, n = np.empty(size), np.empty(size)
     wet = np.zeros(size, np.bool_)
     nrows, ncols = dem.shape
-    z[half], n[half] = centre, centre_n
+    z[limit], n[limit] = centre, centre_n
+    counts = np.zeros(2, np.int64)
     for side in range(2):
         x0, y0, cos, sin = lines[side]
         step = 1 if side else -1
         ground = known[side]
-        for k in range(1, half + 1):
+        k = 0
+        while k < limit and (k < halves[side] or wet[limit + step * k]):
+            k += 1
             distance = spacing * k
             x, y = x0 + cos * distance / dx, y0 + sin * distance / dy
-            i = half + step * k
+            i = limit + step * k
             z[i] = ground[k - 1] if k <= ground.size else _interpolate(dem, x, y)
             n[i] = _interpolate(mannings_n, x, y)
             r, c = np.rint(y), np.rint(x)
@@ -269,9 +304,15 @@ def valley_lines(dem, mannings_n, lines, spacing, half, dx, dy, centre, centre_n
                 if water_mask is not None:
                     wet[i] = wet[i] or water_mask[int(r), int(c)] > 0
 
-    _fill_side(z, wet, -1)
-    _fill_side(z, wet, 1)
-    return z, n
+        counts[side] = k
+
+    _fill_side(z, wet, -1, limit, counts[0])
+    _fill_side(z, wet, 1, limit, counts[1])
+    if counts[0] == limit and counts[1] == limit:
+        return z, n, limit
+
+    first, end = limit - counts[0], limit + counts[1] + 1
+    return z[first:end].copy(), n[first:end].copy(), counts[0]
 
 
 @njit(cache=True, error_model="numpy")
@@ -321,17 +362,19 @@ def splice(profile: Profile, left_bank: float, right_bank: float, valley: Valley
     stations, elevations, mannings_n, center = profile
     new_stations, new_elevations, new_n, new_center = _splice(
         stations, elevations, mannings_n, int(center), float(left_bank), float(right_bank), valley.elevations,
-        valley.mannings_n, float(valley.ordinate_distance), 1.0 / math.sqrt(valley.slope_ratio))
+        valley.mannings_n, valley.centre, float(valley.ordinate_distance), 1.0 / math.sqrt(valley.slope_ratio))
     return Profile(new_stations, new_elevations, new_n, int(new_center))
 
 
 @njit(cache=True, error_model="numpy")
-def _splice(stations, elevations, mannings_n, center, left_bank, right_bank, valley_z, valley_n, spacing, scale):
-    """splice's arrays and centre."""
-    h = valley_z.size // 2
+def _splice(stations, elevations, mannings_n, center, left_bank, right_bank, valley_z, valley_n, valley_centre,
+            spacing, scale):
+    """splice's arrays and centre; the valley's stream cell is at valley_centre (Valley.centre)."""
+    h = valley_centre  # the left line's ordinates
+    r = valley_z.size - 1 - h  # and the right's
     first = np.searchsorted(stations, -left_bank, side="right")  # the first vertex inside the banks
     end = np.searchsorted(stations, right_bank, side="left")  # and the first beyond them
-    size = h + 1 + (end - first) + 1 + h
+    size = h + 1 + (end - first) + 1 + r
     new_stations, new_elevations, new_n = np.empty(size), np.empty(size), np.empty(size)
     i = 0
     for k in range(h, 0, -1):
@@ -350,9 +393,9 @@ def _splice(stations, elevations, mannings_n, center, left_bank, right_bank, val
 
     new_stations[i] = right_bank
     new_elevations[i] = np.interp(right_bank, stations, elevations)
-    new_n[i] = valley_n[h + 1] * scale if h > 0 else mannings_n[center]
+    new_n[i] = valley_n[h + 1] * scale if r > 0 else mannings_n[center]
     i += 1
-    for k in range(1, h + 1):
+    for k in range(1, r + 1):
         new_stations[i] = right_bank + k * spacing
         new_elevations[i] = valley_z[h + k]
         new_n[i] = valley_n[h + k] * scale

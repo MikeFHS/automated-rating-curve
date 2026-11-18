@@ -75,6 +75,7 @@ import json
 import logging
 import math
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
@@ -102,6 +103,7 @@ from arc.bathymetry import (
     find_banks,
     in_bank,
     ordinate_cells,
+    ordinate_cells_where,
     reach_network,
     set_bank_distances,
     set_in_bank_roughness,
@@ -192,6 +194,10 @@ _METADATA_BUT_BASEFLOW = [COMID, ROW, COL, ELEV, SLOPE, XS_ANGLE]
 TRIM_MARGIN = 3.0  # metres
 TRIM_CARVING = 8.0  # metres
 TRIM_SAMPLE_START = 64  # ordinates either side of the centre: the Manning's n sampled first for trim_wse
+# A trimmed cross section with at least this many ordinates lets its ordinates' cells go until a step asks for them
+# (Section.forget_cells): a flat tile's cross sections, thousands of ordinates long, held gigabytes of them, while
+# working a short one's out again costs more time than its few bytes are worth
+FORGET_CELLS_FROM = 256
 
 
 # --- What a run works with ------------------------------------------------------------------------------------------
@@ -274,8 +280,9 @@ class Section:
     col: int
     direction: float  # the stream direction it was sampled in (see arc.xsection.sampling for the convention)
     xs_angle: float  # XS_Angle: the cross section's own direction, from 0 up to pi, towards the higher rows
-    rows: np.ndarray  # each ordinate's cell
-    cols: np.ndarray
+    # Each ordinate's cell (rows and cols), or None once the run lets them go (forget_cells)
+    kept_rows: np.ndarray | None
+    kept_cols: np.ndarray | None
     side_one: int  # which half of the cross section, +1 or -1, is side 1 in the cross-section file
     dem_low_point: float  # the elevation at its centre before any bathymetry, from the DEM or a manual profile
     land_cover: np.ndarray | None = None  # a manual cross section's land cover
@@ -302,6 +309,46 @@ class Section:
     dropped_at_edge: bool = False  # its rating curve dropped by Drop_Edge_Sections
     length: float = math.nan  # the length it's sampled to, which grows as steps extend it
     full_half: int = 0  # how many ordinates either side of its centre it has out to the raster's edge (0 if manual)
+    cell_size: tuple[float, float] | None = None  # the raster's dx and dy, which its ordinates' cells are worked out by
+
+    @property
+    def rows(self) -> np.ndarray:
+        """Each ordinate's row (cells)."""
+        return self.cells()[0]
+
+    @property
+    def cols(self) -> np.ndarray:
+        """Each ordinate's column (cells)."""
+        return self.cells()[1]
+
+    def cells(self, which: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Each ordinate's cell, rows and cols: as kept, or once the run has let them go (forget_cells), worked out
+        again as sample_section worked them out, and with `which`, a mask over the ordinates, at those alone (0 at
+        the rest)."""
+        if self.kept_rows is not None:
+            return self.kept_rows, self.kept_cols
+
+        dx, dy = self.cell_size
+        if which is None:
+            rows, cols = ordinate_cells(self.row, self.col, self.direction, self.length, dx, dy)
+        else:
+            rows, cols = ordinate_cells_where(self.row, self.col, self.direction, self.length, dx, dy, which)
+        if rows.size != self.xs.elevations.size:
+            raise RuntimeError(f"A cross section {self.length} m long has {self.xs.elevations.size} ordinates, not "
+                               f"the {rows.size} its cells are worked out for.")
+
+        return rows, cols
+
+    def forget_cells(self) -> None:
+        """Let its ordinates' cells go, as many bytes as its elevations, until a step asks for them (cells), if it
+        has FORGET_CELLS_FROM ordinates or more; a manual cross section's are its own, and stay."""
+        if not self.manual and self.cell_size is not None and self.xs.elevations.size >= FORGET_CELLS_FROM:
+            self.kept_rows = self.kept_cols = None
+
+    def keep_cells(self, rows: np.ndarray, cols: np.ndarray) -> None:
+        """Its ordinates' cells as they now are, if it keeps them."""
+        if self.kept_rows is not None:
+            self.kept_rows, self.kept_cols = rows, cols
 
 
 @dataclass
@@ -1054,7 +1101,7 @@ def sample_section(configs: Configs, grid: Grid, row: int, col: int, offsets: np
     rows, cols = ordinate_cells(row, col, direction, length, grid.dx, grid.dy)
     return Section(XSection(elevations, np.empty(0), float(spacing)), int(row), int(col), float(direction),
                    float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(direction), float(elevations[center]),
-                   length=float(length), full_half=int(full_half))
+                   length=float(length), full_half=int(full_half), cell_size=(float(grid.dx), float(grid.dy)))
 
 
 def reaches_its_banks(along: np.ndarray | None, water_value) -> bool:
@@ -1160,17 +1207,43 @@ def bank_water(configs: Configs, grid: Grid) -> tuple[np.ndarray | None, int | N
     return None, None
 
 
-def water_along(section: Section, water: np.ndarray | None, grid: Grid) -> np.ndarray | None:
+def water_along(section: Section, water: np.ndarray | None, grid: Grid, water_value=None) -> np.ndarray | None:
     """The bank_water raster at each ordinate's cell (as arc.bathymetry.sample_land_cover reads it), NaN off the
     raster, or None without one. A manual cross section takes the water mask at its ordinates' cells, or its own land
-    cover."""
+    cover. With water_value, the water's value in it, only out from the stream cell to the first ordinate on each side
+    that isn't water, that one included, and NaN beyond: all that finding the banks (arc.bathymetry.find_banks) and
+    reaches_its_banks read of it, the water's end."""
     if water is None:
         return None
     
     if section.manual and water is not grid.water_mask:
         return section.land_cover
 
-    return _values_at(water, section.rows, section.cols)
+    rows, cols = section.cells()
+    if water_value is not None:
+        return _values_to_the_water_s_end(water, rows, cols, float(water_value))
+
+    return _values_at(water, rows, cols)
+
+
+@njit(cache=True, error_model="numpy")
+def _values_to_the_water_s_end(raster, rows, cols, water):
+    """_values_at out from the middle cell to the first on each side whose value isn't water (or is off the raster),
+    NaN beyond."""
+    values = np.full(rows.size, np.nan)
+    center = rows.size // 2
+    for step in (-1, 1):
+        end = rows.size - 1 if step > 0 else 0
+        j = center
+        while True:
+            r, c = rows[j], cols[j]
+            values[j] = raster[r, c] if 0 <= r < raster.shape[0] and 0 <= c < raster.shape[1] else np.nan
+            if j == end or (j != center and values[j] != water):
+                break
+
+            j += step
+
+    return values
 
 
 @njit(cache=True, error_model="numpy")
@@ -1311,7 +1384,8 @@ def trim_section(section: Section, level: float, widths=()) -> None:
     
     keep = slice(center - half, center + half + 1)
     xs.elevations = xs.elevations[keep].copy()
-    section.rows, section.cols = section.rows[keep].copy(), section.cols[keep].copy()
+    if section.kept_rows is not None:
+        section.keep_cells(section.kept_rows[keep].copy(), section.kept_cols[keep].copy())
     section.length = _length_for(half, spacing)
 
 
@@ -1325,7 +1399,7 @@ def reaches_above(section: Section, level: float) -> bool:
     above the water on both sides, or it's untrimmed (or manual). Only the latter for a level that isn't a number."""
     xs = section.xs
     valley = xs.valley
-    if (valley.elevations.size // 2 >= valley.full_half) if valley is not None else \
+    if (valley.even and valley.half >= valley.full_half) if valley is not None else \
             (xs.elevations.size // 2 >= section.full_half):
         return True
 
@@ -1394,7 +1468,8 @@ class Resampler:
             n = self.mannings_n.sample(section.row, section.col, section.direction, length, grid.dx, grid.dy)
             xs.mannings_n = np.concatenate([n[:added], xs.mannings_n, n[-added:]])
 
-        section.rows, section.cols = ordinate_cells(section.row, section.col, section.direction, length, grid.dx, grid.dy)
+        if section.kept_rows is not None:
+            section.keep_cells(*ordinate_cells(section.row, section.col, section.direction, length, grid.dx, grid.dy))
         if xs.profile is not None:
             # A carved channel's profile: the ground beyond its banks is the ordinates
             p = xs.profile
@@ -1412,8 +1487,9 @@ class Resampler:
         while not reaches_above(section, level):
             valley = section.xs.valley
             if valley is not None:
-                # The overbanks are the lines square to the valley (arc.xsection.valley): it's they that grow
-                if not self.extend_valley(section, 2 * (valley.elevations.size // 2)):
+                # The overbanks are the lines square to the valley (arc.xsection.valley): it's they that grow, the
+                # shorter first out to the longer (Valley.left)
+                if not self.extend_valley(section, valley.half if not valley.even else 2 * valley.half):
                     break
             elif not self.extend(section, 2 * (section.xs.elevations.size // 2)):
                 break
@@ -1426,7 +1502,7 @@ class Resampler:
         """Sample a cross section's overbanks square to the valley out to `half` ordinates from each bank (to the
         raster's edge at most), and say whether they grew."""
         valley = section.xs.valley
-        if min(int(half), valley.full_half) <= valley.elevations.size // 2:
+        if valley.even and min(int(half), valley.full_half) <= valley.half:
             return False
         
         section.xs.valley = sample_valley(self.grid, self.mannings_n, section, valley.direction, valley.sinuosity,
@@ -1442,11 +1518,14 @@ class Resampler:
 
 
 def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction: float, sinuosity: float,
-                  ratio: float, half: int | None = None) -> Valley:
+                  ratio: float, half: int | None = None, uneven: bool = False) -> Valley:
     """A cross section's overbanks square to the valley (arc.xsection.valley): from each of its banks, a line in the
     valley's direction, out `half` ordinates, or without it, to the first ground above the lower of the ends of the
-    cross section itself (as far as it was trimmed to reach), with the water they cross filled
-    (fill_other_water)."""
+    cross section itself (as far as it was trimmed to reach), with the water they cross filled (fill_other_water):
+    both lines as far as the one that goes further, or with `uneven`, each to its own (Valley.left). The longer line's
+    length only takes the other past ground above that level, which the hydraulics don't read below it, and on flat
+    ground was a third of the ordinates; so uneven lines are for a run whose Resampler extends them when a step works
+    above that level (trim)."""
     xs = section.xs
     dx, dy = grid.dx, grid.dy
     lines, spacing = _valley_lines(section, direction, dx, dy)
@@ -1456,16 +1535,22 @@ def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction
     level = center + max(min(ends) - center if ends else MAX_BANK_HEIGHT, 0.0)
     reaches = [ray_reach(grid.dem, x0, y0, c, s, spacing, dx, dy, level) for (x0, y0), c, s in lines]
     full_half = max(edge for _, edge, _ in reaches)
-    half = max(above for above, _, _ in reaches) if half is None else int(half)
-    half = max(min(half, full_half), 1)
+    if half is None and uneven:
+        # Each line out to its own ground above the level, which is at most its edge (and at least one ordinate)
+        halves = tuple(max(min(above, full_half), 1) for above, _, _ in reaches)
+    else:
+        half = max(above for above, _, _ in reaches) if half is None else int(half)
+        halves = (max(min(half, full_half), 1),) * 2
+
     center_n = float(xs.mannings_n[xs.mannings_n.size // 2]) if xs.mannings_n.size else 0.0
     # The water the lines cross: the stream cells and the water mask's
-    elevations, n = valley_lines(
+    elevations, n, left = valley_lines(
         grid.dem, mannings_n.values,
-        tuple((float(x0), float(y0), float(c), float(s)) for (x0, y0), c, s in lines), float(spacing), int(half),
+        tuple((float(x0), float(y0), float(c), float(s)) for (x0, y0), c, s in lines), float(spacing), halves,
         float(dx), float(dy), center, center_n, *grid.stream_index(), grid.water_mask,
         tuple(ground for _, _, ground in reaches))
-    return Valley(float(direction), float(sinuosity), float(ratio), elevations, n, float(spacing), int(full_half))
+    return Valley(float(direction), float(sinuosity), float(ratio), elevations, n, float(spacing), int(full_half),
+                  None if 2 * left + 1 == elevations.size else int(left))
 
 
 def _valley_lines(section: Section, direction: float, dx: float, dy: float) -> tuple[tuple, float]:
@@ -1488,9 +1573,9 @@ def valley_cells(section: Section, dx: float, dy: float) -> tuple[np.ndarray, np
     its ground holds them, the stream cell's in the middle: cells off the raster beyond its edge."""
     valley = section.xs.valley
     lines, spacing = _valley_lines(section, valley.direction, dx, dy)
-    distances = np.arange(1, valley.elevations.size // 2 + 1) * spacing
     rows, cols = [], []
-    for (x0, y0), c, s in lines:
+    for ((x0, y0), c, s), count in zip(lines, (valley.centre, valley.elevations.size - 1 - valley.centre)):
+        distances = np.arange(1, count + 1) * spacing
         cols.append(np.rint(x0 + c * distances / dx).astype(np.intp))
         rows.append(np.rint(y0 + s * distances / dy).astype(np.intp))
 
@@ -1541,12 +1626,13 @@ class ValleyOverbanks:
 
     The bathymetry gives each carved cross section a profile as long as the cross section (carve_channel), doubling
     what it takes; attached right after its carve, a cross section gives up all but its channel before the next is
-    carved, rather than every one holding both until all are (apply_bathymetry's `carved`)."""
+    carved, rather than every one holding both until all are (apply_bathymetry's `carved`). With `uneven`, each of a
+    valley's lines goes out only as far as its own ground above the level (sample_valley)."""
 
     def __init__(self, configs: Configs, grid: Grid, cells: Cells, sections: list[Section], mannings_n: ManningsN,
-                 slopes: np.ndarray, channel_only: bool = False):
+                 slopes: np.ndarray, channel_only: bool = False, uneven: bool = False):
         self.configs, self.grid, self.cells, self.sections = configs, grid, cells, sections
-        self.mannings_n, self.slopes, self.channel_only = mannings_n, slopes, channel_only
+        self.mannings_n, self.slopes, self.channel_only, self.uneven = mannings_n, slopes, channel_only, uneven
         self.axes = None
         self.attached = np.zeros(len(sections), dtype=np.bool_)
         self.count = 0
@@ -1578,7 +1664,8 @@ class ValleyOverbanks:
             direction += math.pi
 
         xs.valley = sample_valley(self.grid, self.mannings_n, section, direction, sinuosity,
-                                  slope_ratio(float(self.slopes[k]), float(mean_slopes[k]), sinuosity))
+                                  slope_ratio(float(self.slopes[k]), float(mean_slopes[k]), sinuosity),
+                                  uneven=self.uneven)
         if self.channel_only:
             trim_to_channel(section)
 
@@ -1640,7 +1727,8 @@ def trim_to_channel(section: Section) -> None:
         xs.profile = Profile(profile.stations[cut:end].copy(), profile.elevations[cut:end].copy(),
                              profile.mannings_n[cut:end].copy(), profile.center - cut)
 
-    section.rows, section.cols = section.rows[keep].copy(), section.cols[keep].copy()
+    if section.kept_rows is not None:
+        section.keep_cells(section.kept_rows[keep].copy(), section.kept_cols[keep].copy())
     section.length = _length_for(half, spacing)
 
 
@@ -1802,7 +1890,9 @@ def apply_bathymetry(configs: Configs, grid: Grid, cells: Cells, sections: list[
         changed = carve_channel(section.xs, section.carve_banks, carve[k], trapezoid_height=configs.bathy_trap_h,
                                 bank_elevation=section.bank_elevation if use_banks else None,
                                 keep_ground=configs.subcell_channels)
-        burns.add(section.rows, section.cols, section.xs.elevations, changed)
+        burned = changed.copy()
+        burned[burned.size // 2] = True  # the cells Burns takes: those changed and the centre's
+        burns.add(*section.cells(burned), section.xs.elevations, changed)
         if carved is not None:
             carved(k)
 
@@ -1839,11 +1929,12 @@ def _curve_top(curve: RatingCurve | None, xs: XSection, q_max: float, slope: flo
 
 def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, slopes, baseflow, max_flow,
                   roughness: DepthRoughness | None, quiet: bool = True,
-                  resampler: Resampler | None = None) -> RatingCurves:
+                  resampler: Resampler | None = None, rated: Callable | None = None) -> RatingCurves:
     """Each cell's rating curve and metadata, NaN where it has none. The elevation is that of the centre of the cross
     section the rating curve is worked out on: the carved bed with bathymetry, and otherwise the DEM's (or a manual
     cross section's own). A resampler extends a trimmed cross section that doesn't reach above the water its rating
-    curve was worked out at, and it's worked out again."""
+    curve was worked out at, and it's worked out again. `rated(k, curves)`, if given, is called for each cell k given a
+    curve right after it's given it, while its cross section's profile is still at hand (as for drop_edge_curve)."""
     increments = int(configs.vdt_database_numiterations)
     # With Valley_Sections, each cell's valley slope too (see arc.outputs.rating_curves)
     curves = RatingCurves.empty(cells.count, max(increments, 0), valley_slopes=configs.valley_sections)
@@ -1880,6 +1971,8 @@ def rating_curves(configs: Configs, grid: Grid, cells: Cells, sections: list, sl
                                   section.xs_angle]
             if curves.valley_slopes is not None:
                 curves.valley_slopes[k] = valley_slope(section, float(slopes[k]))
+            if rated is not None:
+                rated(k, curves)
         elif reach_average:
             curves.metadata[k, _METADATA_BUT_BASEFLOW] = \
                 [comid, section.row, section.col, elevation, slopes[k], section.xs_angle]
@@ -1903,37 +1996,53 @@ def _centre(section: Section) -> float:
 
 
 def drop_edge_curves(configs: Configs, grid: Grid, sections: list[Section], curves: RatingCurves,
-                     resampler: Resampler | None = None) -> int:
+                     resampler: Resampler | None = None, ks=None) -> int:
     """
     Drop the rating curve of each cell whose water, at the top of its rating curve, reaches the raster's edge, or
     comes within Edge_Margin metres of it (reaches_edge), and say how many it dropped. The edge cuts such a cross
     section off, a wall where the ground would go on, so its water depends on where the raster ends: the overlapping
     rasters of two neighbouring tiles give the same cell different water, which shows as a seam where their maps meet.
-    The water surface rises with the flow, so it's at the top that it spreads widest.
+    The water surface rises with the flow, so it's at the top that it spreads widest. ks, if given, are the only cells
+    looked at: each cell's check is its own, so the run checks a cell's curve as soon as it's final, its cross
+    section's profile still at hand (see run), rather than splicing every valley's profile again in a pass of its own.
     """
     wse = curves.increments[:, :, WSE]
-    rated = np.flatnonzero(np.isfinite(wse[:, -1]))
+    candidates = np.arange(wse.shape[0]) if ks is None else np.asarray(ks, dtype=np.intp)
+    rated = candidates[np.isfinite(wse[candidates, -1])]
     tops = np.nanmax(wse[rated], axis=1)  # the top of each rated cell's curve: its last water is a number
-    margin = float(configs.edge_margin)
-    dropped = 0
-    for k, top in zip(rated.tolist(), tops.tolist()):
-        section = sections[k]
-        if section is None or not section.usable:
-            continue
+    return sum(_drop_at_edge(configs, grid, sections[k], curves, k, top, resampler)
+               for k, top in zip(rated.tolist(), tops.tolist()))
 
-        if resampler is not None:
-            resampler.reach_above(section, top)
 
-        if reaches_edge(section, top, grid, margin):
-            section.dropped_at_edge = True
-            curves.increments[k] = np.nan
-            curves.metadata[k] = np.nan
-            if curves.valley_slopes is not None:
-                curves.valley_slopes[k] = np.nan
+def drop_edge_curve(configs: Configs, grid: Grid, section: Section | None, curves: RatingCurves, k: int,
+                    resampler: Resampler | None = None) -> bool:
+    """drop_edge_curves for cell k alone, without its arrays' overhead, and whether it dropped its curve."""
+    wse = curves.increments[k, :, WSE].tolist()
+    if not math.isfinite(wse[-1]):
+        return False
 
-            dropped += 1
+    return _drop_at_edge(configs, grid, section, curves, k, max(w for w in wse if w == w), resampler)  # np.nanmax's
 
-    return dropped
+
+def _drop_at_edge(configs: Configs, grid: Grid, section: Section | None, curves: RatingCurves, k: int, top: float,
+                  resampler: Resampler | None) -> bool:
+    """Drop cell k's curve if its water at top, its curve's top, reaches the raster's edge (drop_edge_curves)."""
+    if section is None or not section.usable:
+        return False
+
+    if resampler is not None:
+        resampler.reach_above(section, top)
+
+    if not reaches_edge(section, top, grid, float(configs.edge_margin)):
+        return False
+
+    section.dropped_at_edge = True
+    curves.increments[k] = np.nan
+    curves.metadata[k] = np.nan
+    if curves.valley_slopes is not None:
+        curves.valley_slopes[k] = np.nan
+
+    return True
 
 
 def reaches_edge(section: Section, wse: float, grid: Grid, margin: float = 0.0) -> bool:
@@ -2026,12 +2135,13 @@ def cross_section_record(section: Section, comid: int) -> CrossSectionRecord:
     """A section's row of the cross-section file: each side from its centre out to its last ordinate on the raster,
     side 1 towards the higher rows (see _side_one)."""
     elevations, n = section.xs.elevations, section.xs.mannings_n
+    rows, cols = section.cells()
     center = elevations.size // 2
     sides = []
     for step in (section.side_one, -section.side_one):
         index = center + step * np.arange(1 + _on_raster_ordinates(elevations, center, step))
-        sides.append((elevations[index].astype(np.float64), n[index].astype(np.float64), int(section.rows[index[-1]]),
-                      int(section.cols[index[-1]])))
+        sides.append((elevations[index].astype(np.float64), n[index].astype(np.float64), int(rows[index[-1]]),
+                      int(cols[index[-1]])))
         
     (xs1, n1, r1, c1), (xs2, n2, r2, c2) = sides
     return CrossSectionRecord(int(comid), section.row, section.col, xs1, float(section.xs.ordinate_distance), n1, xs2,
@@ -2201,10 +2311,10 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
             ceiling, max_water = bank_ceiling(configs, section, grid, mannings_n,
                                           resampler if trim and not section.manual else None, float(max_flow[k]),
                                           float(slopes[k]), roughness)
-            along = water_along(section, water, grid)
+            along = water_along(section, water, grid, water_value)
             while not reaches_its_banks(along, water_value) and \
                     resampler.extend(section, 2 * (section.xs.elevations.size // 2)):
-                along = water_along(section, water, grid)
+                along = water_along(section, water, grid, water_value)
 
             section.banks = find_banks(section.xs, target_width=width, land_cover=along,
                                        water_value=water_value if along is not None else None, at=at,
@@ -2223,6 +2333,9 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
             if trim and not section.manual:
                 fit_section(configs, section, grid, mannings_n, resampler, float(max_flow[k]), float(slopes[k]),
                             roughness, float(target_width[k]), max_water)
+
+            # Worked out again where a step needs them (Section.cells), as many bytes as the elevations till then
+            section.forget_cells()
                 
         sections.append(section)
         if (k + 1) % RELEASE_EVERY == 0:
@@ -2236,7 +2349,8 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
     for section in sections:
         if section is not None:
             wet = in_bank(section.xs, section.hydraulic_banks) | in_threads(section.xs)
-            mannings_n.water_between_banks(section.rows[wet], section.cols[wet])
+            rows, cols = section.cells(wet)
+            mannings_n.water_between_banks(rows[wet], cols[wet])
 
     for section in sections:
         if section is not None:
@@ -2267,7 +2381,8 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
     # Without the cross-section file, which writes each cross section's own ordinates, those beyond the channel go
     # where the valley's overbanks replace them
     valleys = ValleyOverbanks(configs, grid, cells, sections, mannings_n, slopes,
-                              channel_only=trim and not configs.xs_out_file) if configs.valley_sections else None
+                              channel_only=trim and not configs.xs_out_file, uneven=trim) \
+        if configs.valley_sections else None
     bathymetry = None
     if configs.bathy_out_file:
         # Each carved cross section takes its valley's overbanks as soon as it's carved, giving up the rest of its
@@ -2293,13 +2408,23 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
         LOG.info(f"Valley_Sections: {split} of {len(usable)} cross sections take their overbanks square to the valley")
 
     if configs.makes_rating_curves:
-        results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet,
-                                       resampler)
+        # Drop_Edge_Sections checks each cell's curve as soon as it's final, while its cross section's profile is at
+        # hand (drop_edge_curves): right after its rating curve, before the standard step, which would otherwise march
+        # the water through it, and again once the step has rewritten its reach, as the step's water can spread wider
         dropped = 0
-        if configs.drop_edge_sections:
-            # Before the standard step too, which would otherwise march the water through them
-            dropped = drop_edge_curves(configs, grid, sections, results.curves, resampler)
+        stepped = np.zeros(cells.count, dtype=np.bool_)
 
+        def drop_at_edge(k, curves):
+            nonlocal dropped
+            dropped += drop_edge_curve(configs, grid, sections[k], curves, k, resampler)
+
+        def drop_at_edges(ks):
+            nonlocal dropped
+            stepped[ks] = True
+            dropped += drop_edge_curves(configs, grid, sections, results.curves, resampler, ks)
+
+        results.curves = rating_curves(configs, grid, cells, sections, slopes, baseflow, max_flow, roughness, quiet,
+                                       resampler, rated=drop_at_edge if configs.drop_edge_sections else None)
         if configs.standard_step:
             elevations = grid.elevations(cells.rows, cells.cols)
             levels = np.array([math.nan if s is None else s.baseflow_level for s in sections])
@@ -2312,14 +2437,15 @@ def _run(configs: Configs, *, quiet: bool, write: bool, trim: bool) -> Results:
                                           baseflow_levels=levels,
                                           ensure_level=None if resampler is None else
                                           lambda k, level, sampler=resampler: sampler.reach_above(sections[k], level),
-                                          outlet_wse=outlet_levels(configs, grid))
+                                          outlet_wse=outlet_levels(configs, grid),
+                                          reach_done=drop_at_edges if configs.drop_edge_sections else None)
             results.step = step
             LOG.info(f"Standard step: {step.cells} rating curves linked, {step.critical} of {step.steps} "
                      f"steps at critical depth, {step.held} water surfaces held at the baseflow level"
                      + (f", {step.given} outlets started from Outlet_WSE_File" if configs.outlet_wse_file else ""))
             if configs.drop_edge_sections:
-                # The step's water can spread wider than the normal depths'
-                dropped += drop_edge_curves(configs, grid, sections, results.curves, resampler)
+                # Any cell with a curve the step didn't rewrite
+                drop_at_edges(np.flatnonzero(~stepped))
 
         if configs.drop_edge_sections:
             LOG.info(f"Drop_Edge_Sections: {dropped} rating curves dropped, their water reaching the raster's edge"

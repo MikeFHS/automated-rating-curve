@@ -52,6 +52,32 @@ def _ordinate_cells(row, col, cos, sin, spacing, half, dx, dy):
     return rows, cols
 
 
+def ordinate_cells_where(row: int, col: int, stream_direction: float, cross_section_length: float, dx: float,
+                         dy: float, which: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """ordinate_cells at the ordinates `which` marks (a mask over them) alone, worked out as it works them out, and 0
+    at the others."""
+    xs_direction = stream_direction - np.pi / 2
+    cos, sin = np.cos(xs_direction), np.sin(xs_direction)
+    spacing = 1 / max(abs(cos) / dx, abs(sin) / dy)
+    return _ordinate_cells_where(float(row), float(col), float(cos), float(sin), float(spacing),
+                                 int(cross_section_length / 2 / spacing), float(dx), float(dy),
+                                 np.asarray(which, dtype=np.bool_))
+
+
+@njit(cache=True, error_model="numpy")
+def _ordinate_cells_where(row, col, cos, sin, spacing, half, dx, dy, which):
+    rows = np.zeros(2 * half + 1, np.int32)
+    cols = np.zeros(2 * half + 1, np.int32)
+    for k in range(-half, half + 1):
+        if not which[k + half]:
+            continue
+        x = spacing * k
+        cols[k + half] = np.int32(np.rint(col + cos * x / dx))
+        rows[k + half] = np.int32(np.rint(row + sin * x / dy))
+
+    return rows, cols
+
+
 def sample_land_cover(land_cover: np.ndarray, row: int, col: int, stream_direction: float,
                       cross_section_length: float, dx: float, dy: float) -> np.ndarray:
     """The land cover class at each ordinate, from its nearest cell, as floats that are NaN off the raster."""
@@ -168,7 +194,8 @@ def _ordinates_to_burn(rows, cols, elevations, changed, nrows, ncols):
             centres[count] = k == centre
             count += 1
 
-    return cells[:count], values[:count], centres[:count]
+    # Copies: Burns keeps them until the raster is made, and a slice would keep the whole cross section's arrays with it
+    return cells[:count].copy(), values[:count].copy(), centres[:count].copy()
 
 
 @njit(cache=True, error_model="numpy")

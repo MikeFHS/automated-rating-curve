@@ -643,7 +643,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
                         elevations: np.ndarray | None = None,
                         baseflow_levels: np.ndarray | None = None,
                         ensure_level: Callable[[int, float], bool] | None = None,
-                        outlet_wse: dict | None = None) -> StepSummary:
+                        outlet_wse: dict | None = None,
+                        reach_done: Callable[[np.ndarray], None] | None = None) -> StepSummary:
     """Rewrite the rating curves of the cells that have them (see the notes above), in place.
 
     `rows`, `cols` and `reaches` are each cell's stream cell and reach, and `sections` its cross section (anything with an
@@ -668,6 +669,9 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
     (a trimmed one, see arc.pipeline), and says whether it changed it. It is asked for each table's top level once the
     table is made (which is made again if it did), and for the highest water surface the march worked each cross
     section out at after it, which is marched again if any changed.
+
+    `reach_done(ks)`, if given, is called with each reach's cells once their curves are rewritten, before the next
+    reach is stepped; nothing after reads them or their cross sections.
     """
     slope_factor = _check_slope_factor(slope_factor)
     increments = curves.number_of_increments
@@ -753,6 +757,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         upstream_wse[reach], upstream_shares[reach] = wse[0], shares[0]
         first_cell[reach] = (int(rows[ks[0]]), int(cols[ks[0]]))
         curves.increments[ks] = out
+        if reach_done is not None:
+            reach_done(ks)
 
     return StepSummary(len(rated), steps, int(critical_at.sum()), int(held_at.sum()), given, critical_at, held_at)
 
