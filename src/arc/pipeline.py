@@ -142,6 +142,7 @@ from arc.outputs.decisions import SLOPE_SOURCES, qa_flags, summary, write_decisi
 from arc.outputs.rating_curves import COL, COMID, ELEV, ROW, SLOPE, XS_ANGLE
 from arc.outputs.representative import highest_stage
 from arc.outputs.tables import run_metadata
+from arc.portable import cos_sin
 from arc.rating_curve import WSE, Q, RatingCurve, max_flow_wse, rating_curve
 from arc.standard_step import StepSummary, apply_standard_step
 from arc.xsection.low_spot import low_spot_cell
@@ -187,6 +188,7 @@ from arc.xsection.xsection import Profile, XSection
 _REQUIRED_MANUAL_COLUMNS = ("Row", "Col", "Ordinate_Dist", "XS1_Profile", "XS2_Profile", "LC1_Profile",
                             "LC2_Profile", "XS1_Row", "XS1_Col", "XS2_Row", "XS2_Col")
 _ALONG_A_ROW = 1e-12  # a cross section whose direction's sine is smaller than this runs along a row
+_QUARTER_TURN, _THREE_QUARTER_TURNS, _FULL_TURN = math.pi / 2, 1.5 * math.pi, 2.0 * math.pi
 _METADATA_BUT_BASEFLOW = [COMID, ROW, COL, ELEV, SLOPE, XS_ANGLE]
 # How far above the water surface that carries a cell's maximum flow over the DEM's cross section to trim it, which
 # only decides how often a step has to extend it (see trim_level): this much above it, and with the standard step,
@@ -310,6 +312,12 @@ class Section:
     length: float = math.nan  # the length it's sampled to, which grows as steps extend it
     full_half: int = 0  # how many ordinates either side of its centre it has out to the raster's edge (0 if manual)
     cell_size: tuple[float, float] | None = None  # the raster's dx and dy, which its ordinates' cells are worked out by
+
+    def own_cos_sin(self) -> tuple[float, float]:
+        """The cosine and sine of the cross section's own direction, a quarter turn from the stream's, as it was
+        sampled with (arc.portable.cos_sin, as _ordinates takes them). Worked out each time, rather than kept on
+        every section."""
+        return cos_sin(self.direction - math.pi / 2)
 
     @property
     def rows(self) -> np.ndarray:
@@ -1048,11 +1056,9 @@ class ManningsN:
 # --- 5. Cross sections --------------------------------------------------------------------------------------------
 
 
-def _side_one(direction: float) -> int:
-    """Which half of a cross section sampled in this stream direction is side 1: the half towards the higher rows,
-    or along a row towards the higher columns."""
-    xs_direction = direction - np.pi / 2
-    sin, cos = math.sin(xs_direction), math.cos(xs_direction)
+def _side_one(cos: float, sin: float) -> int:
+    """Which half of a cross section sampled in a direction whose own cosine and sine these are (_ordinates) is side
+    1: the half towards the higher rows, or along a row towards the higher columns."""
     return 1 if sin > _ALONG_A_ROW or (abs(sin) <= _ALONG_A_ROW and cos > 0.0) else -1
 
 
@@ -1083,7 +1089,7 @@ def sample_section(configs: Configs, grid: Grid, row: int, col: int, offsets: np
         
     length = reach_length(grid, row, col)
     direction = narrowest_direction(grid.dem, row, col, direction, length, grid.dx, grid.dy, offsets, like=ELEVATIONS)
-    _, _, spacing, full_half = _ordinates(direction, length, grid.dx, grid.dy)
+    cos, sin, spacing, full_half = _ordinates(direction, length, grid.dx, grid.dy)
     # Out to the first ground more than MAX_BANK_HEIGHT above the centre on each side, as far as finding banks looks,
     # or with whole, to the raster's edge
     if whole:
@@ -1100,7 +1106,7 @@ def sample_section(configs: Configs, grid: Grid, row: int, col: int, offsets: np
     
     rows, cols = ordinate_cells(row, col, direction, length, grid.dx, grid.dy)
     return Section(XSection(elevations, np.empty(0), float(spacing)), int(row), int(col), float(direction),
-                   float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(direction), float(elevations[center]),
+                   float((direction - np.pi / 2) % np.pi), rows, cols, _side_one(cos, sin), float(elevations[center]),
                    length=float(length), full_half=int(full_half), cell_size=(float(grid.dx), float(grid.dy)))
 
 
@@ -1532,7 +1538,7 @@ def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction
     above that level (trim)."""
     xs = section.xs
     dx, dy = grid.dx, grid.dy
-    lines, spacing = _valley_lines(section, direction, dx, dy)
+    lines, spacing = _valley_lines(section, cos_sin(direction - math.pi / 2), dx, dy)
     z = xs.elevations
     center = float(z[z.size // 2])
     ends = [float(e) for e in (z[0], z[-1]) if e < OFF_RASTER_ELEVATION]
@@ -1551,18 +1557,23 @@ def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction
                   None if 2 * left + 1 == elevations.size else int(left))
 
 
-def _valley_lines(section: Section, direction: float, dx: float, dy: float) -> tuple[tuple, float]:
-    """The two lines out from a cross section's banks square to a valley in this direction, the left's first, each
-    its start (column, row) and the cosine and sine of its way out, and the spacing of their ordinates."""
+def _valley_cos_sin(valley: Valley) -> tuple[float, float]:
+    """The cosine and sine of the way a valley's lines run out, as sample_valley sampled them with
+    (arc.portable.cos_sin of its direction less a quarter turn)."""
+    return cos_sin(valley.direction - math.pi / 2)
+
+
+def _valley_lines(section: Section, across: tuple[float, float], dx: float, dy: float) -> tuple[tuple, float]:
+    """The two lines out from a cross section's banks square to a valley, the left's first, each its start (column,
+    row) and the cosine and sine of its way out (`across`, the right's), and the spacing of their ordinates."""
     xs = section.xs
     row, col = section.row, section.col
-    own = section.direction - math.pi / 2
     left, right = float(xs.left_bank_distance), float(xs.right_bank_distance)
-    across = direction - math.pi / 2
-    cos, sin = math.cos(across), math.sin(across)
+    cos, sin = across
+    cos_own, sin_own = section.own_cos_sin()
     spacing = 1.0 / max(abs(cos) / dx, abs(sin) / dy)  # a cell a step along the axis it crosses fastest
-    lines = (((col - math.cos(own) * left / dx, row - math.sin(own) * left / dy), -cos, -sin),
-             ((col + math.cos(own) * right / dx, row + math.sin(own) * right / dy), cos, sin))
+    lines = (((col - cos_own * left / dx, row - sin_own * left / dy), -cos, -sin),
+             ((col + cos_own * right / dx, row + sin_own * right / dy), cos, sin))
     return lines, spacing
 
 
@@ -1570,7 +1581,7 @@ def valley_cells(section: Section, dx: float, dy: float) -> tuple[np.ndarray, np
     """The cell nearest each ordinate of a cross section's overbanks square to the valley (Valley, sample_valley), as
     its ground holds them, the stream cell's in the middle: cells off the raster beyond its edge."""
     valley = section.xs.valley
-    lines, spacing = _valley_lines(section, valley.direction, dx, dy)
+    lines, spacing = _valley_lines(section, _valley_cos_sin(valley), dx, dy)
     rows, cols = [], []
     for ((x0, y0), c, s), count in zip(lines, (valley.centre, valley.elevations.size - 1 - valley.centre)):
         distances = np.arange(1, count + 1) * spacing
@@ -1658,7 +1669,7 @@ class ValleyOverbanks:
         if not worth_splitting(section.direction, direction, sinuosity):
             return
 
-        if math.cos(direction - section.direction) < 0.0:
+        if _QUARTER_TURN < (direction - section.direction) % _FULL_TURN < _THREE_QUARTER_TURNS:  # cosine below 0
             direction += math.pi
 
         xs.valley = sample_valley(self.grid, self.mannings_n, section, direction, sinuosity,
@@ -2109,13 +2120,11 @@ def _station_position(section: Section, station: float, dx: float, dy: float) ->
     on its own cross section, or beyond a bank on the line out from it square to the valley, where Valley_Sections
     gave it one (see hydraulic_profile and arc.xsection.valley.splice)."""
     xs = section.xs
-    own = section.direction - math.pi / 2
-    cos, sin = math.cos(own), math.sin(own)
+    cos, sin = section.own_cos_sin()  # as the cross section and the valley lines were sampled with (arc.portable)
     left, right = float(xs.left_bank_distance), float(xs.right_bank_distance)
     valley = xs.valley
     if valley is not None and left > 0.0 and right > 0.0 and (station < -left or station > right):
-        across = valley.direction - math.pi / 2
-        cos_v, sin_v = math.cos(across), math.sin(across)
+        cos_v, sin_v = _valley_cos_sin(valley)
         if station < -left:
             beyond = -station - left
             return (section.col - cos * left / dx - cos_v * beyond / dx, section.row - sin * left / dy - sin_v * beyond / dy)

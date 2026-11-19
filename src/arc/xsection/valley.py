@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import numpy as np
 from numba import njit
 
+from arc.portable import exp
 from arc.xsection.sampling import _interpolate, _interpolate_classes
 from arc.xsection.stream_path import along_stream_stations, is_stream_cell
 from arc.xsection.xsection import Profile
@@ -117,7 +118,8 @@ def valley_axes(rows, cols, reaches, dx: float, dy: float, cells_each_way,
         across, down = np.diff(cols[ks] * float(dx)), np.diff(rows[ks] * float(dy))
         sum_across, sum_down, length = _smoothed(stations, across, down, np.diff(stations),
                                                  0.5 * (stations[1:] + stations[:-1]), sigma)
-        chord = np.hypot(sum_across, sum_down)
+        # The chord's length alike on every system: not the C library's hypot (arc.portable)
+        chord = np.sqrt(sum_across * sum_across + sum_down * sum_down)
         ok = chord > 0.0
         direction[ks[ok]] = np.arctan2(sum_down[ok], sum_across[ok]) % math.pi
         sinuosity[ks[ok]] = np.clip(length[ok] / chord[ok], 1.0, MAX_SINUOSITY)
@@ -152,7 +154,7 @@ def _smoothed(stations, across, down, lengths, middles, sigma):
 
         j = first
         while j < m and middles[j] <= stations[i] + 3.0 * sigma:
-            w = math.exp(-0.5 * ((middles[j] - stations[i]) / sigma) ** 2)
+            w = exp(-0.5 * ((middles[j] - stations[i]) / sigma) ** 2)
             sum_across[i] += w * across[j]
             sum_down[i] += w * down[j]
             total[i] += w * lengths[j]
@@ -176,7 +178,7 @@ def _smoothed_values(stations, values, sigma):
         j = first
         while j < n and stations[j] <= stations[i] + 3.0 * sigma:
             if values[j] > 0.0:
-                w = math.exp(-0.5 * ((stations[j] - stations[i]) / sigma) ** 2)
+                w = exp(-0.5 * ((stations[j] - stations[i]) / sigma) ** 2)
                 total += w * values[j]
                 weight += w
             j += 1

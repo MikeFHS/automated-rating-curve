@@ -48,6 +48,7 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
+from arc.portable import exp, log
 from arc.xsection.valley import splice
 from arc.xsection.xsection import Profile, XSection
 
@@ -109,7 +110,8 @@ def _conveyance(area, weighted_perimeter):
     if 1e-300 < x < 1e300:
         return area * area * _inverse_cbrt(x)
     
-    return area ** (5.0 / 3.0) / weighted_perimeter ** (2.0 / 3.0)  # out of range, NaN, or no roughness
+    # Out of range, NaN, or no roughness: A**(5/3) / W**(2/3), by arc.portable's exp and log, alike everywhere
+    return exp((5.0 / 3.0) * log(area) - (2.0 / 3.0) * log(weighted_perimeter))
 
 
 @njit(cache=True, error_model="numpy")
@@ -1067,7 +1069,9 @@ def _parameters(roughness: DepthRoughness | None) -> tuple[float, float, float]:
 
 def _to_hydraulic_geometry(area: float, perimeter: float, top_width: float, weighted_perimeter: float) -> HydraulicGeometry:
     if perimeter > 0.0:
-        return HydraulicGeometry(area, perimeter, area / perimeter, top_width, (weighted_perimeter / perimeter) ** (2 / 3))
+        # (W / P) ** (2/3), by arc.portable's exp and log, alike everywhere
+        return HydraulicGeometry(area, perimeter, area / perimeter, top_width,
+                                 exp((2.0 / 3.0) * log(weighted_perimeter / perimeter)))
     if perimeter == 0.0:
         return HydraulicGeometry(0.0, 0.0, 0.0, 0.0, 0.0)  # dry
     

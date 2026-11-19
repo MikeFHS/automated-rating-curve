@@ -82,3 +82,22 @@ sections. Directions are measured on the raster's grid, as you see it with row 0
 ![A stream 30° clockwise from east on a north-up grid, its cross section, XS_Angle and the two sides](images/directions.svg)
 
 The inputs `Degree_Manip` and `Degree_Interval` are in degrees.
+
+## The same results on every system
+
+The C math library's `sin`, `cos`, `atan2`, `exp`, `log` and `hypot` (numpy's float64 ones and numba's call it too)
+differ in their last digit from one system's to another's: between Windows and Linux, in about 1 in 30 sines and
+cosines, 1 in 200 exponentials and 1 in 6 `hypot`s. A cross section's points step exactly one cell along the axis it
+crosses fastest, so such a digit could put a point on the raster's edge on one system and off it on the other; and on
+flat ground a last digit in a channel's carved depth or a valley's smoothing moved top widths by up to 100 m. So ARC
+works these out itself (`arc.portable`):
+
+- Sines and cosines, exponentials and logarithms by its own code, ported from fdlibm and fast C libraries' tables:
+  the same bits on every system, within an ulp of the true value, and at least as fast as the C library's.
+- A cross section's direction is used as its cosine and sine rounded to six decimals. Directions still come from the
+  C library's `atan2`, whose last digit can differ; rounded, their cosines and sines are the same everywhere but in
+  about one direction in 10^10.
+- Lengths between cells are `sqrt(x*x + y*y)` rather than `hypot`.
+
+The representative cross sections' fit (`Build_Representative_Cross_Section`) still uses numpy's logarithms and least
+squares, so its amplitudes and exponents can differ between systems in their last digits.
