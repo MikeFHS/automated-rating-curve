@@ -1,20 +1,18 @@
 """
 Sines, cosines, exponentials, logarithms and lengths worked out the same, to the last digit, on every system.
 
-The C math library's sin, cos, atan2, exp, log and hypot (numpy's float64 ones and numba's call it too) differ in
+The C math library's sin, cos, atan2, exp, log and hypot (numpy's float64 ones and numba's) differ in
 their last digit from one system's to another's: between Windows' and Linux's, in about 1 in 30 sines and cosines,
 1 in 750 angles, 1 in 200 exponentials, 1 in 4,000 logarithms and 1 in 6 hypot's. A cross section's ordinates step
 exactly a cell along the axis it crosses fastest, so such a digit can put an ordinate on the raster's edge row on one
 system and off it on the other; and on flat ground, where a hair's change in a water surface floods over a rim, a last
-digit in a bed's depth or a valley's smoothing moved a top width by up to 100 m.
+digit in a bed's depth or a valley's smoothing can move top widths and water surfaces by many meters.
 
-So ARC has its own: sin_cos, exp and log, ported from fdlibm (Sun's freely distributable libm, which FreeBSD's and many
-others grew from) and fast C libraries' tables, with additions, multiplications and bit operations alone, which IEEE
-arithmetic rounds the same everywhere (numba doesn't fuse a multiplication and an addition into one rounding unless
-asked to, with fastmath). Each is within an ulp of the true value and at least as fast as the C library's, compiled, on
-Windows and on Linux (an i7-14700, ns a call: sin and cos together 12 and 11 against 18 and 19, exp 3.1 and 2.6
-against 3.8 and 3.7, log 3.5 and 2.8 against 3.5 and 3.2). Lengths are sqrt(x*x + y*y), which every system rounds
-correctly (1.2 to 1.5 ns against hypot's 3 on Windows and 12 on Linux).
+So ARC has its own: sin_cos, exp and log, ported from fdlibm and fast C libraries' tables, with additions, multiplications 
+and bit operations alone, which IEEE arithmetic rounds the same everywhere. Each is within an ulp of the true value and at 
+least as fast as the C library's, compiled, on Windows and on Linux (an i7-14700, ns a call: sin and cos together 12 and 
+11 against 18 and 19, exp 3.1 and 2.6 against 3.8 and 3.7, log 3.5 and 2.8 against 3.5 and 3.2). Lengths are 
+sqrt(x*x + y*y), which every system rounds correctly.
 
 Angles still come from the C library's atan2. So a cross section's cosine and sine (cos_sin) are rounded to
 DIRECTION_DECIMALS decimals (a millionth: under a millimetre across a kilometre), which takes up an angle a last digit

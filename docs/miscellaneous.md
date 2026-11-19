@@ -56,10 +56,7 @@ shape, even when it is narrower than a cell.
 
 - The DEM, stream and land cover rasters, and the water mask, must have the same rows and columns, be north-up or
   south-up (not rotated), and have coordinates in metres or degrees. In degrees, ARC works out the cells' size in metres,
-  along the ellipsoid at the raster's middle latitude, to the micrometre: unrounded, its last digits differ from one
-  system's C math library to another's, and with them a few rating curves and bathymetry cells on Windows and Linux.
-  The size is worked out by formulas those digits move by 1e-14 m (`cell_size_on_ellipsoid`), not by pyproj's geodesic,
-  which they move by 1e-9 m: enough, at about one latitude in a thousand, to round a cell's size differently.
+  along the ellipsoid at the raster's middle latitude, rounded to the micrometre.
 - DEM cells without data act as walls. Stream raster cells at or below 0, or without data, aren't stream.
 - The land cover is read as whole numbers from 0 to 255. The water mask's water is any value but 0 or no data.
 - The bathymetry raster is written as 32-bit floats, and the flood raster as 8-bit whole numbers.
@@ -85,11 +82,10 @@ The inputs `Degree_Manip` and `Degree_Interval` are in degrees.
 
 ## The same results on every system
 
-The C math library's `sin`, `cos`, `atan2`, `exp`, `log` and `hypot` (numpy's float64 ones and numba's call it too)
+The C math library's `sin`, `cos`, `atan2`, `exp`, `log` and `hypot` (for float64)
 differ in their last digit from one system's to another's: between Windows and Linux, in about 1 in 30 sines and
 cosines, 1 in 200 exponentials and 1 in 6 `hypot`s. A cross section's points step exactly one cell along the axis it
-crosses fastest, so such a digit could put a point on the raster's edge on one system and off it on the other; and on
-flat ground a last digit in a channel's carved depth or a valley's smoothing moved top widths by up to 100 m. So ARC
+crosses fastest, so such a digit could put a point on the raster's edge on one system and off it on the other. So ARC
 works these out itself (`arc.portable`):
 
 - Sines and cosines, exponentials and logarithms by its own code, ported from fdlibm and fast C libraries' tables:

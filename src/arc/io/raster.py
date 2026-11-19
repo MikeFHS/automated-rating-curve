@@ -226,8 +226,7 @@ def cell_size_on_ellipsoid(a: float, e2: float, latitude: float, size_x: float, 
     24. For cells of up to 36 arcseconds, both are pyproj's geodesics (Geod.inv) to within 2e-9 m, the geodesics' own
     error. A geodesic is worked out from two distances from the equator, so a last-digit difference in sin or cos from
     one system's C math library to another's moved it by 6e-10 m between Windows and Linux: enough to round
-    differently where a size falls that near a micrometre's half, about one latitude in a thousand (the 1-arcsecond
-    tiles at 50 N and 49 S, for example). These move by 1e-14 m.
+    differently where a size falls that near a micrometre's half, about one latitude in a thousand. These move by 1e-14 m.
     """
     phi, d_phi, d_lambda = math.radians(latitude), math.radians(size_y), math.radians(size_x)
 
