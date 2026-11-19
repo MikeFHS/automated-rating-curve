@@ -189,12 +189,18 @@ def hydraulic_profile(xs: XSection) -> Profile:
             return xs.profile
         return uniform_profile(xs.elevations, xs.mannings_n, xs.ordinate_distance)
 
-    # Spliced once for the same valley, ground and banks: the cache holds them, so none is a new object in their place
-    sources = (valley, xs.profile, xs.elevations, xs.mannings_n, xs.left_bank_distance, xs.right_bank_distance)
+    # Spliced once for the same valley, ground and banks: the cache holds them, so none is a new object in their place.
+    # Checked a field at a time, without a generator: it's asked for millions of times, nearly always found
+    left, right = xs.left_bank_distance, xs.right_bank_distance
     cached = xs._spliced
-    if cached is not None and all(a is b or (isinstance(a, float) and a == b) for a, b in zip(cached[0], sources)):
-        return cached[1]
+    if cached is not None:
+        kept = cached[0]
+        if kept[0] is valley and kept[1] is xs.profile and kept[2] is xs.elevations and kept[3] is xs.mannings_n \
+                and (kept[4] is left or (isinstance(kept[4], float) and kept[4] == left)) \
+                and (kept[5] is right or (isinstance(kept[5], float) and kept[5] == right)):
+            return cached[1]
 
+    sources = (valley, xs.profile, xs.elevations, xs.mannings_n, left, right)
     profile = xs.profile if xs.profile is not None else uniform_profile(xs.elevations, xs.mannings_n,
                                                                           xs.ordinate_distance)
     spliced = splice(profile, float(xs.left_bank_distance), float(xs.right_bank_distance), valley)

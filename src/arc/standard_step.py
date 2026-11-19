@@ -491,13 +491,11 @@ def _connect_of(connects, connect_starts, threaded, m, none):
 @njit(cache=True, error_model="numpy")
 def _table(stations, elevations, mannings_n, center, left_bank, right_bank, levels, k_decay, shallow_factor,
            deep_factor, connect=None):
-    """Area, wetted perimeter, top width, conveyance and velocity-head coefficient at each level."""
+    """Area, wetted perimeter, top width, conveyance and velocity-head coefficient at each level: a row of each, in one
+    array, which Python takes apart into its rows without a new array for each (HydraulicTable)."""
     m = levels.size
-    area = np.empty(m)
-    perimeter = np.empty(m)
-    width = np.empty(m)
-    conveyance = np.empty(m)
-    alpha = np.empty(m)
+    out = np.empty((5, m))
+    area, perimeter, width, conveyance, alpha = out[0], out[1], out[2], out[3], out[4]
     ascending = True
     for i in range(1, m):
         ascending = ascending and levels[i] > levels[i - 1]
@@ -510,8 +508,8 @@ def _table(stations, elevations, mannings_n, center, left_bank, right_bank, leve
             area[i], perimeter[i], width[i], conveyance[i] = rows[i, 0], rows[i, 1], rows[i, 2], rows[i, 3]
             alpha[i] = _alpha(rows[i, 0], rows[i, 3], rows[i, 4], rows[i, 5])
 
-        return area, perimeter, width, conveyance, alpha
-    
+        return out
+
     for i in range(m):
         a, p, t, k, a_channel, k_channel = section_hydraulics(stations, elevations, mannings_n, center, left_bank,
                                                               right_bank, levels[i], k_decay, shallow_factor,
@@ -519,7 +517,7 @@ def _table(stations, elevations, mannings_n, center, left_bank, right_bank, leve
         area[i], perimeter[i], width[i], conveyance[i] = a, p, t, k
         alpha[i] = _alpha(a, k, a_channel, k_channel)
 
-    return area, perimeter, width, conveyance, alpha
+    return out
 
 
 class HydraulicTable:
@@ -636,6 +634,32 @@ def flows_for(max_flow: float, baseflow: float, increments: int) -> np.ndarray:
     return flows
 
 
+def flows_for_cells(max_flow: np.ndarray, baseflow: np.ndarray, increments: int) -> np.ndarray:
+    """flows_for of each cell, a row each, all at once: the same numbers (each the same shares, worked out once, times
+    the cell's maximum flow, with its baseflow node put in among them), without a few small arrays for every cell."""
+    max_flow = np.asarray(max_flow, dtype=np.float64)
+    baseflow = np.asarray(baseflow, dtype=np.float64)
+    n = max(int(increments), 0)
+    flows = np.empty((max_flow.size, n))
+    if n == 0 or max_flow.size == 0:
+        return flows
+
+    node = baseflow - BASEFLOW_MARGIN
+    inserted = (n > 1) & (baseflow > BASEFLOW_MARGIN) & (node < max_flow)
+    plain = ~inserted
+    flows[plain] = max_flow[plain, None] * ((np.arange(1, n + 1) / n) ** FLOW_POWER)
+    if inserted.any():
+        shares = max_flow[inserted, None] * ((np.arange(1, n) / (n - 1)) ** FLOW_POWER)
+        nodes = node[inserted, None]
+        # np.searchsorted's place for each node among its row's shares, which rise
+        at = (shares < nodes).sum(axis=1, keepdims=True)
+        j = np.arange(n)
+        taken = np.take_along_axis(shares, np.minimum(j - (j > at), n - 2), axis=1)
+        flows[inserted] = np.where(j == at, nodes, taken)
+
+    return flows
+
+
 def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray, reaches: np.ndarray, sections: list,
                         slopes: np.ndarray, max_flow: np.ndarray, baseflow: np.ndarray, curves: RatingCurves,
                         dx: float, dy: float, *, roughness: DepthRoughness | None = None,
@@ -706,7 +730,8 @@ def apply_standard_step(network: nx.DiGraph, rows: np.ndarray, cols: np.ndarray,
         ks, stations = ks[order], np.asarray(stations, dtype=np.float64)
         tops = np.nanmax(curves.increments[ks, :, WSE], axis=1).tolist()
         tables = [_table_for(sections[k].xs, top, roughness, k, ensure_level) for k, top in zip(ks, tops)]
-        flows = np.array([flows_for(float(max_flow[k]), float(baseflow[k]), increments) for k in ks])
+        flows = flows_for_cells(np.asarray(max_flow, dtype=np.float64)[ks],
+                                np.asarray(baseflow, dtype=np.float64)[ks], increments)
         shares = flows / np.asarray(max_flow, dtype=np.float64)[ks, None]
         # Each cell's level and the flows it holds the water at most at it: those up to its baseflow
         levels = levels_all[ks]

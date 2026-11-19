@@ -79,6 +79,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
+from itertools import filterfalse
 from pathlib import Path
 from typing import NamedTuple
 
@@ -176,10 +177,9 @@ from arc.xsection.subcell import reconstruct_all
 from arc.xsection.threads import ThreadFinder, in_threads, outside, reach_out
 from arc.xsection.valley import (
     Valley,
-    ray_reach,
     slope_ratio,
     valley_axes,
-    valley_lines,
+    valley_overbanks,
     worth_splitting,
 )
 from arc.xsection.xsection import Profile, XSection
@@ -1399,8 +1399,12 @@ def reaches_above(section: Section, level: float) -> bool:
     above the water on both sides, or it's untrimmed (or manual). Only the latter for a level that isn't a number."""
     xs = section.xs
     valley = xs.valley
-    if (valley.even and valley.half >= valley.full_half) if valley is not None else \
-            (xs.elevations.size // 2 >= section.full_half):
+    if valley is not None:
+        # Valley.even and Valley.half >= Valley.full_half, its centre worked out once: even lines are each centre long
+        centre = valley.centre
+        if 2 * centre + 1 == valley.elevations.size and centre >= valley.full_half:
+            return True
+    elif xs.elevations.size // 2 >= section.full_half:
         return True
 
     if valley is None and xs.profile is None:
@@ -1533,22 +1537,16 @@ def sample_valley(grid: Grid, mannings_n: ManningsN, section: Section, direction
     center = float(z[z.size // 2])
     ends = [float(e) for e in (z[0], z[-1]) if e < OFF_RASTER_ELEVATION]
     level = center + max(min(ends) - center if ends else MAX_BANK_HEIGHT, 0.0)
-    reaches = [ray_reach(grid.dem, x0, y0, c, s, spacing, dx, dy, level) for (x0, y0), c, s in lines]
-    full_half = max(edge for _, edge, _ in reaches)
-    if half is None and uneven:
-        # Each line out to its own ground above the level, which is at most its edge (and at least one ordinate)
-        halves = tuple(max(min(above, full_half), 1) for above, _, _ in reaches)
-    else:
-        half = max(above for above, _, _ in reaches) if half is None else int(half)
-        halves = (max(min(half, full_half), 1),) * 2
-
     center_n = float(xs.mannings_n[xs.mannings_n.size // 2]) if xs.mannings_n.size else 0.0
-    # The water the lines cross: the stream cells and the water mask's
-    elevations, n, left = valley_lines(
+    # Each line's reach to the first ground above the level, then the lines themselves, with the water they cross:
+    # the stream cells and the water mask's (valley_overbanks, one call for what took three)
+    ((left_x, left_y), left_cos, left_sin), ((right_x, right_y), right_cos, right_sin) = lines
+    elevations, n, left, full_half = valley_overbanks(
         grid.dem, mannings_n.values,
-        tuple((float(x0), float(y0), float(c), float(s)) for (x0, y0), c, s in lines), float(spacing), halves,
-        float(dx), float(dy), center, center_n, *grid.stream_index(), grid.water_mask,
-        tuple(ground for _, _, ground in reaches))
+        ((float(left_x), float(left_y), float(left_cos), float(left_sin)),
+         (float(right_x), float(right_y), float(right_cos), float(right_sin))),
+        float(spacing), float(dx), float(dy), float(level), -1 if half is None else int(half), bool(uneven), center,
+        center_n, *grid.stream_index(), grid.water_mask)
     return Valley(float(direction), float(sinuosity), float(ratio), elevations, n, float(spacing), int(full_half),
                   None if 2 * left + 1 == elevations.size else int(left))
 
@@ -2021,7 +2019,7 @@ def drop_edge_curve(configs: Configs, grid: Grid, section: Section | None, curve
     if not math.isfinite(wse[-1]):
         return False
 
-    return _drop_at_edge(configs, grid, section, curves, k, max(w for w in wse if w == w), resampler)  # np.nanmax's
+    return _drop_at_edge(configs, grid, section, curves, k, max(filterfalse(math.isnan, wse)), resampler)  # np.nanmax
 
 
 def _drop_at_edge(configs: Configs, grid: Grid, section: Section | None, curves: RatingCurves, k: int, top: float,

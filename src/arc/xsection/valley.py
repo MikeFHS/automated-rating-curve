@@ -341,6 +341,32 @@ def ray_reach(raster, x0, y0, cos, sin, spacing, dx, dy, level):
 
 
 @njit(cache=True, error_model="numpy")
+def valley_overbanks(dem, mannings_n, lines, spacing, dx, dy, level, half, uneven, centre, centre_n, stream_starts,
+                     stream_cols, water_mask):
+    """arc.pipeline.sample_valley's two lines in one call, rather than three from Python: each line's ray_reach to its
+    first ground above level, then valley_lines (with what they sampled) out `half` ordinates, to the raster's edge at
+    most; with half below 0, out to the farther line's first ground above level, or with uneven, each line to its
+    own. Returns valley_lines' ground, Manning's n and left line's count, and full_half: how many ordinates the
+    longer line has out to the raster's edge."""
+    x0, y0, cos0, sin0 = lines[0]
+    x1, y1, cos1, sin1 = lines[1]
+    above0, edge0, ground0 = ray_reach(dem, x0, y0, cos0, sin0, spacing, dx, dy, level)
+    above1, edge1, ground1 = ray_reach(dem, x1, y1, cos1, sin1, spacing, dx, dy, level)
+    full_half = max(edge0, edge1)
+    if half < 0 and uneven:
+        # Each line out to its own ground above the level, which is at most its edge (and at least one ordinate)
+        halves = (max(min(above0, full_half), 1), max(min(above1, full_half), 1))
+    else:
+        if half < 0:
+            half = max(above0, above1)
+        halves = (max(min(half, full_half), 1), max(min(half, full_half), 1))
+
+    elevations, n, left = valley_lines(dem, mannings_n, lines, spacing, halves, dx, dy, centre, centre_n,
+                                       stream_starts, stream_cols, water_mask, (ground0, ground1))
+    return elevations, n, left, full_half
+
+
+@njit(cache=True, error_model="numpy")
 def _steps_off(start, step, size):
     """How many steps of `step` from `start` it takes to leave [0, size - 1]."""
     room = (size - 1 - start) / step if step > 0.0 else start / -step

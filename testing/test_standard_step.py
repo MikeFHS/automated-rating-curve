@@ -24,6 +24,7 @@ from arc.standard_step import (
     HydraulicTable,
     _eddy_ends,
     flows_for,
+    flows_for_cells,
     step_up,
     velocity_head,
 )
@@ -203,6 +204,20 @@ def test_the_flows_are_shares_of_the_maximum_and_the_baseflow_is_one_of_them() -
 
     np.testing.assert_allclose(flows_for(10.0, 3.0, 1), [10.0])  # one flow: the maximum
     assert flows_for(10.0, 3.0, 0).size == 0
+
+
+@pytest.mark.parametrize("increments", [0, 1, 2, 5, 30])
+def test_the_flows_of_many_cells_at_once_are_each_cell_s_bit_for_bit(increments: int) -> None:
+    """flows_for_cells gives each cell flows_for's row, to the bit: baseflows below the first share, between any two,
+    at a share, at the maximum and above it, none, and maximum flows of 0 and NaN."""
+    rng = np.random.default_rng(increments)
+    max_flow = np.concatenate([rng.uniform(0.1, 5000.0, 400), [0.0, np.nan, 7.0, 7.0, 7.0, 7.0, 7.0]])
+    baseflow = np.concatenate([max_flow[:400] * rng.uniform(-0.1, 1.2, 400), [3.0, 3.0, 0.0, np.nan, 7.0, 7.001,
+                                                                                   7.0 * (1 / 29) ** FLOW_POWER + 0.001]])
+    together = flows_for_cells(max_flow, baseflow, increments)
+    assert together.shape == (max_flow.size, increments)
+    for k in range(max_flow.size):
+        assert together[k].tobytes() == flows_for(float(max_flow[k]), float(baseflow[k]), increments).tobytes(), k
 
 
 def test_the_flows_crowd_where_the_old_ones_left_a_gap_above_the_baseflow() -> None:
