@@ -16,6 +16,8 @@ from pyproj import CRS, Geod
 gdal.UseExceptions()
 
 _METRES = {"metre", "metres", "meter", "meters"}
+# The decimals, of a metre, a geographic raster's cell size is rounded to (see Raster.cell_size_in_metres)
+CELL_SIZE_DECIMALS = 6
 _TILE = 512  # the side of a compressed raster's tiles, in cells
 # The stored types that GDAL converts to each type exactly as numpy's astype does, every value kept
 _EXACTLY_AS = {np.dtype(np.float64): {np.dtype(t) for t in (np.float32, np.int8, np.uint8, np.int16, np.uint16,
@@ -109,7 +111,13 @@ class Raster:
         """The cells' width and height in metres.
 
         A geographic raster's cells are measured along the geodesics of its ellipsoid at the latitude half way
-        between its top and bottom edges. A projected raster's are its resolution, which must be in metres.
+        between its top and bottom edges, to the micrometre (CELL_SIZE_DECIMALS). A projected raster's are its
+        resolution, which must be in metres.
+
+        The geodesic across a cell comes out a little differently from one system's C math library to another's: a
+        30 m cell differed by 6e-10 m between Windows and Linux, as it cancels most of its digits. Every slope,
+        direction and cross section is worked out from the cells' size, and with it the rating curves and the
+        bathymetry differed by up to metres in a few cells; rounded, the size is the same on every system.
         """
         size_x, size_y = self.resolution
         if self.crs.is_geographic:
@@ -119,7 +127,7 @@ class Raster:
             geod = self._geod()
             _, _, dy = geod.inv(0.0, latitude, 0.0, latitude + size_y)
             _, _, dx = geod.inv(0.0, latitude, size_x, latitude)
-            return abs(float(dx)), abs(float(dy))
+            return round(abs(float(dx)), CELL_SIZE_DECIMALS), round(abs(float(dy)), CELL_SIZE_DECIMALS)
         
         if self.crs.is_projected:
             units = self.axis_units()

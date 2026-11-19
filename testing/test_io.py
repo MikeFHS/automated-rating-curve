@@ -104,7 +104,20 @@ def test_a_geographic_raster_s_cells_are_measured_on_its_ellipsoid_at_its_middle
     geod = Geod(ellps=ellipsoid)
 
     expected = (geod.inv(0.0, latitude, width, latitude)[2], geod.inv(0.0, latitude, 0.0, latitude + height)[2])
-    assert raster.cell_size_in_metres() == pytest.approx(expected, rel=1e-9)
+    assert raster.cell_size_in_metres() == pytest.approx(expected, abs=5e-7)  # to the micrometre
+    assert all(round(size, 6) == size for size in raster.cell_size_in_metres())
+
+
+def test_a_geographic_raster_s_cell_size_is_the_same_whatever_the_last_digits_of_its_geodesic(
+        tmp_path: Path, monkeypatch) -> None:
+    """The geodesic across a cell differs in its last digits from one system's C math library to another's (by 6e-10
+    m of 30 m between Windows and Linux): rounded to the micrometre, the cell size doesn't."""
+    raster = Raster(write_raster(tmp_path / "dem.tif", np.ones((10, 10), np.float32), GEOGRAPHIC, 4326))
+    inv, sizes = Geod.inv, set()
+    for wobble in (1.0, 1.0 + 2e-11, 1.0 - 2e-11):
+        monkeypatch.setattr(Geod, "inv", lambda self, *args, w=wobble: (*inv(self, *args)[:2], inv(self, *args)[2] * w))
+        sizes.add(raster.cell_size_in_metres())
+    assert len(sizes) == 1
 
 
 def test_a_projected_raster_s_cells_are_its_resolution(tmp_path: Path) -> None:
