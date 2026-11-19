@@ -58,6 +58,8 @@ shape, even when it is narrower than a cell.
   south-up (not rotated), and have coordinates in metres or degrees. In degrees, ARC works out the cells' size in metres,
   along the ellipsoid at the raster's middle latitude, to the micrometre: unrounded, its last digits differ from one
   system's C math library to another's, and with them a few rating curves and bathymetry cells on Windows and Linux.
+  The size is worked out by formulas those digits move by 1e-14 m (`cell_size_on_ellipsoid`), not by pyproj's geodesic,
+  which they move by 1e-9 m: enough, at about one latitude in a thousand, to round a cell's size differently.
 - DEM cells without data act as walls. Stream raster cells at or below 0, or without data, aren't stream.
 - The land cover is read as whole numbers from 0 to 255. The water mask's water is any value but 0 or no data.
 - The bathymetry raster is written as 32-bit floats, and the flood raster as 8-bit whole numbers.

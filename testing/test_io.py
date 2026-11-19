@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import geopandas as gpd
@@ -10,6 +11,7 @@ from pyproj import CRS, Geod
 from shapely.geometry import LineString, MultiLineString
 
 from arc.io import Raster, Vector
+from arc.io.raster import cell_size_on_ellipsoid
 
 gdal.UseExceptions()
 
@@ -108,15 +110,73 @@ def test_a_geographic_raster_s_cells_are_measured_on_its_ellipsoid_at_its_middle
     assert all(round(size, 6) == size for size in raster.cell_size_in_metres())
 
 
-def test_a_geographic_raster_s_cell_size_is_the_same_whatever_the_last_digits_of_its_geodesic(
-        tmp_path: Path, monkeypatch) -> None:
-    """The geodesic across a cell differs in its last digits from one system's C math library to another's (by 6e-10
-    m of 30 m between Windows and Linux): rounded to the micrometre, the cell size doesn't."""
-    raster = Raster(write_raster(tmp_path / "dem.tif", np.ones((10, 10), np.float32), GEOGRAPHIC, 4326))
-    inv, sizes = Geod.inv, set()
-    for wobble in (1.0, 1.0 + 2e-11, 1.0 - 2e-11):
-        monkeypatch.setattr(Geod, "inv", lambda self, *args, w=wobble: (*inv(self, *args)[:2], inv(self, *args)[2] * w))
-        sizes.add(raster.cell_size_in_metres())
+WGS84 = Geod(ellps="WGS84")
+ARCSECOND = 1.0 / 3600.0
+
+
+def _tile_latitude(south: int) -> float:
+    """The latitude a 1-degree, 1-arcsecond tile is measured at, as nencarta buffers it, by 0.1 degrees: its middle."""
+    top = south + 1.1 + ARCSECOND / 2.0
+    return (top + (top - 4320 * ARCSECOND)) / 2.0
+
+
+def _geodesic_size(latitude: float, size: float = ARCSECOND) -> tuple[float, float]:
+    return abs(WGS84.inv(0.0, latitude, size, latitude)[2]), abs(WGS84.inv(0.0, latitude, 0.0, latitude + size)[2])
+
+
+@pytest.mark.parametrize("arcseconds", [1.0 / 3.0, 1.0, 3.0, 30.0])
+def test_a_cell_s_size_on_its_ellipsoid_is_its_geodesics(arcseconds: float) -> None:
+    """Within 3e-9 m, about the geodesics' own error, from the equator to 80 degrees."""
+    size = arcseconds * ARCSECOND
+    for latitude in np.linspace(-80.0, 80.0, 161):
+        expected = _geodesic_size(float(latitude), size)
+        assert cell_size_on_ellipsoid(WGS84.a, WGS84.es, float(latitude), size, size) == pytest.approx(expected,
+                                                                                                         abs=3e-9)
+
+
+def test_a_tile_s_cell_size_rounds_as_its_geodesics_did() -> None:
+    """At every 1-degree tile from 60 S to 75 N, to the micrometre: the cell size, and with it ARC's outputs, are what
+    the geodesics gave them on Linux."""
+    for south in range(-60, 75):
+        latitude = _tile_latitude(south)
+        size = cell_size_on_ellipsoid(WGS84.a, WGS84.es, latitude, ARCSECOND, ARCSECOND)
+        assert [round(s, 6) for s in size] == [round(s, 6) for s in _geodesic_size(latitude)], south
+
+
+def test_a_cell_s_size_is_the_same_to_the_micrometre_whatever_the_last_digits_of_sin_and_cos(monkeypatch) -> None:
+    """Another system's C math library may give sin and cos a last digit off. At the tile at 50 N, the geodesic's
+    height of a cell is 4e-10 m from a micrometre's half, nearer than the geodesic moved between Windows and Linux;
+    the cell size doesn't move."""
+    import arc.io.raster as raster_module
+
+    latitude = _tile_latitude(50)
+    height = _geodesic_size(latitude)[1]
+    assert abs((height * 1e6) % 1.0 - 0.5) < 1e-3  # within a nanometre of rounding either way
+
+    class OffByOne:
+        """math, with sin and cos `ulps` last digits off."""
+        def __init__(self, ulps: int):
+            self.ulps = ulps
+
+        def __getattr__(self, name):
+            return getattr(math, name)
+
+        def _off(self, value: float) -> float:
+            for _ in range(abs(self.ulps)):
+                value = float(np.nextafter(value, np.inf if self.ulps > 0 else -np.inf))
+            return value
+
+        def sin(self, x: float) -> float:
+            return self._off(math.sin(x))
+
+        def cos(self, x: float) -> float:
+            return self._off(math.cos(x))
+
+    sizes = set()
+    for ulps in (-2, -1, 0, 1, 2):
+        monkeypatch.setattr(raster_module, "math", OffByOne(ulps))
+        width, height = cell_size_on_ellipsoid(WGS84.a, WGS84.es, latitude, ARCSECOND, ARCSECOND)
+        sizes.add((round(width, 6), round(height, 6)))
     assert len(sizes) == 1
 
 
