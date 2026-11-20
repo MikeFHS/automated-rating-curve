@@ -19,6 +19,7 @@ import numpy as np
 from numba import njit
 
 from arc.bathymetry.banks import Banks, single_cell_banks
+from arc.portable import exp, log
 from arc.xsection.xsection import XSection
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ def _log_conveyance(y, bottom, top):
     area = 0.5 * y * (bottom + top)
     slant = math.sqrt(side * side + y * y)
     perimeter = bottom + 2.0 * slant
-    return (5.0 / 3.0) * math.log(area) - (2.0 / 3.0) * math.log(perimeter), \
+    return (5.0 / 3.0) * log(area) - (2.0 / 3.0) * log(perimeter), \
         (5.0 / 3.0) / y - (4.0 / 3.0) * y / (slant * perimeter)
 
 
@@ -67,17 +68,17 @@ def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
     if not slope > 0.0 or not mannings_n > 0.0:
         return math.nan
     
-    target = math.log(q * mannings_n / math.sqrt(slope))
+    target = log(q * mannings_n / math.sqrt(slope))
 
     # Start from shallow water across the whole top width W, where A = W_mean * y and P is about W, so that
     # ln K = 5/3 * ln(W_mean * y) - 2/3 * ln W
-    u = 0.6 * target + 0.4 * math.log(top_width) - math.log(0.5 * (bottom_width + top_width))
+    u = 0.6 * target + 0.4 * log(top_width) - log(0.5 * (bottom_width + top_width))
 
     # ln K rises with ln y at a rate between 1 and 8/3, so Newton's method on ln y converges in a few steps. It
     # bisects if a step would leave the bracket of the steps so far, which rounding might cause.
     u_lo, u_hi = -np.inf, np.inf
     for _ in range(100):
-        y = math.exp(u)
+        y = exp(u)
         value, slope_in_y = _log_conveyance(y, bottom_width, top_width)
         error = value - target
         if error == 0.0:
@@ -90,7 +91,7 @@ def trapezoid_depth(q, bottom_width, top_width, slope, mannings_n):
         if converged or not math.isfinite(u):
             break
 
-    return math.exp(u)
+    return exp(u)
 
 
 def channel_depth(xs: XSection, banks: Banks, q: float, slope: float, *, trapezoid_height: float,

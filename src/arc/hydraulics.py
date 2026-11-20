@@ -48,6 +48,7 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
+from arc.portable import exp, log
 from arc.xsection.valley import splice
 from arc.xsection.xsection import Profile, XSection
 
@@ -109,7 +110,8 @@ def _conveyance(area, weighted_perimeter):
     if 1e-300 < x < 1e300:
         return area * area * _inverse_cbrt(x)
     
-    return area ** (5.0 / 3.0) / weighted_perimeter ** (2.0 / 3.0)  # out of range, NaN, or no roughness
+    # Out of range, NaN, or no roughness: A**(5/3) / W**(2/3), by arc.portable's exp and log, alike everywhere
+    return exp((5.0 / 3.0) * log(area) - (2.0 / 3.0) * log(weighted_perimeter))
 
 
 @njit(cache=True, error_model="numpy")
@@ -189,12 +191,18 @@ def hydraulic_profile(xs: XSection) -> Profile:
             return xs.profile
         return uniform_profile(xs.elevations, xs.mannings_n, xs.ordinate_distance)
 
-    # Spliced once for the same valley, ground and banks: the cache holds them, so none is a new object in their place
-    sources = (valley, xs.profile, xs.elevations, xs.mannings_n, xs.left_bank_distance, xs.right_bank_distance)
+    # Spliced once for the same valley, ground and banks: the cache holds them, so none is a new object in their place.
+    # Checked a field at a time, without a generator: it's asked for millions of times, nearly always found
+    left, right = xs.left_bank_distance, xs.right_bank_distance
     cached = xs._spliced
-    if cached is not None and all(a is b or (isinstance(a, float) and a == b) for a, b in zip(cached[0], sources)):
-        return cached[1]
+    if cached is not None:
+        kept = cached[0]
+        if kept[0] is valley and kept[1] is xs.profile and kept[2] is xs.elevations and kept[3] is xs.mannings_n \
+                and (kept[4] is left or (isinstance(kept[4], float) and kept[4] == left)) \
+                and (kept[5] is right or (isinstance(kept[5], float) and kept[5] == right)):
+            return cached[1]
 
+    sources = (valley, xs.profile, xs.elevations, xs.mannings_n, left, right)
     profile = xs.profile if xs.profile is not None else uniform_profile(xs.elevations, xs.mannings_n,
                                                                           xs.ordinate_distance)
     spliced = splice(profile, float(xs.left_bank_distance), float(xs.right_bank_distance), valley)
@@ -1061,7 +1069,9 @@ def _parameters(roughness: DepthRoughness | None) -> tuple[float, float, float]:
 
 def _to_hydraulic_geometry(area: float, perimeter: float, top_width: float, weighted_perimeter: float) -> HydraulicGeometry:
     if perimeter > 0.0:
-        return HydraulicGeometry(area, perimeter, area / perimeter, top_width, (weighted_perimeter / perimeter) ** (2 / 3))
+        # (W / P) ** (2/3), by arc.portable's exp and log, alike everywhere
+        return HydraulicGeometry(area, perimeter, area / perimeter, top_width,
+                                 exp((2.0 / 3.0) * log(weighted_perimeter / perimeter)))
     if perimeter == 0.0:
         return HydraulicGeometry(0.0, 0.0, 0.0, 0.0, 0.0)  # dry
     

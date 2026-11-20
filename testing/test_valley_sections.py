@@ -30,7 +30,16 @@ from arc.outputs import vdt_dataframe
 from arc.outputs.rating_curves import SLOPE as SLOPE_COLUMN
 from arc.pipeline import valley_windows
 from arc.xsection.stream_path import along_stream_stations
-from arc.xsection.valley import Valley, fill_other_water, slope_ratio, turn, valley_axes
+from arc.xsection.valley import (
+    Valley,
+    fill_other_water,
+    ray_reach,
+    slope_ratio,
+    turn,
+    valley_axes,
+    valley_lines,
+    valley_overbanks,
+)
 from arc.xsection.xsection import Profile, XSection
 
 SPACING, N = 5.0, 0.04
@@ -270,6 +279,85 @@ def test_the_left_line_is_on_the_section_s_left(meander_errors, standard_step: b
         assert own @ theirs > 0.0
 
 
+def test_a_shorter_line_goes_on_to_the_end_of_the_water_at_its_end() -> None:
+    """A line cut short where its ground first rises above the level goes on to the first ordinate past it that isn't
+    water, so that the water there is filled to the lower of its lips, as on the line as long as the longer: the water
+    from ordinate 2 to 6 (the rise at 3 in it) is filled to ordinate 7's 0.6, not ordinate 1's 1.0."""
+    dem = np.ones((5, 40))
+    water = np.zeros((5, 40), np.uint8)
+    for k, z in ((2, 0.5), (3, 5.0), (4, 0.5), (5, 0.5), (6, 0.5), (7, 0.6)):
+        dem[2, 19 - k] = z
+        water[2, 19 - k] = k < 7
+    lines = ((19.0, 2.0, -1.0, 0.0), (21.0, 2.0, 1.0, 0.0))
+    starts, cols = np.zeros(6, np.int64), np.empty(0, np.int64)
+    known = (np.empty(0), np.empty(0))
+
+    def sample(halves):
+        return valley_lines(dem, np.full(dem.shape, N), lines, 1.0, halves, 1.0, 1.0, 0.0, N, starts, cols, water,
+                            known)
+
+    z_even, n_even, centre = sample((10, 10))
+    z, n, left = sample((3, 10))
+    assert centre == 10 and left == 7
+    np.testing.assert_array_equal(z, z_even[centre - left:])
+    np.testing.assert_array_equal(n, n_even[centre - left:])
+    assert z[left - 2] == 0.6
+
+
+@pytest.mark.parametrize("half, uneven", [(-1, False), (-1, True), (4, False), (4, True), (500, False)])
+def test_both_lines_sampled_in_one_call_are_the_three_calls_they_replace(half: int, uneven: bool) -> None:
+    """valley_overbanks gives what each line's ray_reach and then valley_lines gave, bit for bit, as sample_valley
+    took them: out to the farther line's first ground above the level, each to its own (uneven), or `half`, at most
+    to the raster's edge."""
+    rng = np.random.default_rng(2 * (half + 1) + uneven)
+    dem = rng.uniform(0.0, 3.0, (60, 70))
+    n_raster = rng.uniform(0.02, 0.1, dem.shape).astype(np.float32)
+    water = (rng.random(dem.shape) < 0.2).astype(np.uint8)
+    lines = ((30.3, 29.6, -0.8, 0.6), (33.1, 31.2, 0.8, -0.6))
+    rows, cols = np.nonzero(rng.random(dem.shape) < 0.05)
+    starts = np.searchsorted(rows, np.arange(dem.shape[0] + 1)).astype(np.int64)
+    cols = cols.astype(np.int64)
+    level = 1.7
+    reaches = [ray_reach(dem, *line, 1.3, 1.0, 1.2, level) for line in lines]
+    full_half = max(edge for _, edge, _ in reaches)
+    if half < 0 and uneven:
+        halves = tuple(max(min(above, full_half), 1) for above, _, _ in reaches)
+    else:
+        out_to = max(above for above, _, _ in reaches) if half < 0 else half
+        halves = (max(min(out_to, full_half), 1),) * 2
+    expected = valley_lines(dem, n_raster, lines, 1.3, halves, 1.0, 1.2, 0.4, 0.035, starts, cols, water,
+                            tuple(ground for _, _, ground in reaches))
+    got = valley_overbanks(dem, n_raster, lines, 1.3, 1.0, 1.2, level, half, uneven, 0.4, 0.035, starts, cols, water)
+    assert (int(got[2]), int(got[3])) == (int(expected[2]), full_half)
+    assert got[0].tobytes() == expected[0].tobytes() and got[1].tobytes() == expected[1].tobytes()
+
+
+@pytest.mark.parametrize("standard_step", [False, True], ids=["normal-depth", "standard-step"])
+def test_lines_each_out_to_their_own_ground_give_the_curves_of_lines_as_long_as_each_other(
+        meander_errors, tmp_path: Path, monkeypatch, standard_step: bool) -> None:
+    """Each line out only to its own first ground above the level (sample_valley's uneven), the shorter one made as
+    long as the longer once a step works above it, gives the rating curves of both lines out as far as the longer,
+    bit for bit."""
+    uneven = meander_errors[standard_step, "results"]
+    even_valley = pipeline.sample_valley
+    made = []
+
+    def sample_valley(*args, uneven=False, **kwargs):
+        valley = even_valley(*args, **kwargs)
+        made.append(valley.even)
+        return valley
+
+    monkeypatch.setattr(pipeline, "sample_valley", sample_valley)
+    even = run_valley(tmp_path, synthetic_valley.meander(), valley_sections=True, standard_step=standard_step)
+
+    assert all(made) and len(made) > 100
+    taken = [s.xs.valley for s in uneven.sections if s is not None and s.xs.valley is not None]
+    assert len(taken) > 100 and not all(valley.even for valley in taken)
+    np.testing.assert_array_equal(even.curves.increments, uneven.curves.increments)
+    np.testing.assert_array_equal(even.curves.metadata, uneven.curves.metadata)
+    np.testing.assert_array_equal(even.curves.valley_slopes, uneven.curves.valley_slopes)
+
+
 def test_the_lines_start_at_the_banks(meander_errors) -> None:
     """Each line's first ordinate is a spacing out from the cell's own bank, so the cross section is one line across
     the valley, kinked at the banks."""
@@ -277,7 +365,7 @@ def test_the_lines_start_at_the_banks(meander_errors) -> None:
     for section in (s for s in results.sections if s is not None and s.xs.valley is not None):
         valley, xs = section.xs.valley, section.xs
         rows, cols = pipeline.valley_cells(section, 10.0, 10.0)
-        own, h = section.direction - math.pi / 2, valley.elevations.size // 2
+        own, h = section.direction - math.pi / 2, valley.centre
         for side, bank, k in ((-1, xs.left_bank_distance, h - 1), (1, xs.right_bank_distance, h + 1)):
             bank_row = section.row + side * math.sin(own) * bank / 10.0
             bank_col = section.col + side * math.cos(own) * bank / 10.0

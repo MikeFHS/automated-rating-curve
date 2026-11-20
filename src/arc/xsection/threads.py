@@ -28,6 +28,8 @@ import math
 import numpy as np
 from numba import njit
 
+from arc.portable import cos_sin
+
 THREAD_REACH = 3000.0  # metres: how far from the stream cell a thread's water may go to join the river
 THREAD_MARGIN = 60.0  # metres along the river beyond the cross section that a thread's water must reach either way
 MAX_THREAD_RISE = 2.0  # metres: a thread's lowest ground is at most this far above the stream cell's
@@ -185,7 +187,7 @@ def section_threads(mask, starts, stream_cols, stream_ids, river, rows, cols, el
     runs = _runs(water)
     out = np.empty((runs.shape[0], 2))
     count = 0
-    cos, sin = math.cos(direction), math.sin(direction)
+    cos, sin = cos_sin(direction)
     highest = elevations[center] + max_rise
     for k in range(runs.shape[0]):
         first, last = runs[k, 0], runs[k, 1]

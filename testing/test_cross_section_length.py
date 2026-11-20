@@ -108,14 +108,18 @@ def test_the_angle_search_finds_what_it_finds_on_whole_cross_sections(dtype) -> 
 # --- The Manning's n raster as classes ------------------------------------------------------------------------------
 
 
-def test_a_manning_s_n_raster_kept_as_classes_samples_as_the_raster_of_numbers() -> None:
+def test_a_manning_s_n_raster_kept_as_float32_samples_as_the_raster_of_numbers() -> None:
     rng = np.random.default_rng(9)
     classes = rng.choice(np.array([10, 20, 30, 80], dtype=np.uint8), size=(70, 90))
     lookup = np.zeros(256)
     lookup[[10, 20, 30, 80]] = np.float32([0.12, 0.05, 0.3, 0.03]).astype(np.float64)
     mannings_n = pipeline.ManningsN(classes, lookup, float(np.float32(0.035)))
-    mannings_n.water_between_banks(rng.integers(-5, 75, 900), rng.integers(-5, 95, 900))  # some off the raster
-    numbers = np.where(mannings_n.water, mannings_n.water_n, lookup[classes])
+    assert mannings_n.values.dtype == np.float32  # every n is at float32's precision
+    rows, cols = rng.integers(-5, 75, 900), rng.integers(-5, 95, 900)  # some off the raster
+    mannings_n.water_between_banks(rows, cols)
+    numbers = lookup[classes]
+    marked = (rows >= 0) & (rows < 70) & (cols >= 0) & (cols < 90)
+    numbers[rows[marked], cols[marked]] = mannings_n.water_n
     for _ in range(500):
         row, col = int(rng.integers(70)), int(rng.integers(90))
         direction, length = float(rng.uniform(0.0, np.pi)), float(rng.choice([5.0, 40.0, 300.0]))
@@ -125,6 +129,17 @@ def test_a_manning_s_n_raster_kept_as_classes_samples_as_the_raster_of_numbers()
     on = (rows >= 0) & (rows < 70) & (cols >= 0) & (cols < 90)
     np.testing.assert_array_equal(mannings_n.at(rows, cols)[on], numbers[rows[on], cols[on]])
     assert np.all(mannings_n.at(rows, cols)[~on] == OFF_RASTER_ELEVATION)
+
+
+
+def test_a_manning_s_n_table_not_at_float32_precision_keeps_the_float64_raster() -> None:
+    classes = np.full((20, 30), 10, dtype=np.uint8)
+    lookup = np.zeros(256)
+    lookup[10] = 0.035  # not a float32
+    mannings_n = pipeline.ManningsN(classes, lookup, 0.03)
+    assert mannings_n.values.dtype == np.float64
+    expected, _ = sample_elevations(lookup[classes], 10, 15, 0.7, 40.0, 1.0, 1.0)
+    np.testing.assert_array_equal(mannings_n.sample(10, 15, 0.7, 40.0, 1.0, 1.0), expected)
 
 
 # --- Trimming and extending ------------------------------------------------------------------------------------------
@@ -248,3 +263,50 @@ def test_a_cross_section_reaches_past_the_raster_s_edge_before_it_s_trimmed(tmp_
         center = section.xs.elevations.size // 2
         assert section.xs.elevations[0] == section.xs.elevations[-1] == OFF_RASTER_ELEVATION
         assert section.full_half == center
+
+
+@pytest.mark.parametrize("use_banks", [False, True])
+def test_cross_sections_that_let_their_cells_go_give_the_same_results(tmp_path: Path, monkeypatch,
+                                                                     use_banks: bool) -> None:
+    """Cross sections that let their ordinates' cells go once trimmed (Section.forget_cells, every one of them here)
+    work them out again as they were wherever a step reads them: the water's n between the banks, the bathymetry's
+    burned cells, the water along the banks, the threads and the cross-section file are the same, bit for bit."""
+    land = np.ones((channel.ROWS, channel.COLS), dtype=np.uint8)
+    land[channel.CENTER_ROW - 2:channel.CENTER_ROW + 3] = 80
+    inputs = channel.write_water_mask(channel.write_channel(tmp_path, land_cover=land), channel.water_band(3))
+    inputs.update({"Degree_Manip": 20, "Degree_Interval": 5, "Standard_Step": True, "Flow_Through_Threads": True,
+                   "Valley_Sections": True, "FindBanksBasedOnLandCover": True,
+                   "BATHY_Out_File": str(tmp_path / "bathy.tif"), "Bathy_Use_Banks": use_banks,
+                   "XS_Out_File": str(tmp_path / "xs.parquet")})
+    configs = Configs.from_mapping(inputs)
+    monkeypatch.setattr(pipeline, "FORGET_CELLS_FROM", 1 << 40)
+    kept = pipeline.run(configs, quiet=True, write=False)
+    monkeypatch.setattr(pipeline, "FORGET_CELLS_FROM", 0)
+    forgot = pipeline.run(configs, quiet=True, write=False)
+
+    sections = [(a, b) for a, b in zip(kept.sections, forgot.sections) if a is not None]
+    assert all(a.kept_rows is not None and b.kept_rows is None for a, b in sections)
+    for a, b in sections:
+        np.testing.assert_array_equal(b.rows, a.rows)
+        np.testing.assert_array_equal(b.cols, a.cols)
+    assert_same(kept, forgot)
+    assert [(r.r1, r.c1, r.r2, r.c2) for r in forgot.cross_sections] == \
+        [(r.r1, r.c1, r.r2, r.c2) for r in kept.cross_sections]
+
+
+def test_a_cross_section_s_cells_at_some_ordinates_are_its_cells_there() -> None:
+    """Section.cells with a mask over the ordinates gives the cells ordinate_cells gives at those, 0 at the rest."""
+    across = 0.7 - math.pi / 2
+    spacing = 1.0 / max(abs(math.cos(across)) / 10.0, abs(math.sin(across)) / 12.0)
+    length = pipeline._length_for(20, spacing)
+    xs = XSection(np.zeros(41), np.empty(0), spacing)
+    section = pipeline.Section(xs, 30, 40, 0.7, 0.0, None, None, 1, 100.0, length=length, full_half=20,
+                               cell_size=(10.0, 12.0))
+    which = np.zeros(41, dtype=bool)
+    which[[0, 7, 20, 33]] = True
+    rows, cols = ordinate_cells(30, 40, 0.7, length, 10.0, 12.0)
+    some_rows, some_cols = section.cells(which)
+    np.testing.assert_array_equal(some_rows[which], rows[which])
+    np.testing.assert_array_equal(some_cols[which], cols[which])
+    assert not some_rows[~which].any() and not some_cols[~which].any()
+    np.testing.assert_array_equal(section.rows, rows)

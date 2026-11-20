@@ -49,6 +49,7 @@ from arc.bathymetry.raster import (
                                   burn_into_raster,
                                   fill_sparse_gaps,
                                   ordinate_cells,
+                                  ordinate_cells_where,
                                   sample_land_cover,
 )
 from arc.bathymetry.smoothing import (
@@ -64,7 +65,7 @@ __all__ = [
     "SparseRaster", "bank_control_elevation", "banks_by_flat_water", "banks_by_land_cover",
     "banks_by_width_to_depth_ratio", "banks_for_width", "bathymetry_depth", "burn_into_raster", "carve_channel",
     "channel_depth", "fill_reach_depths", "fill_sparse_gaps", "find_banks", "in_bank",
-    "ordinate_cells", "power_law_geometry", "reach_network", "sample_land_cover", "set_bank_distances",
-    "set_in_bank_roughness", "single_cell_banks", "smooth_bank_elevations", "smooth_channel_depths", "smooth_reach_bed",
-    "trapezoid_depth",
+    "ordinate_cells", "ordinate_cells_where", "power_law_geometry", "reach_network", "sample_land_cover",
+    "set_bank_distances", "set_in_bank_roughness", "single_cell_banks", "smooth_bank_elevations",
+    "smooth_channel_depths", "smooth_reach_bed", "trapezoid_depth",
 ]

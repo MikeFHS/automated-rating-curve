@@ -851,3 +851,28 @@ def test_burning_cross_sections_all_at_once_is_burning_them_one_by_one() -> None
         burned = burns.burned().to_array()
         assert np.array_equal(burned.view(np.uint32), raster.view(np.uint32))
 
+
+
+def test_burns_keeps_only_the_ordinates_it_burns() -> None:
+    """Burns holds each carved cross section's burned ordinates alone, until the raster is made: not views of arrays
+    the cross section's size, which kept every carved cross section's whole length (gigabytes on a flat tile)."""
+    import tracemalloc
+
+    from arc.bathymetry import Burns
+    size = 1_000_001
+    cells = np.arange(size, dtype=np.int32) % 50
+    elevations = np.linspace(90.0, 100.0, size)
+    changed = np.zeros(size, dtype=bool)
+    changed[size // 2 - 10:size // 2 - 2] = True
+    burns = Burns((50, 50))
+    burns.add(cells, cells, elevations, changed)  # compiled before the memory is traced
+    tracemalloc.start()
+    try:
+        before = tracemalloc.get_traced_memory()[0]
+        burns.add(cells, cells, elevations, changed)
+        held = tracemalloc.get_traced_memory()[0] - before
+    finally:
+        tracemalloc.stop()
+
+    assert [len(kept[-1]) for kept in (burns._cells, burns._elevations, burns._centres)] == [9, 9, 9]
+    assert held < 10_000  # not the 17 MB of a whole cross section's cells, elevations and centres

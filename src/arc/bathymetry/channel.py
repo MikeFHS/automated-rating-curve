@@ -36,13 +36,14 @@ from arc.hydraulics import (
     _parameters,
     connection_levels,
 )
+from arc.portable import exp, log
 from arc.rating_curve import section_hydraulics
 from arc.xsection.xsection import Profile, XSection
 
 _NO_THREADS = np.empty((0, 2))
 MIN_DEPTH = 1e-6  # metres: the depth carved_depth gives a channel whose ground below the level carries its flow
-_MIN_LOG_DEPTH = math.log(MIN_DEPTH)
-_MAX_LOG_DEPTH = math.log(1e4)  # no channel is solved deeper than 10 km
+_MIN_LOG_DEPTH = log(MIN_DEPTH)  # the same on every system (arc.portable)
+_MAX_LOG_DEPTH = log(1e4)  # no channel is solved deeper than 10 km
 
 
 @njit(cache=True, error_model="numpy")
@@ -236,7 +237,7 @@ def _log_conveyance_carved(log_depth, ground, mannings_n, spacing, left, right, 
     hydraulics work it out on the profile _channel_profile gives (the channel's between left_bank and right_bank, or
     the whole section's where they're -1), with the threads (rows of their edges' stations, none for none) carved as
     deep and spreading water (arc.hydraulics)."""
-    depth = math.exp(log_depth)
+    depth = exp(log_depth)
     if threads.shape[0] == 0:
         stations, elevations, n, center = _channel_profile(ground, mannings_n, spacing, left, right, reference,
                                                            depth, trapezoid_height, lower_only)
@@ -250,7 +251,7 @@ def _log_conveyance_carved(log_depth, ground, mannings_n, spacing, left, right, 
         connect = connection_levels(stations, elevations, center, threads)
         k = section_hydraulics(stations, elevations, n, center, left_bank, right_bank, reference, k_decay,
                                shallow_factor, deep_factor, connect)[5]
-    return math.log(k) if k > 0.0 else -np.inf
+    return log(k) if k > 0.0 else -np.inf
 
 
 @njit(cache=True, error_model="numpy")
@@ -259,7 +260,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
     """The depth at which the carved channel's ln conveyance at the reference level is target (see carved_depth).
     The conveyance rises with the depth, so the root is bracketed out from guess, doubling the step in ln depth, and
     then found by false position, halving the end that stays put (the Illinois method)."""
-    u = math.log(guess)
+    u = log(guess)
     f = _log_conveyance_carved(u, ground, mannings_n, spacing, left, right, reference, trapezoid_height, lower_only,
                                left_bank, right_bank, k_decay, shallow_factor, deep_factor, threads) - target
     if f == 0.0:
@@ -297,9 +298,9 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
                                           lower_only, left_bank, right_bank, k_decay, shallow_factor,
                                           deep_factor, threads) - target
     if f_hi == 0.0:
-        return math.exp(hi)
+        return exp(hi)
     if f_lo == 0.0:
-        return math.exp(lo)
+        return exp(lo)
     
     side = 0
     for _ in range(200):
@@ -323,7 +324,7 @@ def _carved_depth(ground, mannings_n, spacing, left, right, reference, trapezoid
                 f_lo *= 0.5
             side = 1
 
-    return math.exp(u)
+    return exp(u)
 
 
 def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: float, *, trapezoid_height: float,
@@ -351,7 +352,7 @@ def carved_depth(xs: XSection, banks: Banks, q: float, slope: float, guess: floa
     
     hydraulic = banks if divide is None else divide
     left_bank, right_bank = (float(hydraulic.left), float(hydraulic.right)) if hydraulic.valid else (-1.0, -1.0)
-    target = math.log(q / (math.sqrt(slope) * _check_slope_factor(slope_factor)))
+    target = log(q / (math.sqrt(slope) * _check_slope_factor(slope_factor)))
     return float(_carved_depth(elevations, np.asarray(xs.mannings_n, dtype=np.float64), spacing, float(carved.left),
                                float(carved.right), reference, trapezoid_height, bank_elevation is None, left_bank,
                                right_bank, *_parameters(roughness), target, float(guess), _threads_of(xs)))

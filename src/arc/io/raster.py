@@ -5,6 +5,7 @@ It doesn't keep the file open, so the file can be overwritten or deleted while t
 """
 from __future__ import annotations
 
+import math
 import os
 from functools import cached_property
 from pathlib import Path
@@ -16,6 +17,8 @@ from pyproj import CRS, Geod
 gdal.UseExceptions()
 
 _METRES = {"metre", "metres", "meter", "meters"}
+# The decimals, of a metre, a geographic raster's cell size is rounded to (see Raster.cell_size_in_metres)
+CELL_SIZE_DECIMALS = 6
 _TILE = 512  # the side of a compressed raster's tiles, in cells
 # The stored types that GDAL converts to each type exactly as numpy's astype does, every value kept
 _EXACTLY_AS = {np.dtype(np.float64): {np.dtype(t) for t in (np.float32, np.int8, np.uint8, np.int16, np.uint16,
@@ -108,8 +111,13 @@ class Raster:
     def cell_size_in_metres(self) -> tuple[float, float]:
         """The cells' width and height in metres.
 
-        A geographic raster's cells are measured along the geodesics of its ellipsoid at the latitude half way
-        between its top and bottom edges. A projected raster's are its resolution, which must be in metres.
+        A geographic raster's cells are measured on its ellipsoid at the latitude half way between its top and bottom
+        edges (cell_size_on_ellipsoid), to the micrometre (CELL_SIZE_DECIMALS). A projected raster's are its
+        resolution, which must be in metres.
+
+        Every slope, direction and cross section is worked out from the cells' size, and a difference in its last
+        digits moved the rating curves and the bathymetry by up to metres in a few cells: rounded, the size is the
+        same on every system (see cell_size_on_ellipsoid).
         """
         size_x, size_y = self.resolution
         if self.crs.is_geographic:
@@ -117,9 +125,8 @@ class Raster:
             last_row_edge = first_row_edge + (-1.0 if self._geotransform[5] < 0.0 else 1.0) * self.nrows * size_y
             latitude = (last_row_edge + first_row_edge) / 2.0
             geod = self._geod()
-            _, _, dy = geod.inv(0.0, latitude, 0.0, latitude + size_y)
-            _, _, dx = geod.inv(0.0, latitude, size_x, latitude)
-            return abs(float(dx)), abs(float(dy))
+            dx, dy = cell_size_on_ellipsoid(geod.a, geod.es, latitude, size_x, size_y)
+            return round(dx, CELL_SIZE_DECIMALS), round(dy, CELL_SIZE_DECIMALS)
         
         if self.crs.is_projected:
             units = self.axis_units()
@@ -208,3 +215,26 @@ class Raster:
         band = None
         ds = None  # closes the file
         return cls(output_path)
+
+
+def cell_size_on_ellipsoid(a: float, e2: float, latitude: float, size_x: float, size_y: float) -> tuple[float, float]:
+    """The width and height in metres of a cell size_x by size_y degrees from a latitude to latitude + size_y, on an
+    ellipsoid of semi-major axis a (m) and squared eccentricity e2.
+
+    Its height is the meridian's arc across it, by Simpson's rule on the meridian's radius of curvature; its width the
+    geodesic across it along the latitude: the parallel's arc, less its curvature's share, (size_x sin(latitude))^2 /
+    24. For cells of up to 36 arcseconds, both are pyproj's geodesics (Geod.inv) to within 2e-9 m, the geodesics' own
+    error. A geodesic is worked out from two distances from the equator, so a last-digit difference in sin or cos from
+    one system's C math library to another's moved it by 6e-10 m between Windows and Linux: enough to round
+    differently where a size falls that near a micrometre's half, about one latitude in a thousand. These move by 1e-14 m.
+    """
+    phi, d_phi, d_lambda = math.radians(latitude), math.radians(size_y), math.radians(size_x)
+
+    def meridian_radius(at: float) -> float:
+        return a * (1.0 - e2) / (1.0 - e2 * math.sin(at) ** 2) ** 1.5
+
+    height = d_phi / 6.0 * (meridian_radius(phi) + 4.0 * meridian_radius(phi + d_phi / 2.0)
+                            + meridian_radius(phi + d_phi))
+    prime_vertical_radius = a / math.sqrt(1.0 - e2 * math.sin(phi) ** 2)
+    width = prime_vertical_radius * math.cos(phi) * d_lambda * (1.0 - (d_lambda * math.sin(phi)) ** 2 / 24.0)
+    return abs(width), abs(height)

@@ -23,7 +23,7 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
-from arc.xsection.sampling import OFF_RASTER_ELEVATION
+from arc.xsection.sampling import OFF_RASTER_ELEVATION, _ordinates
 
 GAP_NEIGHBOURS = 4  # a gap is filled if at least this many of the eight cells around it have bathymetry
 
@@ -32,19 +32,40 @@ def ordinate_cells(row: int, col: int, stream_direction: float, cross_section_le
                    ) -> tuple[np.ndarray, np.ndarray]:
     """The row and column of the cell nearest each ordinate of the cross section that sample_cross_section takes
     with these arguments, as int32. Ordinates off the raster get cells off it too. The cells _compute_dem_coordinates
-    gives, worked out the same way, compiled."""
-    xs_direction = stream_direction - np.pi / 2
-    cos, sin = np.cos(xs_direction), np.sin(xs_direction)
-    spacing = 1 / max(abs(cos) / dx, abs(sin) / dy)
-    return _ordinate_cells(float(row), float(col), float(cos), float(sin), float(spacing),
-                           int(cross_section_length / 2 / spacing), float(dx), float(dy))
+    gives, worked out the same way (its direction's cosine and sine, spacing and ordinates by _ordinates), compiled."""
+    return _ordinate_cells(float(row), float(col), float(stream_direction), float(cross_section_length), float(dx),
+                           float(dy))
 
 
 @njit(cache=True, error_model="numpy")
-def _ordinate_cells(row, col, cos, sin, spacing, half, dx, dy):
+def _ordinate_cells(row, col, stream_direction, cross_section_length, dx, dy):
+    cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
     rows = np.empty(2 * half + 1, np.int32)
     cols = np.empty(2 * half + 1, np.int32)
     for k in range(-half, half + 1):
+        x = spacing * k
+        cols[k + half] = np.int32(np.rint(col + cos * x / dx))
+        rows[k + half] = np.int32(np.rint(row + sin * x / dy))
+
+    return rows, cols
+
+
+def ordinate_cells_where(row: int, col: int, stream_direction: float, cross_section_length: float, dx: float,
+                         dy: float, which: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """ordinate_cells at the ordinates `which` marks (a mask over them) alone, worked out as it works them out, and 0
+    at the others."""
+    return _ordinate_cells_where(float(row), float(col), float(stream_direction), float(cross_section_length),
+                                 float(dx), float(dy), np.asarray(which, dtype=np.bool_))
+
+
+@njit(cache=True, error_model="numpy")
+def _ordinate_cells_where(row, col, stream_direction, cross_section_length, dx, dy, which):
+    cos, sin, spacing, half = _ordinates(stream_direction, cross_section_length, dx, dy)
+    rows = np.zeros(2 * half + 1, np.int32)
+    cols = np.zeros(2 * half + 1, np.int32)
+    for k in range(-half, half + 1):
+        if not which[k + half]:
+            continue
         x = spacing * k
         cols[k + half] = np.int32(np.rint(col + cos * x / dx))
         rows[k + half] = np.int32(np.rint(row + sin * x / dy))
@@ -168,7 +189,8 @@ def _ordinates_to_burn(rows, cols, elevations, changed, nrows, ncols):
             centres[count] = k == centre
             count += 1
 
-    return cells[:count], values[:count], centres[:count]
+    # Copies: Burns keeps them until the raster is made, and a slice would keep the whole cross section's arrays with it
+    return cells[:count].copy(), values[:count].copy(), centres[:count].copy()
 
 
 @njit(cache=True, error_model="numpy")

@@ -130,7 +130,15 @@ def _round_significant(x, digits):
     if not np.isfinite(x):
         return x
     
-    factor = 10.0 ** (digits - 1 - math.floor(math.log10(abs(x))))
+    # The power of ten x is in: log10's, put right where its last digit put it a power off (at a power of ten,
+    # where one system's C library could round it one way and another's the other), by comparisons, which are exact
+    size = abs(x)
+    power = math.floor(math.log10(size))
+    if 10.0 ** power > size:
+        power -= 1
+    elif 10.0 ** (power + 1) <= size:
+        power += 1
+    factor = 10.0 ** (digits - 1 - power)
     return math.floor(x * factor + 0.5) / factor
 
 

@@ -26,6 +26,8 @@ import math
 import numpy as np
 from numba import njit
 
+from arc.portable import length as vector_length  # not the C library's hypot, which differs from system to system
+
 SMOOTHING_CELLS = 3  # how many cells either side along the path each cell's centre is averaged with for the stations
 
 
@@ -87,7 +89,7 @@ def _adjacency(rows, cols, dx, dy):
                 j = order[p]
                 if j != i:
                     neighbours[k] = j
-                    lengths[k] = math.hypot((cols[j] - cols[i]) * dx, (rows[j] - rows[i]) * dy)
+                    lengths[k] = vector_length((cols[j] - cols[i]) * dx, (rows[j] - rows[i]) * dy)
                     k += 1
 
     return start, neighbours, lengths
@@ -153,7 +155,7 @@ def _distances_from(rows, cols, dx, dy, source, start, neighbours, lengths):
                 if settled[u]:
                     for v in range(n):
                         if not settled[v]:
-                            length = math.hypot((cols[v] - cols[u]) * dx, (rows[v] - rows[u]) * dy)
+                            length = vector_length((cols[v] - cols[u]) * dx, (rows[v] - rows[u]) * dy)
                             if length < gap:
                                 gap, near, far = length, u, v
             distance[far] = distance[near] + gap
@@ -215,7 +217,7 @@ def _stations_from(rows, cols, dx, dy, source, cells):
             error = np.inf
             for v in range(n):
                 if distances[v] < distances[current]:
-                    jump = math.hypot((cols[v] - cols[current]) * dx, (rows[v] - rows[current]) * dy)
+                    jump = vector_length((cols[v] - cols[current]) * dx, (rows[v] - rows[current]) * dy)
                     if abs(distances[v] + jump - distances[current]) < error:
                         error, best = abs(distances[v] + jump - distances[current]), v
 
@@ -227,7 +229,7 @@ def _stations_from(rows, cols, dx, dy, source, cells):
     d = distances[path]
     x = cols[path] * dx
     y = rows[path] * dy
-    gap = 1.5 * math.hypot(dx, dy)
+    gap = 1.5 * vector_length(dx, dy)
     # Where the run of joined-up cells each of the path's cells is in starts and ends
     run_start = np.zeros(count, np.int64)
     run_end = np.zeros(count, np.int64)
@@ -251,7 +253,7 @@ def _stations_from(rows, cols, dx, dy, source, cells):
 
     along = np.zeros(count)
     for i in range(1, count):
-        step = d[i] - d[i - 1] if run_start[i] == i else math.hypot(mx[i] - mx[i - 1], my[i] - my[i - 1])
+        step = d[i] - d[i - 1] if run_start[i] == i else vector_length(mx[i] - mx[i - 1], my[i] - my[i - 1])
         along[i] = along[i - 1] + step
 
     return distances, np.interp(distances, d, along)
@@ -263,7 +265,7 @@ def _nearest_cell(rows, cols, dx, dy, other_rows, other_cols):
     best, nearest = np.inf, -1
     for i in range(rows.size):
         for j in range(other_rows.size):
-            length = math.hypot((cols[i] - other_cols[j]) * dx, (rows[i] - other_rows[j]) * dy)
+            length = vector_length((cols[i] - other_cols[j]) * dx, (rows[i] - other_rows[j]) * dy)
             if length < best:
                 best, nearest = length, i
 

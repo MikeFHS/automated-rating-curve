@@ -22,6 +22,8 @@ import numpy as np
 from numba import njit, types
 from numba.extending import overload
 
+from arc.portable import cos_sin
+
 from .xsection import XSection
 
 OFF_RASTER_ELEVATION = 9999.0  # the value of an ordinate off the raster, a wall that water can't spread past
@@ -71,10 +73,10 @@ def _compiled_values_like(raster, like=None):
 
 @njit(cache=True, error_model="numpy")
 def _ordinates(stream_direction, cross_section_length, dx, dy):
-    """The cross section's direction as a cosine and sine, the spacing of its ordinates and how many go out to each
-    side."""
+    """The cross section's direction as a cosine and sine, rounded alike on every system (arc.portable), the spacing of
+    its ordinates and how many go out to each side."""
     xs_direction = stream_direction - np.pi / 2
-    cos, sin = np.cos(xs_direction), np.sin(xs_direction)
+    cos, sin = cos_sin(xs_direction)
     spacing = 1 / max(abs(cos) / dx, abs(sin) / dy)
     return cos, sin, spacing, int(cross_section_length / 2 / spacing)
 

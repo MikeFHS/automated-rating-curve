@@ -55,7 +55,8 @@ shape, even when it is narrower than a cell.
 ## Rasters
 
 - The DEM, stream and land cover rasters, and the water mask, must have the same rows and columns, be north-up or
-  south-up (not rotated), and have coordinates in metres or degrees. In degrees, ARC works out the cells' size in metres.
+  south-up (not rotated), and have coordinates in metres or degrees. In degrees, ARC works out the cells' size in metres,
+  along the ellipsoid at the raster's middle latitude, rounded to the micrometre.
 - DEM cells without data act as walls. Stream raster cells at or below 0, or without data, aren't stream.
 - The land cover is read as whole numbers from 0 to 255. The water mask's water is any value but 0 or no data.
 - The bathymetry raster is written as 32-bit floats, and the flood raster as 8-bit whole numbers.
@@ -78,3 +79,21 @@ sections. Directions are measured on the raster's grid, as you see it with row 0
 ![A stream 30° clockwise from east on a north-up grid, its cross section, XS_Angle and the two sides](images/directions.svg)
 
 The inputs `Degree_Manip` and `Degree_Interval` are in degrees.
+
+## The same results on every system
+
+The C math library's `sin`, `cos`, `atan2`, `exp`, `log` and `hypot` (for float64)
+differ in their last digit from one system's to another's: between Windows and Linux, in about 1 in 30 sines and
+cosines, 1 in 200 exponentials and 1 in 6 `hypot`s. A cross section's points step exactly one cell along the axis it
+crosses fastest, so such a digit could put a point on the raster's edge on one system and off it on the other. So ARC
+works these out itself (`arc.portable`):
+
+- Sines and cosines, exponentials and logarithms by its own code, ported from fdlibm and fast C libraries' tables:
+  the same bits on every system, within an ulp of the true value, and at least as fast as the C library's.
+- A cross section's direction is used as its cosine and sine rounded to six decimals. Directions still come from the
+  C library's `atan2`, whose last digit can differ; rounded, their cosines and sines are the same everywhere but in
+  about one direction in 10^10.
+- Lengths between cells are `sqrt(x*x + y*y)` rather than `hypot`.
+
+The representative cross sections' fit (`Build_Representative_Cross_Section`) still uses numpy's logarithms and least
+squares, so its amplitudes and exponents can differ between systems in their last digits.
